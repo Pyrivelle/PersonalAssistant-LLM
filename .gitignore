@@ -17,3 +17,5 @@ Sakura-source/
 **/.env.*
 **/llm_settings.json
 **/settings.json
+**/qq_settings.json
+**/memory_data/

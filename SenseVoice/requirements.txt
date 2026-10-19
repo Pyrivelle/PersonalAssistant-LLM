@@ -2,3 +2,5 @@ sherpa-onnx==1.13.7
 numpy==2.2.6
 sounddevice==0.5.6
 PySide6==6.11.2
+mem0ai==2.2.1
+websockets==17.2

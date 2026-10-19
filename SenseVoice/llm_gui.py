@@ -7,11 +7,11 @@ import sys
 from PySide6.QtCore import Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
-from chat_worker import ChatWorker
+from chat_worker import ChatWorker, MemoryWriteWorker
 from llm import DEFAULT_MODEL, DEFAULT_PROMPT, LlmSettings, PROVIDERS, SILICONFLOW_URL, load_key, load_settings, save_key, save_settings
 
 
@@ -19,10 +19,12 @@ class ChatWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Shimano · LLM 对话测试")
-        self.resize(680, 760)
+        self.resize(720, 820)
         self.setMinimumSize(560, 640)
         self.history: list[dict[str, str]] = []
         self.worker: ChatWorker | None = None
+        self.memory_workers: set[MemoryWriteWorker] = set()
+        self.memory_window = None
         saved = load_settings()
 
         central = QWidget()
@@ -33,7 +35,7 @@ class ChatWindow(QMainWindow):
         title = QLabel("Shimano · 文字对话测试")
         title.setObjectName("title")
         layout.addWidget(title)
-        layout.addWidget(QLabel("先验证模型连接、角色提示词与多轮对话；语音接入下一步进行。"))
+        layout.addWidget(QLabel("在这里调整庄方宜的人格设定，并用文字验证多轮对话。设置也会用于主语音窗口。"))
 
         form = QFormLayout()
         form.setSpacing(10)
@@ -62,17 +64,26 @@ class ChatWindow(QMainWindow):
         form.addRow("API Key", key_row)
 
         self.prompt = QPlainTextEdit(saved.system_prompt or DEFAULT_PROMPT)
-        self.prompt.setMaximumHeight(100)
-        form.addRow("角色提示词", self.prompt)
+        self.prompt.setMinimumHeight(190)
+        form.addRow("人格设定", self.prompt)
+        self.memory_enabled = QCheckBox("启用长期记忆：对话文字会发送给硅基流动做记忆提取和 Embedding")
+        self.memory_enabled.setChecked(saved.memory_enabled)
+        form.addRow("长期记忆", self.memory_enabled)
         layout.addLayout(form)
 
         buttons = QHBoxLayout()
         self.save_button = QPushButton("保存设置与密钥")
         self.save_button.clicked.connect(self.save)
+        self.reset_prompt_button = QPushButton("恢复默认人格")
+        self.reset_prompt_button.clicked.connect(lambda: self.prompt.setPlainText(DEFAULT_PROMPT))
         self.clear_button = QPushButton("清空当前对话")
         self.clear_button.clicked.connect(self.clear_history)
+        self.memory_button = QPushButton("查看与管理记忆…")
+        self.memory_button.clicked.connect(self.open_memory_manager)
         buttons.addWidget(self.save_button)
+        buttons.addWidget(self.reset_prompt_button)
         buttons.addWidget(self.clear_button)
+        buttons.addWidget(self.memory_button)
         buttons.addStretch()
         layout.addLayout(buttons)
 
@@ -85,7 +96,7 @@ class ChatWindow(QMainWindow):
         layout.addWidget(self.transcript, 1)
         entry = QHBoxLayout()
         self.input = QLineEdit()
-        self.input.setPlaceholderText("输入一句话，例如：爱莉，你好")
+        self.input.setPlaceholderText("输入一句话，例如：小庄，你好")
         self.input.returnPressed.connect(self.send)
         self.send_button = QPushButton("发送")
         self.send_button.clicked.connect(self.send)
@@ -120,12 +131,16 @@ class ChatWindow(QMainWindow):
         return LlmSettings(
             provider=self.provider.currentData(), base_url=self.url.text(),
             model=self.model.currentText(), system_prompt=self.prompt.toPlainText(),
+            memory_enabled=self.memory_enabled.isChecked(),
         ).validated()
 
     @Slot()
     def save(self) -> bool:
         try:
             settings = self.current_settings()
+            if settings.memory_enabled and not (load_key("siliconflow") or
+                                                (settings.provider == "siliconflow" and self.key_edit.text().strip())):
+                raise ValueError("启用长期记忆前，请先保存硅基流动 API Key")
             save_settings(settings)
             if self.key_edit.text().strip():
                 save_key(settings.provider, self.key_edit.text())
@@ -146,6 +161,15 @@ class ChatWindow(QMainWindow):
         self.status.setText("当前对话已清空")
 
     @Slot()
+    def open_memory_manager(self) -> None:
+        from memory_gui import MemoryDialog
+        if self.memory_window is None:
+            self.memory_window = MemoryDialog(self)
+        self.memory_window.show()
+        self.memory_window.raise_()
+        self.memory_window.activateWindow()
+
+    @Slot()
     def send(self) -> None:
         if self.worker is not None:
             return
@@ -163,10 +187,12 @@ class ChatWindow(QMainWindow):
         self.worker = ChatWorker(settings, key, list(self.history), message, self)
         self.worker.replied.connect(self.show_reply)
         self.worker.failed.connect(self.show_error)
+        self.worker.memory_warning.connect(self.show_memory_warning)
         self.worker.finished.connect(self.worker_finished)
         self.input.setEnabled(False)
         self.send_button.setEnabled(False)
         self.save_button.setEnabled(False)
+        self.reset_prompt_button.setEnabled(False)
         self.status.setText("正在等待模型回复…")
         self.worker.start()
 
@@ -176,9 +202,23 @@ class ChatWindow(QMainWindow):
         message = self.worker.message
         self.history.extend(({"role": "user", "content": message}, {"role": "assistant", "content": reply}))
         self.history = self.history[-12:]
-        self.transcript.appendPlainText(f"你：{message}\n爱莉：{reply}\n")
+        self.transcript.appendPlainText(f"你：{message}\n庄方宜：{reply}\n")
         self.input.clear()
         self.status.setText("回复完成")
+        if self.worker.settings.memory_enabled and not self.worker.memory_command:
+            writer = MemoryWriteWorker(message, reply, self)
+            self.memory_workers.add(writer)
+            writer.failed.connect(self.show_memory_warning)
+            writer.finished.connect(lambda w=writer: self.memory_write_finished(w))
+            writer.start()
+
+    @Slot(str)
+    def show_memory_warning(self, warning: str) -> None:
+        self.status.setText(warning)
+
+    def memory_write_finished(self, worker: MemoryWriteWorker) -> None:
+        self.memory_workers.discard(worker)
+        worker.deleteLater()
 
     @Slot(str)
     def show_error(self, error: str) -> None:
@@ -193,11 +233,15 @@ class ChatWindow(QMainWindow):
         self.input.setEnabled(True)
         self.send_button.setEnabled(True)
         self.save_button.setEnabled(True)
+        self.reset_prompt_button.setEnabled(True)
         self.input.setFocus()
 
     def closeEvent(self, event) -> None:
         if self.worker is not None and self.worker.isRunning():
             self.worker.wait()
+        for worker in tuple(self.memory_workers):
+            if worker.isRunning():
+                worker.wait()
         super().closeEvent(event)
 
 

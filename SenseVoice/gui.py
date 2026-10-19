@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuous import StreamingVad
-from chat_worker import ChatWorker
+from chat_worker import ChatWorker, MemoryWriteWorker
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from llm import load_key, load_settings
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
@@ -186,6 +186,7 @@ class MainWindow(QMainWindow):
         self.chat_history: list[dict[str, str]] = []
         self.chat_worker: ChatWorker | None = None
         self.chat_workers: dict[int, ChatWorker] = {}
+        self.memory_workers: set[MemoryWriteWorker] = set()
         self.turn_serial = 0
         self.active_turn: int | None = None
         self.pending_message = ""
@@ -197,6 +198,7 @@ class MainWindow(QMainWindow):
         self.tts_advance_pending = False
         self.echo_guard_until = 0.0
         self.llm_window = None
+        self.memory_window = None
         engines = QTextToSpeech.availableEngines()
         self.tts = QTextToSpeech("winrt" if "winrt" in engines else "sapi", self) if engines else None
         if self.tts is not None:
@@ -244,12 +246,12 @@ class MainWindow(QMainWindow):
         self.wake_name = QLineEdit(saved["name"])
         self.wake_name.setObjectName("wakeName")
         self.wake_name.setMaxLength(20)
-        self.wake_name.setPlaceholderText("例如：爱莉")
+        self.wake_name.setPlaceholderText("例如：庄方宜")
         form.addRow("唤醒称呼", self.wake_name)
 
         self.wake_aliases = QLineEdit(saved["aliases"])
         self.wake_aliases.setObjectName("wakeAliases")
-        self.wake_aliases.setPlaceholderText("用逗号分隔，例如：爱丽，艾莉，艾丽")
+        self.wake_aliases.setPlaceholderText("用逗号分隔，例如：庄天师，小庄")
         form.addRow("识别别名", self.wake_aliases)
 
         self.wake_timeout = QSpinBox()
@@ -290,6 +292,9 @@ class MainWindow(QMainWindow):
         self.model_button = QPushButton("模型设置与文字测试…")
         self.model_button.clicked.connect(self.open_model_settings)
         form.addRow("模型", self.model_button)
+        self.memory_button = QPushButton("查看与管理长期记忆…")
+        self.memory_button.clicked.connect(self.open_memory_manager)
+        form.addRow("记忆", self.memory_button)
         self.wake_name.editingFinished.connect(self.save_wake_settings)
         self.wake_aliases.editingFinished.connect(self.save_wake_settings)
         self.wake_timeout.valueChanged.connect(self.save_wake_settings)
@@ -418,6 +423,16 @@ class MainWindow(QMainWindow):
         self.llm_window.show()
         self.llm_window.raise_()
         self.llm_window.activateWindow()
+
+    @Slot()
+    def open_memory_manager(self) -> None:
+        from memory_gui import MemoryDialog
+
+        if self.memory_window is None:
+            self.memory_window = MemoryDialog(self)
+        self.memory_window.show()
+        self.memory_window.raise_()
+        self.memory_window.activateWindow()
 
     @Slot()
     def refresh_devices(self) -> None:
@@ -678,6 +693,7 @@ class MainWindow(QMainWindow):
         self.chat_workers[turn] = worker
         worker.replied.connect(lambda reply, turn=turn: self.chat_replied(turn, reply))
         worker.failed.connect(lambda error, turn=turn: self.chat_failed(turn, error))
+        worker.memory_warning.connect(lambda warning: self.result_edit.appendPlainText(f"系统：{warning}\n"))
         worker.finished.connect(lambda turn=turn: self.chat_finished(turn))
         self.status_label.setText("已将识别文字发送给模型 · 等待回复")
         worker.start()
@@ -694,13 +710,22 @@ class MainWindow(QMainWindow):
             self.set_interaction_state(InteractionState.LISTENING)
             self.status_label.setText("你正在说话 · 已忽略刚收到的旧回复")
             return
+        worker = self.chat_workers.get(turn)
+        memory_enabled = bool(worker and worker.settings.memory_enabled)
+        answered_message = self.pending_message
         self.chat_history.extend(({"role": "user", "content": self.pending_message},
                                   {"role": "assistant", "content": reply}))
         self.chat_history = self.chat_history[-12:]
         self.active_turn = None
         self.chat_worker = None
         self.pending_message = ""
-        self.result_edit.appendPlainText(f"爱莉：{reply}\n")
+        self.result_edit.appendPlainText(f"庄方宜：{reply}\n")
+        if memory_enabled and not getattr(worker, "memory_command", False):
+            writer = MemoryWriteWorker(answered_message, reply, self)
+            self.memory_workers.add(writer)
+            writer.failed.connect(lambda warning: self.result_edit.appendPlainText(f"系统：{warning}\n"))
+            writer.finished.connect(lambda w=writer: self.memory_write_finished(w))
+            writer.start()
         if self.speak_reply.isChecked() and self.tts is not None:
             self.tts_chunks = speech_chunks(reply, limit=42 if self.barge_in_mode.currentData() == "speakers" else 90)
             self.spoken_answer = reply
@@ -726,7 +751,7 @@ class MainWindow(QMainWindow):
             self.finish_chat_turn()
             return
         self.current_tts_chunk = self.tts_chunks.pop(0)
-        self.status_label.setText(f"爱莉正在分段说话 · 剩余 {len(self.tts_chunks)} 段")
+        self.status_label.setText(f"庄方宜正在分段说话 · 剩余 {len(self.tts_chunks)} 段")
         try:
             self.tts.say(self.current_tts_chunk)
             QTimer.singleShot(150, self.check_tts_state)
@@ -754,6 +779,10 @@ class MainWindow(QMainWindow):
             self.chat_worker = None
             self.pending_message = ""
             self.finish_chat_turn()
+
+    def memory_write_finished(self, worker: MemoryWriteWorker) -> None:
+        self.memory_workers.discard(worker)
+        worker.deleteLater()
 
     @Slot()
     def check_tts_state(self) -> None:
@@ -977,6 +1006,9 @@ class MainWindow(QMainWindow):
             self.continuous_worker.request_stop()
             self.continuous_worker.wait()
         for worker in tuple(self.chat_workers.values()):
+            if worker.isRunning():
+                worker.wait()
+        for worker in tuple(self.memory_workers):
             if worker.isRunning():
                 worker.wait()
         super().closeEvent(event)

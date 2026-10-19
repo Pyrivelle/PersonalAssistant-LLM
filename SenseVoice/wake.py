@@ -10,8 +10,8 @@ import re
 import time
 from dataclasses import dataclass
 
-DEFAULT_NAME = "爱莉"
-DEFAULT_ALIASES = "爱丽，艾莉，艾丽"
+DEFAULT_NAME = "庄方宜"
+DEFAULT_ALIASES = "庄天师，小庄，庄方怡，庄芳怡，庄方一，庄天使"
 LEADING = " \t\r\n，,。.!！?？：:、"
 TRAILING = " \t\r\n，,。.!！?？：:、"
 
@@ -64,8 +64,8 @@ class ConversationGate:
             return WakeResult("ignored")
         body = original.lstrip(LEADING)
         match = next((alias for alias in self.aliases if body.startswith(alias)), None)
-        # "爱丽丝" is an ordinary name and should not wake "爱莉".
-        if match and body[len(match) :].startswith("丝"):
+        # A place name should not be mistaken for the short nickname.
+        if match == "小庄" and body[len(match) :].startswith("园"):
             match = None
         if match:
             rest = body[len(match) :]

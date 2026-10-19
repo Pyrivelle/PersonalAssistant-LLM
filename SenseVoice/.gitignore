@@ -6,4 +6,5 @@ __pycache__/
 .env.local
 llm_settings.json
 settings.json
+qq_settings.json
 samples/*.wav
