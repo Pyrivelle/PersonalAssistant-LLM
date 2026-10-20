@@ -25,6 +25,7 @@ class PlannerSettings:
     enabled: bool = False
     model: str = ""
     persist_private_ids: frozenset[int] = frozenset()
+    persist_desktop_context: bool = False
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
@@ -39,7 +40,10 @@ class PlannerSettings:
         ids = raw.get("persist_private_ids", [])
         if not isinstance(ids, list) or any(type(item) is not int or item <= 0 for item in ids):
             raise ValueError("持久化私聊账号必须是正整数数组")
-        return cls(raw.get("enabled", False), model.strip(), frozenset(ids))
+        desktop = raw.get("persist_desktop_context", False)
+        if type(desktop) is not bool:
+            raise ValueError("桌面上下文持久化开关必须是布尔值")
+        return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop)
 
 
 @dataclass(frozen=True)
