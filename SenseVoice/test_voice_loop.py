@@ -53,7 +53,7 @@ class FakeChatWorker(QObject):
     finished = Signal()
     messages = []
 
-    def __init__(self, _settings, _key, _history, message, _parent):
+    def __init__(self, _settings, _key, _history, message, _parent, **_kwargs):
         super().__init__()
         self.settings = _settings
         self.message = message
@@ -71,7 +71,7 @@ class DeferredChatWorker(QObject):
     finished = Signal()
     instances = []
 
-    def __init__(self, _settings, _key, _history, message, _parent):
+    def __init__(self, _settings, _key, _history, message, _parent, **_kwargs):
         super().__init__()
         self.settings = _settings
         self.message = message
