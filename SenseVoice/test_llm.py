@@ -90,6 +90,21 @@ class LlmTests(unittest.TestCase):
         self.assertEqual(captured["messages"][-1]["content"], "你记得我吗？")
         self.assertIn("用户偏好简短解释", captured["messages"][-2]["content"])
 
+    def test_emotion_context_is_bounded_and_keeps_current_user_last(self):
+        captured = {}
+
+        def fake_open(request, timeout):
+            captured["messages"] = json.loads(request.data)["messages"]
+            return FakeResponse()
+
+        with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
+            llm.chat(llm.LlmSettings(), "test-key", [], "今天很累",
+                     emotion_context="当前心境：关切" * 200)
+        self.assertEqual(captured["messages"][-1],
+                         {"role": "user", "content": "今天很累"})
+        self.assertEqual(captured["messages"][1]["role"], "system")
+        self.assertLessEqual(len(captured["messages"][1]["content"]), 2000)
+
     def test_remote_http_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             llm.LlmSettings(provider="custom", base_url="http://remote.example/v1").validated()
