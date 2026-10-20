@@ -144,3 +144,59 @@ $env:PYTHONIOENCODING = 'utf-8'
     python -m unittest -v test_emotion test_dialogue_context test_turn_planner test_llm test_qq_bridge
 
 另有 GitHub Actions 的 Python 离线检查。真实 Windows 端的 PySide6、麦克风、TTS、SnowLuma 端到端场景仍需单独验收。
+
+## 分用户记忆与庄方宜 Skill 场景路由（第二阶段）
+
+这一阶段参考 [dsh-qqchat](https://github.com/Coffeiz/dsh-qqchat) 的 member scope / 五层资料和证据约束反思，并将 [MengPaul07/zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill) 的场景行为规则**改写**进 `fangyi_skill.py`。未复制该仓库的原始台词、场景正文或 Wiki 数据；`persona_packs/zhuang_fangyi_v1/prompt.md` 继续负责稳定人物底色，场景路由只在问题涉及相关情境时附加一条短建议。不会把用户当作剧情管理员，也不会把原作故事记入用户个人档案。
+
+### 配置
+
+在 `SenseVoice` 目录将 `cognition_settings.example.json` 复制为 `cognition_settings.json`（本地配置，Git 忽略）。例如：
+
+```json
+{
+  "enabled": false,
+  "model": "",
+  "persist_private_ids": [],
+  "persist_desktop_context": false,
+  "memory_private_ids": [],
+  "fangyi_scene_skill": true
+}
+```
+
+- `fangyi_scene_skill` 控制庄方宜行为路由；只对匹配庄方宜人格包或明确以她为对象的长提示词生效。默认启用，不增加新的模型请求。
+- `memory_private_ids` 是**新的独立同意名单**，默认空。只有这里列出的、同时存在于 `qq_settings.json.allowed_private_ids` 中的 QQ 账号，在私聊时会建立个人档案并发送内容给记忆反思模型。群聊不进入个人档案，即使该用户也在个人记忆名单内也不例外。私聊个人资料以（机器人账号 ID、QQ 发送者 ID）联合区分，昵称只用于展示。
+- `persist_private_ids` 仍只控制上一阶段的会话历史持久化，和 `memory_private_ids` 互不依赖，也不会把其他 QQ 用户的资料写入桌面主人的 Mem0。
+- `enabled` 仍只控制每轮调用可选的思考模型；它与是否启用记忆反思是两个开关。
+
+重启 QQ 桥接后配置生效。当前控制台尚无这些开关的图形编辑入口，需要编辑本地 JSON。
+
+### 记忆工作流程
+
+只在 QQ 私聊回复**确认投递成功**后，才记录该用户这一轮输入与 Bot 回复到待提炼队列。每积累至少六轮，后台发起一次额外的 LLM 请求，整理为五类：`profile`（稳定事实）、`pattern`（重复模式）、`summary`（近期状态）、`daily`（阶段性重要事件）、`memory`（高价值长期经历）。返回信息要附带用户 `inbound` 原文中的证据片段；行为模式必须来自至少两条不同的用户发言。Bot 回复、引用文字及其他人的话不应成为用户身份事实。证据校验能过滤明显的无来源内容，但**不能保证模型一定正确理解复杂的转述、讽刺或矛盾**，这是后续需要改进的部分。
+
+当前会员记忆独立存于 `conversation_data/qq_members.sqlite3`，存储的是分层资料、证据片段以及最多七天的未反思消息；它**未经加密**。后台模型服务和主回复模型使用相同供应商及密钥，可能增加 API 费用。单次反思失败时保留未处理消息，不覆盖已有档案，下次再重试。用户在自己的 QQ 私聊中发送 **`/forget_me`** 或 **`/删除我的记忆`**，可清除该机器人账号下自己的成员档案、待提炼消息，以及当前会话上下文。也可以在停止服务后删除相应本地 SQLite 文件以整体清空。
+
+记忆快照按当前用户读取，作为**不可信的历史参考数据**放在正常聊天历史前；仍以本轮用户明确陈述为准。没有启用个人记忆时，行为与原先保持一致。原有桌面 Mem0 不读取这个 SQLite 个人档案。
+
+### 与原始庄方宜 Skill 的关系
+
+本次只移植**行为规则与场景迁移方法**，尚未导入全部十五幕剧情卡、知识树和对白原文。几个代表性场景：
+
+- 技术研究对应场景 05 的协作与判断；挫败和失落对应场景 09 的体谅与继续前行；
+- 分享阶段成果对应场景 02/14 的认真祝贺和允许休息；
+- 决策风险对应北进场景 11/12 的准备与共同承担；
+- 日常与亲近对应场景 03/10/14 的生活气息和有分寸的关心；
+- 原作设定问答按 `references/epistemics.md` 的原则区分官设、推断与演绎。
+
+这些都是**现实场景的行为迁移**，不能据此宣称角色已经与现实用户共同经历过任何剧情。原仓库 MIT 署名见 `third_party/Zhuang-Fangyi-Skill-LICENSE.txt`。
+
+### 测试与限制
+
+无需 QQ 登录和真实模型 Key，运行：
+
+```bash
+python -m unittest -v test_emotion test_dialogue_context test_turn_planner test_llm test_qq_bridge test_member_memory test_fangyi_skill
+```
+
+GitHub Actions 也会执行离线检查。真实 QQ 的权限、数据库读写、API 费用与语音端到端表现仍需本机验证。此版本还没有用户档案 GUI、自动更正冲突的语义验证或跨平台身份合并；尤其**不要自动把 QQ 用户识别为桌面助手主人**。后台反思只保证结构和证据门槛，不能证明角色有真实的主观情绪。
