@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from continuous import StreamingVad
 from chat_worker import ChatWorker, MemoryWriteWorker
+from emotion import EmotionState
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from llm import load_key, load_settings
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
@@ -184,6 +185,7 @@ class MainWindow(QMainWindow):
         self.speech_started_during_playback = False
         self.interaction_state = InteractionState.IDLE
         self.chat_history: list[dict[str, str]] = []
+        self.emotion = EmotionState()
         self.chat_worker: ChatWorker | None = None
         self.chat_workers: dict[int, ChatWorker] = {}
         self.memory_workers: set[MemoryWriteWorker] = set()
@@ -688,7 +690,7 @@ class MainWindow(QMainWindow):
         self.pending_message = message
         self.speech_started_at = None
         self.set_interaction_state(InteractionState.THINKING)
-        worker = ChatWorker(settings, key, list(self.chat_history), message, self)
+        worker = ChatWorker(settings, key, list(self.chat_history), message, self, emotion=self.emotion)
         self.chat_worker = worker
         self.chat_workers[turn] = worker
         worker.replied.connect(lambda reply, turn=turn: self.chat_replied(turn, reply))
@@ -713,6 +715,8 @@ class MainWindow(QMainWindow):
         worker = self.chat_workers.get(turn)
         memory_enabled = bool(worker and worker.settings.memory_enabled)
         answered_message = self.pending_message
+        if worker and not worker.memory_command and worker.emotion_candidate is not None:
+            self.emotion = worker.emotion_candidate
         self.chat_history.extend(({"role": "user", "content": self.pending_message},
                                   {"role": "assistant", "content": reply}))
         self.chat_history = self.chat_history[-12:]
@@ -980,6 +984,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("请等当前回复结束后再清空对话")
             return
         self.chat_history.clear()
+        self.emotion = EmotionState()
         self.result_edit.clear()
         self.copy_button.setEnabled(False)
         self.status_label.setText("对话历史已清空")
