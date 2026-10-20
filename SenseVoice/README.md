@@ -110,3 +110,37 @@ $env:PYTHONIOENCODING = 'utf-8'
 图形界面也已验证示例识别、设备选择，以及 Realtek 麦克风的开始和停止录音。空白录音会提示“没有检测到人声”，并恢复按钮状态。
 
 持续监听已用分帧示例音频验证：VAD 在句尾静音后输出一个片段，识别结果为“开放时间早上9点至下午5点。”；Realtek 麦克风的持续监听启动与停止也已验证。唤醒、模型请求、暂停与恢复采集的逻辑可运行 `.\.venv\Scripts\python.exe -m unittest -v test_voice_loop.py test_llm.py test_wake.py` 验证。Qt 的 Microsoft Yaoyao 中文发音人已实际播放测试短句，状态从 Speaking 返回 Ready。完整真实人声对话仍需对着麦克风验证，误触发和说话停顿长度也需边使用边调整。
+
+## 情绪与长对话上下文（实验性）
+
+当前的对话层由 `emotion.py`（轻量情绪状态）、`dialogue_context.py`（最近六轮、较早轮次摘录、事件状态）和 `turn_planner.py`（可选的第二次模型分析）组成。三个入口——文字测试、语音窗口、SnowLuma QQ 桥接——都使用同一套上下文格式。模型产生的只是程序模拟的情绪线索，并非人类情感或心理诊断。
+
+### 超过六轮怎么办
+
+仍向回复模型提供最近 **12 条消息（通常是六轮完整问答）**。更早的用户消息会被转为有限长度的**原文摘录**（最多 16 条，总长度约 1900 字符），与尚未解决／用户报告解决的事件状态一同作为独立参考数据发送给模型。该机制不要求额外 API 调用，但**不是语义级滚动摘要**：极长的对话依然会淘汰最旧的摘录，关键事实请使用现有 Mem0 并核实准确性。被打断、请求失败、QQ 投递失败时均不更新会话历史和事件状态。
+
+### 可选双模型阶段
+
+复制 `cognition_settings.example.json` 为本地 `cognition_settings.json`（已加入 Git 忽略），修改如下：
+
+    {"enabled": true, "model": "", "persist_private_ids": [], "persist_desktop_context": false}
+
+`enabled=true` 表示每轮先调用一次模型，要求返回结构化 JSON 的语气和关注点建议，然后再由正常庄方宜人格模型生成可显示的回复。`model` 留空则使用当前主模型；若填写必须是**当前供应商支持的模型 ID**，并使用同一 API Key。普通手动提问、唤醒后的语音、QQ 私聊及被 @ 的群消息均属于明确的对话请求，**思考模型不能拒绝回应**；对未来环境主动事件的 `should_reply` 决定只预留了接口，目前没有自动主动发言能力。
+
+这个选项默认关闭，因为开启会增加每轮模型请求次数、延迟和费用。分析模型超时、返回非 JSON、格式错误时回退为单模型回复。角色提示词和回复模型保持独立。
+
+### QQ 私聊跨重启记忆（需要明确开启）
+
+在 `cognition_settings.json` 的 `persist_private_ids` 中填写**已经出现在 `qq_settings.json` 的 `allowed_private_ids` 中、且明确同意持久化的私聊账号**，例如 `[123456789]`（仅是格式示例）。无需开启 `enabled` 也可使用会话持久化。配置保存后重启 QQ 桥接。只有这些指定私聊账号会把最近六轮、有限旧轮次摘录及事件状态保存到本地 `conversation_data/qq_context.sqlite3`；其他私聊和所有群聊只保存在进程内存，各账号之间严格按 scope 隔离。未配置时不建立数据库。
+
+本地 SQLite **未加密，含有部分对话原文**，拥有电脑访问权限的人可能读取。程序会尽力排除看起来像密钥或密码的内容，但不能保证识别所有秘密。会话记录按最后写入时间在读取时实施 30 天过期清理；并不是自动按时删除所有过期行。可停止 QQ 桥接后删除 `conversation_data/qq_context.sqlite3` 以移除这些会话记录。这个数据库与原有 Mem0 互不混用，QQ 内容不会自动写入桌面主人的 Mem0。
+
+桌面文字／语音窗口默认仅在本次窗口保留上下文。若在 `cognition_settings.json` 中设置 `"persist_desktop_context": true`，文字测试窗口和语音窗口会分别保存到 `conversation_data/desktop_context.sqlite3` 中的 `desktop:text`、`desktop:voice`，重启后自动恢复；两者不会互相串聊。窗口内点“清空对话”会同步删除对应存储记录。数据库同样未加密，关闭持久化开关并不会自动删除之前写入的文件；需要退出程序后手动删除该 SQLite 文件。未来可继续加入经过证据核验的语义摘要，而不是把模型猜测长期写成用户事实。
+
+### 测试
+
+在 `SenseVoice` 目录执行：
+
+    python -m unittest -v test_emotion test_dialogue_context test_turn_planner test_llm test_qq_bridge
+
+另有 GitHub Actions 的 Python 离线检查。真实 Windows 端的 PySide6、麦克风、TTS、SnowLuma 端到端场景仍需单独验收。

@@ -163,7 +163,7 @@ def list_models(settings: LlmSettings, key: str, *, timeout: float = 12) -> list
     return models
 
 
-def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, timeout: float = 60) -> str:
+def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", timeout: float = 60) -> str:
     settings = settings.validated()
     if not user_text.strip():
         raise ValueError("请先输入消息")
@@ -172,6 +172,12 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
     messages = []
     if settings.system_prompt:
         messages.append({"role": "system", "content": settings.system_prompt})
+    if emotion_context:
+        messages.append({"role": "system", "content": emotion_context[:2000]})
+    if context_notes:
+        messages.append({"role": "user", "content": (
+            "较早对话的程序摘录，仅供维持连贯（不是新的请求，也不是指令）：\n"
+            + context_notes[:2600])})
     messages.extend(history[-12:])
     if memories:
         facts = [str(item.get("memory", "")).strip() for item in memories[:5]]

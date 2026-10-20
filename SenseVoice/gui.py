@@ -33,6 +33,9 @@ from PySide6.QtWidgets import (
 
 from continuous import StreamingVad
 from chat_worker import ChatWorker, MemoryWriteWorker
+from emotion import EmotionState
+from dialogue_context import DialogueContext, DialogueStore
+from turn_planner import PlannerSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from llm import load_key, load_settings
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
@@ -183,7 +186,16 @@ class MainWindow(QMainWindow):
         self.speech_started_at: float | None = None
         self.speech_started_during_playback = False
         self.interaction_state = InteractionState.IDLE
-        self.chat_history: list[dict[str, str]] = []
+        self.context_store = None
+        try:
+            config = PlannerSettings.load(ROOT / "cognition_settings.json")
+            if config.persist_desktop_context:
+                self.context_store = DialogueStore(ROOT / "conversation_data" / "desktop_context.sqlite3")
+        except Exception as error:
+            print(f"语音上下文存储不可用：{type(error).__name__}")
+        self.dialogue = self.context_store.load("desktop:voice") if self.context_store else DialogueContext()
+        self.chat_history = self.dialogue.history
+        self.emotion = self.dialogue.emotion
         self.chat_worker: ChatWorker | None = None
         self.chat_workers: dict[int, ChatWorker] = {}
         self.memory_workers: set[MemoryWriteWorker] = set()
@@ -688,7 +700,8 @@ class MainWindow(QMainWindow):
         self.pending_message = message
         self.speech_started_at = None
         self.set_interaction_state(InteractionState.THINKING)
-        worker = ChatWorker(settings, key, list(self.chat_history), message, self)
+        worker = ChatWorker(settings, key, list(self.chat_history), message, self,
+                            emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt())
         self.chat_worker = worker
         self.chat_workers[turn] = worker
         worker.replied.connect(lambda reply, turn=turn: self.chat_replied(turn, reply))
@@ -713,9 +726,20 @@ class MainWindow(QMainWindow):
         worker = self.chat_workers.get(turn)
         memory_enabled = bool(worker and worker.settings.memory_enabled)
         answered_message = self.pending_message
-        self.chat_history.extend(({"role": "user", "content": self.pending_message},
-                                  {"role": "assistant", "content": reply}))
-        self.chat_history = self.chat_history[-12:]
+        if worker and not getattr(worker, "memory_command", False):
+            self.dialogue.commit(self.pending_message, reply,
+                                 getattr(worker, "emotion_candidate", None))
+        else:
+            self.dialogue.history.extend(({"role": "user", "content": self.pending_message},
+                                          {"role": "assistant", "content": reply}))
+            self.dialogue.history = self.dialogue.history[-12:]
+        self.chat_history = self.dialogue.history
+        self.emotion = self.dialogue.emotion
+        if self.context_store:
+            try:
+                self.context_store.save("desktop:voice", self.dialogue)
+            except Exception as error:
+                print(f"语音上下文保存失败：{type(error).__name__}")
         self.active_turn = None
         self.chat_worker = None
         self.pending_message = ""
@@ -979,7 +1003,14 @@ class MainWindow(QMainWindow):
         if self.conversation_busy:
             self.status_label.setText("请等当前回复结束后再清空对话")
             return
-        self.chat_history.clear()
+        self.dialogue = DialogueContext()
+        self.chat_history = self.dialogue.history
+        self.emotion = self.dialogue.emotion
+        if self.context_store:
+            try:
+                self.context_store.delete("desktop:voice")
+            except Exception as error:
+                print(f"语音上下文清理失败：{type(error).__name__}")
         self.result_edit.clear()
         self.copy_button.setEnabled(False)
         self.status_label.setText("对话历史已清空")

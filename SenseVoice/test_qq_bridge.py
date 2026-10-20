@@ -61,6 +61,38 @@ class QqParsingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "quiet_seconds"):
                 QqSettings.load(path)
 
+    def test_explicit_private_context_opt_in_is_scoped(self):
+        from dialogue_context import DialogueContext
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            (directory / "cognition_settings.json").write_text(
+                json.dumps({"enabled": False, "persist_private_ids": [42]}),
+                encoding="utf-8",
+            )
+            settings = QqSettings(allowed_private_ids=frozenset({42}),
+                                  allowed_group_ids=frozenset({9}))
+            with patch.object(qq_bridge, "ROOT", directory):
+                bridge = QqBridge(settings)
+                self.assertIsNotNone(bridge.context_store)
+                context = DialogueContext()
+                context.commit("Qt Bug 报错", "我们一起看看")
+                bridge.context_store.save("private:0:42", context)
+                other = QqBridge(settings)
+                self.assertEqual(other.context_store.load("private:0:42").events[0].topic,
+                                 "编程或调试")
+                self.assertFalse(other.context_store.load("private:0:43").events)
+                self.assertFalse(other.context_store.load("group:9:42").events)
+
+    def test_unapproved_private_persistence_id_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            (directory / "cognition_settings.json").write_text(
+                json.dumps({"persist_private_ids": [43]}), encoding="utf-8"
+            )
+            with patch.object(qq_bridge, "ROOT", directory):
+                with self.assertRaisesRegex(ValueError, "私聊白名单"):
+                    QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+
     def test_second_bridge_instance_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(qq_bridge, "LOCK_FILE", Path(directory) / "bridge.lock"):

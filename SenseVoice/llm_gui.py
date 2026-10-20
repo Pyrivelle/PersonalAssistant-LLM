@@ -12,7 +12,11 @@ from PySide6.QtWidgets import (
 )
 
 from chat_worker import ChatWorker, MemoryWriteWorker
-from llm import (DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
+from emotion import EmotionState
+from dialogue_context import DialogueContext, DialogueStore
+from turn_planner import PlannerSettings
+from emotion import EmotionState
+from llm import (ROOT, DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
                  PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
                  load_key, load_settings, save_key, save_settings)
 from model_catalog import ModelCatalogWorker
@@ -25,7 +29,16 @@ class ChatWindow(QMainWindow):
         self.setWindowTitle("Shimano · LLM 对话测试")
         self.resize(720, 820)
         self.setMinimumSize(560, 640)
-        self.history: list[dict[str, str]] = []
+        self.context_store = None
+        try:
+            config = PlannerSettings.load(ROOT / "cognition_settings.json")
+            if config.persist_desktop_context:
+                self.context_store = DialogueStore(ROOT / "conversation_data" / "desktop_context.sqlite3")
+        except Exception as error:
+            print(f"桌面上下文存储不可用：{type(error).__name__}")
+        self.dialogue = self.context_store.load("desktop:text") if self.context_store else DialogueContext()
+        self.history = self.dialogue.history
+        self.emotion = self.dialogue.emotion
         self.worker: ChatWorker | None = None
         self.memory_workers: set[MemoryWriteWorker] = set()
         self.memory_window = None
@@ -249,7 +262,14 @@ class ChatWindow(QMainWindow):
     def clear_history(self) -> None:
         if self.worker is not None:
             return
-        self.history.clear()
+        self.dialogue = DialogueContext()
+        self.history = self.dialogue.history
+        self.emotion = self.dialogue.emotion
+        if self.context_store:
+            try:
+                self.context_store.delete("desktop:text")
+            except Exception as error:
+                print(f"桌面上下文清理失败：{type(error).__name__}")
         self.transcript.clear()
         self.status.setText("当前对话已清空")
 
@@ -277,7 +297,8 @@ class ChatWindow(QMainWindow):
         if settings.provider != "custom" and not key:
             self.status.setText(f"请先输入并保存{PROVIDERS[settings.provider]} API Key")
             return
-        self.worker = ChatWorker(settings, key, list(self.history), message, self)
+        self.worker = ChatWorker(settings, key, list(self.history), message, self,
+                                 emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt())
         self.worker.replied.connect(self.show_reply)
         self.worker.failed.connect(self.show_error)
         self.worker.memory_warning.connect(self.show_memory_warning)
@@ -293,8 +314,19 @@ class ChatWindow(QMainWindow):
     def show_reply(self, reply: str) -> None:
         assert self.worker is not None
         message = self.worker.message
-        self.history.extend(({"role": "user", "content": message}, {"role": "assistant", "content": reply}))
-        self.history = self.history[-12:]
+        if not self.worker.memory_command:
+            self.dialogue.commit(message, reply, self.worker.emotion_candidate)
+        else:
+            self.dialogue.history.extend(({"role": "user", "content": message},
+                                          {"role": "assistant", "content": reply}))
+            self.dialogue.history = self.dialogue.history[-12:]
+        self.history = self.dialogue.history
+        self.emotion = self.dialogue.emotion
+        if self.context_store:
+            try:
+                self.context_store.save("desktop:text", self.dialogue)
+            except Exception as error:
+                print(f"桌面上下文保存失败：{type(error).__name__}")
         self.transcript.appendPlainText(f"你：{message}\n庄方宜：{reply}\n")
         self.input.clear()
         self.status.setText("回复完成")

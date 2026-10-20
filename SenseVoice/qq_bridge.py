@@ -16,6 +16,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from llm import ROOT, chat, load_key, load_settings
+from dialogue_context import DialogueContext, DialogueStore
+from turn_planner import PlannerSettings, TurnPlan, plan_turn
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
@@ -199,7 +201,7 @@ class Conversation:
     pending: list[str] = field(default_factory=list)
     first_arrival: float = 0
     last_arrival: float = 0
-    history: list[dict[str, str]] = field(default_factory=list)
+    context: DialogueContext = field(default_factory=DialogueContext)
     task: asyncio.Task | None = None
 
 
@@ -216,6 +218,13 @@ class QqBridge:
         self.generation_lock = asyncio.Lock()
         self.send_lock = asyncio.Lock()
         self.next_send_at = 0.0
+        # Persistence is separate from Mem0 and only enabled for explicitly
+        # selected, already-whitelisted private accounts. Groups never persist.
+        self.planner_settings = PlannerSettings.load(ROOT / "cognition_settings.json")
+        if not self.planner_settings.persist_private_ids.issubset(settings.allowed_private_ids):
+            raise ValueError("可持久化账号必须包含在 QQ 私聊白名单内")
+        self.context_store = (DialogueStore(ROOT / "conversation_data" / "qq_context.sqlite3")
+                              if self.planner_settings.persist_private_ids else None)
 
     async def action(self, name: str, params: dict) -> dict:
         echo = uuid.uuid4().hex
@@ -261,7 +270,14 @@ class QqBridge:
             self.seen[key] = now
             if len(self.seen) > 2048:
                 self.seen = {item: seen_at for item, seen_at in self.seen.items() if now - seen_at < 3600}
-        state = self.conversations.setdefault(incoming.scope, Conversation(incoming))
+        state = self.conversations.get(incoming.scope)
+        if state is None:
+            context = (self.context_store.load(incoming.scope)
+                       if self.context_store and incoming.kind == "private"
+                       and incoming.user_id in self.planner_settings.persist_private_ids
+                       else DialogueContext())
+            state = Conversation(incoming=incoming, context=context)
+            self.conversations[incoming.scope] = state
         state.incoming = incoming
         if not state.pending:
             state.first_arrival = now
@@ -300,14 +316,33 @@ class QqBridge:
                         raise RuntimeError("对话模型 API Key 未配置")
                     settings = replace(settings, memory_enabled=False,
                                        system_prompt=settings.system_prompt + "\n你现在通过 QQ 文字聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。")
-                    reply = await asyncio.to_thread(chat, settings, key, state.history, message)
+                    candidate = state.context.observe(message)
+                    plan = TurnPlan()
+                    if self.planner_settings.enabled:
+                        try:
+                            plan = await asyncio.to_thread(
+                                plan_turn, settings, key, state.context.history, message,
+                                self.planner_settings)
+                        except Exception as error:
+                            print(f"可选思考阶段失败，改为直接回复：{type(error).__name__}")
+                    emotion_prompt = candidate.to_prompt()
+                    if plan.prompt():
+                        emotion_prompt += "\n" + plan.prompt()
+                    reply = await asyncio.to_thread(
+                        chat, settings, key, state.context.history, message,
+                        emotion_context=emotion_prompt, context_notes=state.context.prompt())
                 if not reply.strip():
                     continue
                 # One outbound message per turn. Never retry an unknown delivery result.
                 reply = reply[:1200]
                 if await self.send_reply(current, reply):
-                    state.history.extend(({"role": "user", "content": message}, {"role": "assistant", "content": reply}))
-                    state.history = state.history[-12:]
+                    state.context.commit(message, reply, candidate)
+                    if (self.context_store and current.kind == "private"
+                            and current.user_id in self.planner_settings.persist_private_ids):
+                        try:
+                            self.context_store.save(current.scope, state.context)
+                        except Exception as error:
+                            print(f"QQ 会话上下文保存失败：{type(error).__name__}")
             except Exception as error:
                 print(f"QQ 回复失败（{current.scope}）：{type(error).__name__}: {error}")
 
