@@ -94,7 +94,8 @@ class DialogueContext:
         self.events = [e for e in self.events if now - e.updated_at < RETENTION_SECONDS][-MAX_EVENTS:]
 
     def to_dict(self) -> dict:
-        return {"version": 1, "history": self.history[-RECENT_MESSAGES:],
+        return {"version": 1, "history": [msg for msg in self.history[-RECENT_MESSAGES:]
+                                           if not SECRET.search(str(msg.get("content", "")))],
                 "older_notes": self.older_notes[-MAX_NOTES:],
                 "events": [e.as_dict() for e in self.events[-MAX_EVENTS:]],
                 "emotion": {
