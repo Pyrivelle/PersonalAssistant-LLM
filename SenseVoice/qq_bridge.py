@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from llm import ROOT, chat, load_key, load_settings
+from emotion import EmotionState
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
@@ -200,6 +201,7 @@ class Conversation:
     first_arrival: float = 0
     last_arrival: float = 0
     history: list[dict[str, str]] = field(default_factory=list)
+    emotion: EmotionState = field(default_factory=EmotionState)
     task: asyncio.Task | None = None
 
 
@@ -300,12 +302,15 @@ class QqBridge:
                         raise RuntimeError("对话模型 API Key 未配置")
                     settings = replace(settings, memory_enabled=False,
                                        system_prompt=settings.system_prompt + "\n你现在通过 QQ 文字聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。")
-                    reply = await asyncio.to_thread(chat, settings, key, state.history, message)
+                    candidate = state.emotion.observe(message)
+                    reply = await asyncio.to_thread(chat, settings, key, state.history, message,
+                                                    emotion_context=candidate.to_prompt())
                 if not reply.strip():
                     continue
                 # One outbound message per turn. Never retry an unknown delivery result.
                 reply = reply[:1200]
                 if await self.send_reply(current, reply):
+                    state.emotion = candidate
                     state.history.extend(({"role": "user", "content": message}, {"role": "assistant", "content": reply}))
                     state.history = state.history[-12:]
             except Exception as error:
