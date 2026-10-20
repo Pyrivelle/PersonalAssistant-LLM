@@ -718,8 +718,9 @@ class MainWindow(QMainWindow):
         worker = self.chat_workers.get(turn)
         memory_enabled = bool(worker and worker.settings.memory_enabled)
         answered_message = self.pending_message
-        if worker and not worker.memory_command:
-            self.dialogue.commit(self.pending_message, reply, worker.emotion_candidate)
+        if worker and not getattr(worker, "memory_command", False):
+            self.dialogue.commit(self.pending_message, reply,
+                                 getattr(worker, "emotion_candidate", None))
         else:
             self.dialogue.history.extend(({"role": "user", "content": self.pending_message},
                                           {"role": "assistant", "content": reply}))
