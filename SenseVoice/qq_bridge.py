@@ -320,6 +320,23 @@ class QqBridge:
             state.pending.clear()
             current = state.incoming
             try:
+                if (current.kind == "private" and
+                        message.strip() in {"/forget_me", "/删除我的记忆"}):
+                    # Wait for pending background writes before erasing. Otherwise
+                    # a late reflection could recreate deleted personal records.
+                    if (self.member_store is not None and
+                            current.user_id in self.planner_settings.memory_private_ids):
+                        async with self.reflection_lock:
+                            await asyncio.to_thread(
+                                self.member_store.erase,
+                                MemberKey(self.bot_id, current.user_id))
+                    if (self.context_store is not None and
+                            current.user_id in self.planner_settings.persist_private_ids):
+                        self.context_store.delete(f"bot:{self.bot_id}:{current.scope}")
+                        self.context_store.delete(current.scope)  # legacy pre-bot scope
+                    state.context = DialogueContext()
+                    await self.send_reply(current, "已清除这个 QQ 账号在本机器人中的会话与成员记忆。")
+                    continue
                 async with self.generation_lock:
                     settings = load_settings()
                     key = load_key(settings.provider)
@@ -351,7 +368,9 @@ class QqBridge:
                         member_snapshot = await asyncio.to_thread(self.member_store.snapshot, member_key)
                     notes = state.context.prompt()
                     if member_snapshot:
-                        notes = "\n".join([notes, member_snapshot])
+                        # LLMClient caps extra context; keep the member identity
+                        # snapshot first rather than truncating it off the end.
+                        notes = "\n".join([member_snapshot, notes])
                     reply = await asyncio.to_thread(
                         chat, settings, key, state.context.history, message,
                         emotion_context=emotion_prompt, context_notes=notes)
