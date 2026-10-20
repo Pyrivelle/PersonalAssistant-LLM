@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
 )
 
 from chat_worker import ChatWorker, MemoryWriteWorker
+from emotion import EmotionState
+from emotion import EmotionState
 from llm import (DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
                  PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
                  load_key, load_settings, save_key, save_settings)
@@ -26,6 +28,7 @@ class ChatWindow(QMainWindow):
         self.resize(720, 820)
         self.setMinimumSize(560, 640)
         self.history: list[dict[str, str]] = []
+        self.emotion = EmotionState()
         self.worker: ChatWorker | None = None
         self.memory_workers: set[MemoryWriteWorker] = set()
         self.memory_window = None
@@ -250,6 +253,7 @@ class ChatWindow(QMainWindow):
         if self.worker is not None:
             return
         self.history.clear()
+        self.emotion = EmotionState()
         self.transcript.clear()
         self.status.setText("当前对话已清空")
 
@@ -277,7 +281,7 @@ class ChatWindow(QMainWindow):
         if settings.provider != "custom" and not key:
             self.status.setText(f"请先输入并保存{PROVIDERS[settings.provider]} API Key")
             return
-        self.worker = ChatWorker(settings, key, list(self.history), message, self)
+        self.worker = ChatWorker(settings, key, list(self.history), message, self, emotion=self.emotion)
         self.worker.replied.connect(self.show_reply)
         self.worker.failed.connect(self.show_error)
         self.worker.memory_warning.connect(self.show_memory_warning)
@@ -293,6 +297,8 @@ class ChatWindow(QMainWindow):
     def show_reply(self, reply: str) -> None:
         assert self.worker is not None
         message = self.worker.message
+        if not self.worker.memory_command and self.worker.emotion_candidate is not None:
+            self.emotion = self.worker.emotion_candidate
         self.history.extend(({"role": "user", "content": message}, {"role": "assistant", "content": reply}))
         self.history = self.history[-12:]
         self.transcript.appendPlainText(f"你：{message}\n庄方宜：{reply}\n")
