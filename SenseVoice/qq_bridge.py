@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 from llm import ROOT, chat, load_key, load_settings
 from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
+from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
+from fangyi_skill import guidance as fangyi_guidance
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
@@ -225,6 +227,14 @@ class QqBridge:
             raise ValueError("可持久化账号必须包含在 QQ 私聊白名单内")
         self.context_store = (DialogueStore(ROOT / "conversation_data" / "qq_context.sqlite3")
                               if self.planner_settings.persist_private_ids else None)
+        if not self.planner_settings.memory_private_ids.issubset(settings.allowed_private_ids):
+            raise ValueError("成员记忆账号必须先加入 QQ 私聊白名单")
+        # Separate, explicit consent for extracting personal profiles and events.
+        self.member_store = (MemberMemoryStore(ROOT / "conversation_data" / "qq_members.sqlite3")
+                             if self.planner_settings.memory_private_ids else None)
+        self.reflection_tasks: dict[MemberKey, asyncio.Task] = {}
+        self.reflection_retry_at: dict[MemberKey, float] = {}
+        self.reflection_lock = asyncio.Semaphore(1)
 
     async def action(self, name: str, params: dict) -> dict:
         echo = uuid.uuid4().hex
@@ -264,20 +274,21 @@ class QqBridge:
             return False
         now = time.monotonic()
         if incoming.message_id:
-            key = f"{incoming.scope}:{incoming.message_id}"
+            key = f"bot:{self.bot_id}:{incoming.scope}:{incoming.message_id}"
             if key in self.seen:
                 return False
             self.seen[key] = now
             if len(self.seen) > 2048:
                 self.seen = {item: seen_at for item, seen_at in self.seen.items() if now - seen_at < 3600}
-        state = self.conversations.get(incoming.scope)
+        identity_scope = f"bot:{self.bot_id}:{incoming.scope}"
+        state = self.conversations.get(identity_scope)
         if state is None:
-            context = (self.context_store.load(incoming.scope)
+            context = (self.context_store.load(identity_scope)
                        if self.context_store and incoming.kind == "private"
                        and incoming.user_id in self.planner_settings.persist_private_ids
                        else DialogueContext())
             state = Conversation(incoming=incoming, context=context)
-            self.conversations[incoming.scope] = state
+            self.conversations[identity_scope] = state
         state.incoming = incoming
         if not state.pending:
             state.first_arrival = now
@@ -328,9 +339,22 @@ class QqBridge:
                     emotion_prompt = candidate.to_prompt()
                     if plan.prompt():
                         emotion_prompt += "\n" + plan.prompt()
+                    scene = fangyi_guidance(settings.system_prompt, message,
+                                            enabled=self.planner_settings.fangyi_scene_skill)
+                    if scene:
+                        emotion_prompt += "\n" + scene
+                    member_key = None
+                    member_snapshot = ""
+                    if (self.member_store is not None and current.kind == "private"
+                            and current.user_id in self.planner_settings.memory_private_ids):
+                        member_key = MemberKey(self.bot_id, current.user_id)
+                        member_snapshot = await asyncio.to_thread(self.member_store.snapshot, member_key)
+                    notes = state.context.prompt()
+                    if member_snapshot:
+                        notes = "\n".join([notes, member_snapshot])
                     reply = await asyncio.to_thread(
                         chat, settings, key, state.context.history, message,
-                        emotion_context=emotion_prompt, context_notes=state.context.prompt())
+                        emotion_context=emotion_prompt, context_notes=notes)
                 if not reply.strip():
                     continue
                 # One outbound message per turn. Never retry an unknown delivery result.
@@ -340,11 +364,39 @@ class QqBridge:
                     if (self.context_store and current.kind == "private"
                             and current.user_id in self.planner_settings.persist_private_ids):
                         try:
-                            self.context_store.save(current.scope, state.context)
+                            self.context_store.save(f"bot:{self.bot_id}:{current.scope}", state.context)
                         except Exception as error:
                             print(f"QQ 会话上下文保存失败：{type(error).__name__}")
+                    if member_key is not None:
+                        try:
+                            count = await asyncio.to_thread(
+                                self.member_store.record_turn, member_key, message, reply)
+                            if count >= REFLECT_AFTER_TURNS:
+                                self.queue_member_reflection(member_key, settings, key)
+                        except Exception as error:
+                            print(f"QQ 用户记忆排队失败：{type(error).__name__}")
             except Exception as error:
                 print(f"QQ 回复失败（{current.scope}）：{type(error).__name__}: {error}")
+
+    def queue_member_reflection(self, identity: MemberKey, settings, api_key: str) -> None:
+        previous = self.reflection_tasks.get(identity)
+        if previous is not None and not previous.done():
+            return
+        if time.monotonic() < self.reflection_retry_at.get(identity, 0):
+            return
+        task = asyncio.create_task(self._run_member_reflection(identity, settings, api_key))
+        self.reflection_tasks[identity] = task
+
+    async def _run_member_reflection(self, identity: MemberKey, settings, api_key: str) -> None:
+        try:
+            async with self.reflection_lock:
+                await asyncio.to_thread(reflect_member, self.member_store, identity, settings, api_key)
+            self.reflection_retry_at.pop(identity, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.reflection_retry_at[identity] = time.monotonic() + 120
+            print(f"QQ 用户记忆反思失败，保留待处理消息：{type(error).__name__}")
 
     async def send_reply(self, incoming: Incoming, reply: str) -> bool:
         async with self.send_lock:
