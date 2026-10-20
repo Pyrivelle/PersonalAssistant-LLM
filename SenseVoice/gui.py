@@ -34,7 +34,8 @@ from PySide6.QtWidgets import (
 from continuous import StreamingVad
 from chat_worker import ChatWorker, MemoryWriteWorker
 from emotion import EmotionState
-from dialogue_context import DialogueContext
+from dialogue_context import DialogueContext, DialogueStore
+from turn_planner import PlannerSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from llm import load_key, load_settings
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
@@ -185,7 +186,14 @@ class MainWindow(QMainWindow):
         self.speech_started_at: float | None = None
         self.speech_started_during_playback = False
         self.interaction_state = InteractionState.IDLE
-        self.dialogue = DialogueContext()
+        self.context_store = None
+        try:
+            config = PlannerSettings.load(ROOT / "cognition_settings.json")
+            if config.persist_desktop_context:
+                self.context_store = DialogueStore(ROOT / "conversation_data" / "desktop_context.sqlite3")
+        except Exception as error:
+            print(f"语音上下文存储不可用：{type(error).__name__}")
+        self.dialogue = self.context_store.load("desktop:voice") if self.context_store else DialogueContext()
         self.chat_history = self.dialogue.history
         self.emotion = self.dialogue.emotion
         self.chat_worker: ChatWorker | None = None
@@ -727,6 +735,11 @@ class MainWindow(QMainWindow):
             self.dialogue.history = self.dialogue.history[-12:]
         self.chat_history = self.dialogue.history
         self.emotion = self.dialogue.emotion
+        if self.context_store:
+            try:
+                self.context_store.save("desktop:voice", self.dialogue)
+            except Exception as error:
+                print(f"语音上下文保存失败：{type(error).__name__}")
         self.active_turn = None
         self.chat_worker = None
         self.pending_message = ""
@@ -993,6 +1006,11 @@ class MainWindow(QMainWindow):
         self.dialogue = DialogueContext()
         self.chat_history = self.dialogue.history
         self.emotion = self.dialogue.emotion
+        if self.context_store:
+            try:
+                self.context_store.delete("desktop:voice")
+            except Exception as error:
+                print(f"语音上下文清理失败：{type(error).__name__}")
         self.result_edit.clear()
         self.copy_button.setEnabled(False)
         self.status_label.setText("对话历史已清空")
