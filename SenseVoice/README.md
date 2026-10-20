@@ -123,7 +123,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 复制 `cognition_settings.example.json` 为本地 `cognition_settings.json`（已加入 Git 忽略），修改如下：
 
-    {"enabled": true, "model": "", "persist_private_ids": []}
+    {"enabled": true, "model": "", "persist_private_ids": [], "persist_desktop_context": false}
 
 `enabled=true` 表示每轮先调用一次模型，要求返回结构化 JSON 的语气和关注点建议，然后再由正常庄方宜人格模型生成可显示的回复。`model` 留空则使用当前主模型；若填写必须是**当前供应商支持的模型 ID**，并使用同一 API Key。普通手动提问、唤醒后的语音、QQ 私聊及被 @ 的群消息均属于明确的对话请求，**思考模型不能拒绝回应**；对未来环境主动事件的 `should_reply` 决定只预留了接口，目前没有自动主动发言能力。
 
@@ -135,7 +135,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 本地 SQLite **未加密，含有部分对话原文**，拥有电脑访问权限的人可能读取。程序会尽力排除看起来像密钥或密码的内容，但不能保证识别所有秘密。会话记录按最后写入时间在读取时实施 30 天过期清理；并不是自动按时删除所有过期行。可停止 QQ 桥接后删除 `conversation_data/qq_context.sqlite3` 以移除这些会话记录。这个数据库与原有 Mem0 互不混用，QQ 内容不会自动写入桌面主人的 Mem0。
 
-桌面文字／语音窗口的情绪及旧轮次摘录仍只存活在当前窗口，关闭或点击清空会话就重置；这个版本没有提供跨窗口共享的统一记忆服务。未来可以继续加入经过证据核验的事件摘要，而不是把模型猜测长期写成用户事实。
+桌面文字／语音窗口默认仅在本次窗口保留上下文。若在 `cognition_settings.json` 中设置 `"persist_desktop_context": true`，文字测试窗口和语音窗口会分别保存到 `conversation_data/desktop_context.sqlite3` 中的 `desktop:text`、`desktop:voice`，重启后自动恢复；两者不会互相串聊。窗口内点“清空对话”会同步删除对应存储记录。数据库同样未加密，关闭持久化开关并不会自动删除之前写入的文件；需要退出程序后手动删除该 SQLite 文件。未来可继续加入经过证据核验的语义摘要，而不是把模型猜测长期写成用户事实。
 
 ### 测试
 
