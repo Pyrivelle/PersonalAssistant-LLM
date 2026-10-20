@@ -26,6 +26,8 @@ class PlannerSettings:
     model: str = ""
     persist_private_ids: frozenset[int] = frozenset()
     persist_desktop_context: bool = False
+    memory_private_ids: frozenset[int] = frozenset()
+    fangyi_scene_skill: bool = True
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
@@ -43,7 +45,15 @@ class PlannerSettings:
         desktop = raw.get("persist_desktop_context", False)
         if type(desktop) is not bool:
             raise ValueError("桌面上下文持久化开关必须是布尔值")
-        return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop)
+        memory_ids = raw.get("memory_private_ids", [])
+        if (not isinstance(memory_ids, list) or
+                any(type(item) is not int or item <= 0 for item in memory_ids)):
+            raise ValueError("成员长期记忆账号必须是正整数数组")
+        skill = raw.get("fangyi_scene_skill", True)
+        if type(skill) is not bool:
+            raise ValueError("庄方宜场景 Skill 开关必须是布尔值")
+        return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop,
+                   frozenset(memory_ids), skill)
 
 
 @dataclass(frozen=True)
