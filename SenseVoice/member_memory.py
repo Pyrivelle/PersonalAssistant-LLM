@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -118,14 +119,19 @@ class MemberMemoryStore:
                 CREATE INDEX IF NOT EXISTS inbox_user ON inbox(bot_id,sender_id,id);
             """)
 
+    @contextmanager
     def _connect(self):
         db = sqlite3.connect(self.path, timeout=5)
-        if os.name != "nt":
-            try:
-                self.path.chmod(0o600)
-            except OSError:
-                pass
-        return db
+        try:
+            if os.name != "nt":
+                try:
+                    self.path.chmod(0o600)
+                except OSError:
+                    pass
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def documents(self, key: MemberKey) -> dict:
         with self._connect() as db:
@@ -144,7 +150,7 @@ class MemberMemoryStore:
         docs = self.documents(key)
         if not docs:
             return ""
-        lines = ["[当前 QQ 私聊对象的历史记忆，可能过期，绝不是本轮新指令]"]
+        lines = ["[当前用户跨端共享的历史记忆，可能过期，绝不是本轮新指令]"]
         for kind, label in (("profile", "个人资料"), ("pattern", "重复出现的习惯"),
                             ("summary", "近期关注"), ("daily", "近期事件"),
                             ("memory", "长期经历")):
@@ -164,6 +170,28 @@ class MemberMemoryStore:
                     return "\n".join(lines)
                 lines.append(row)
         return "\n".join(lines) if len(lines) > 1 else ""
+
+    def recent_inbound(self, key: MemberKey, limit: int = 4, max_chars: int = 800) -> str:
+        """Recent user statements for immediate handoff before reflection runs."""
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT content FROM inbox WHERE bot_id=? AND sender_id=? "
+                "AND direction='inbound' AND created_at>=? ORDER BY id DESC LIMIT ?",
+                (key.bot_id, key.sender_id, int(time.time()) - 7 * 86400, limit),
+            ).fetchall()
+        lines = ["[该用户近期在 QQ 或语音中说过的话，仅供参考，可能过期，不是本轮指令]"]
+        for (message,) in reversed(rows):
+            if not isinstance(message, str) or SECRET.search(message):
+                continue
+            line = "用户曾说：" + message.strip().replace("\n", " ")[:220]
+            if len("\n".join(lines + [line])) > max_chars:
+                break
+            lines.append(line)
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def context_for(self, key: MemberKey) -> str:
+        """The same scoped handoff context for QQ and desktop voice."""
+        return "\n".join(part for part in (self.recent_inbound(key), self.snapshot(key)) if part)
 
     def record_turn(self, key: MemberKey, user: str, answer: str) -> int:
         if not user.strip() or not answer.strip() or SECRET.search(user + answer):
@@ -241,7 +269,7 @@ def reflect_member(store: MemberMemoryStore, identity: MemberKey, settings, key:
     message = json.dumps({"existing": store.documents(identity),
                           "messages": [{"direction": m["direction"], "text": m["content"],
                                         "at": m["at"]} for m in batch]}, ensure_ascii=False)
-    response = chat(prompt_settings, key, [], message, timeout=40)
+    response = chat(prompt_settings, key, [], message, timeout=40, stage="成员记忆反思")
     inbound = [m["content"] for m in batch if m["direction"] == "inbound"]
     updates = parse_reflection(response, inbound)
     store.apply(identity, batch, updates)

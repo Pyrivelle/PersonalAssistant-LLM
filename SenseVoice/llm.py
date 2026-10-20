@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from persona import DEFAULT_PROMPT, migrate_legacy_prompt
+from activity_log import log_event
 
 
 ROOT = Path(__file__).resolve().parent
@@ -163,7 +165,7 @@ def list_models(settings: LlmSettings, key: str, *, timeout: float = 12) -> list
     return models
 
 
-def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", timeout: float = 60) -> str:
+def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", timeout: float = 60, stage: str = "回复") -> str:
     settings = settings.validated()
     if not user_text.strip():
         raise ValueError("请先输入消息")
@@ -194,19 +196,27 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
     if key:
         headers["Authorization"] = f"Bearer {key}"
     request = urllib.request.Request(settings.base_url + "/chat/completions", data=payload, headers=headers, method="POST")
+    started = time.monotonic()
+    log_event("模型", "调用", f"{stage} · {PROVIDERS[settings.provider]} / {settings.model} · chat/completions")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = response.read(2_000_001)
     except urllib.error.HTTPError as error:
+        log_event("模型", "失败", f"{stage} · HTTP {error.code} · {time.monotonic() - started:.1f} 秒")
         raise RuntimeError(f"模型服务返回 HTTP {error.code}；请检查密钥、模型 ID 和账户额度") from None
     except (urllib.error.URLError, TimeoutError) as error:
+        log_event("模型", "失败", f"{stage} · 连接失败 · {time.monotonic() - started:.1f} 秒")
         raise RuntimeError(f"无法连接模型服务：{getattr(error, 'reason', '请求超时')}") from None
     if len(body) > 2_000_000:
+        log_event("模型", "失败", f"{stage} · 响应过大")
         raise RuntimeError("模型响应过大")
     try:
         content = json.loads(body)["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError):
+        log_event("模型", "失败", f"{stage} · 返回格式错误")
         raise RuntimeError("模型返回格式不符合 chat/completions 协议") from None
     if not isinstance(content, str) or not content.strip():
+        log_event("模型", "失败", f"{stage} · 空回复")
         raise RuntimeError("模型没有返回可显示的文字")
+    log_event("模型", "完成", f"{stage} · {time.monotonic() - started:.1f} 秒 · {len(content)} 字")
     return content.strip()

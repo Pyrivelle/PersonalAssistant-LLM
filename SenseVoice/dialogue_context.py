@@ -9,6 +9,7 @@ import json
 import re
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -137,11 +138,11 @@ class DialogueStore:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS sessions (scope TEXT PRIMARY KEY, updated_at INTEGER NOT NULL, payload TEXT NOT NULL)")
 
     def load(self, scope: str) -> DialogueContext:
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             row = db.execute("SELECT updated_at, payload FROM sessions WHERE scope=?", (scope,)).fetchone()
             if not row:
                 return DialogueContext()
@@ -155,11 +156,11 @@ class DialogueStore:
 
     def save(self, scope: str, context: DialogueContext) -> None:
         blob = json.dumps(context.to_dict(), ensure_ascii=False)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("INSERT INTO sessions(scope,updated_at,payload) VALUES(?,?,?) "
                        "ON CONFLICT(scope) DO UPDATE SET updated_at=excluded.updated_at,payload=excluded.payload",
                        (scope, int(time.time()), blob))
 
     def delete(self, scope: str) -> None:
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("DELETE FROM sessions WHERE scope=?", (scope,))

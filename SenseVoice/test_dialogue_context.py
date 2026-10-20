@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from dialogue_context import DialogueContext, DialogueStore, RECENT_MESSAGES, MAX_NOTE_CHARS
@@ -52,7 +53,7 @@ class DialogueContextTests(unittest.TestCase):
             context = DialogueContext()
             context.commit("今天好开心", "真好")
             store.save("private:0:42", context)
-            with sqlite3.connect(store.path) as connection:
+            with closing(sqlite3.connect(store.path)) as connection, connection:
                 connection.execute("UPDATE sessions SET updated_at = 1")
             self.assertFalse(store.load("private:0:42").history)
 

@@ -32,7 +32,9 @@ from PySide6.QtWidgets import (
 )
 
 from continuous import StreamingVad
-from chat_worker import ChatWorker, MemoryWriteWorker
+from chat_worker import ChatWorker, MemoryWriteWorker, OwnerMemoryWriteWorker
+from owner_memory import load_link
+from activity_log import log_event
 from emotion import EmotionState
 from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings
@@ -199,6 +201,7 @@ class MainWindow(QMainWindow):
         self.chat_worker: ChatWorker | None = None
         self.chat_workers: dict[int, ChatWorker] = {}
         self.memory_workers: set[MemoryWriteWorker] = set()
+        self.owner_memory_workers: set[OwnerMemoryWriteWorker] = set()
         self.turn_serial = 0
         self.active_turn: int | None = None
         self.pending_message = ""
@@ -648,6 +651,7 @@ class MainWindow(QMainWindow):
             self.speech_started_at = None
             self.speech_started_during_playback = False
             return
+        log_event("语音", "识别", f"{language or '未知语言'} · {text}")
         started_during_playback = self.speech_started_during_playback
         self.speech_started_during_playback = False
         if self.interaction_state == InteractionState.SPEAKING or started_during_playback:
@@ -701,7 +705,7 @@ class MainWindow(QMainWindow):
         self.speech_started_at = None
         self.set_interaction_state(InteractionState.THINKING)
         worker = ChatWorker(settings, key, list(self.chat_history), message, self,
-                            emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt())
+                            emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt(), source="语音")
         self.chat_worker = worker
         self.chat_workers[turn] = worker
         worker.replied.connect(lambda reply, turn=turn: self.chat_replied(turn, reply))
@@ -744,14 +748,25 @@ class MainWindow(QMainWindow):
         self.chat_worker = None
         self.pending_message = ""
         self.result_edit.appendPlainText(f"庄方宜：{reply}\n")
+        log_event("语音", "回复", reply)
         if memory_enabled and not getattr(worker, "memory_command", False):
             writer = MemoryWriteWorker(answered_message, reply, self)
             self.memory_workers.add(writer)
             writer.failed.connect(lambda warning: self.result_edit.appendPlainText(f"系统：{warning}\n"))
             writer.finished.connect(lambda w=writer: self.memory_write_finished(w))
             writer.start()
+        if worker and not getattr(worker, "memory_command", False):
+            owner = load_link()
+            if owner is not None:
+                writer = OwnerMemoryWriteWorker(owner, answered_message, reply,
+                                                worker.settings, worker.key, self)
+                self.owner_memory_workers.add(writer)
+                writer.failed.connect(lambda warning: self.result_edit.appendPlainText(f"系统：{warning}\n"))
+                writer.finished.connect(lambda w=writer: self.owner_memory_write_finished(w))
+                writer.start()
         if self.speak_reply.isChecked() and self.tts is not None:
             self.tts_chunks = speech_chunks(reply, limit=42 if self.barge_in_mode.currentData() == "speakers" else 90)
+            log_event("语音", "播报", f"准备播放 {len(self.tts_chunks)} 段语音")
             self.spoken_answer = reply
             if self.tts_chunks:
                 self.tts_pending = True
@@ -806,6 +821,10 @@ class MainWindow(QMainWindow):
 
     def memory_write_finished(self, worker: MemoryWriteWorker) -> None:
         self.memory_workers.discard(worker)
+        worker.deleteLater()
+
+    def owner_memory_write_finished(self, worker: OwnerMemoryWriteWorker) -> None:
+        self.owner_memory_workers.discard(worker)
         worker.deleteLater()
 
     @Slot()
@@ -964,6 +983,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str)
     def show_result(self, text: str, language: str) -> None:
+        log_event("语音", "识别", f"{language or '未知语言'} · {text or '未识别到文字'}")
         self.result_edit.setPlainText(text)
         self.copy_button.setEnabled(bool(text))
         self.status_label.setText(f"识别完成 · {language or '语言未知'}" if text else "已处理音频，但没有识别到文字")
@@ -1040,6 +1060,9 @@ class MainWindow(QMainWindow):
             if worker.isRunning():
                 worker.wait()
         for worker in tuple(self.memory_workers):
+            if worker.isRunning():
+                worker.wait()
+        for worker in tuple(self.owner_memory_workers):
             if worker.isRunning():
                 worker.wait()
         super().closeEvent(event)

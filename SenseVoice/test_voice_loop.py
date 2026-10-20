@@ -14,6 +14,7 @@ from PySide6.QtTextToSpeech import QTextToSpeech
 from PySide6.QtWidgets import QApplication
 
 import gui
+from llm import LlmSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from wake import ConversationGate
 
@@ -103,6 +104,17 @@ class VoiceLoopTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        # Voice-loop tests must not use the owner's local Mem0/API setting.
+        self.settings_patch = patch.object(gui, "load_settings", return_value=LlmSettings(memory_enabled=False))
+        self.settings_patch.start()
+        self.owner_patch = patch.object(gui, "load_link", return_value=None)
+        self.owner_patch.start()
+
+    def tearDown(self):
+        self.owner_patch.stop()
+        self.settings_patch.stop()
 
     def test_wake_sends_command_once_and_resumes_capture(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(gui, "SETTINGS", Path(directory) / "settings.json"):

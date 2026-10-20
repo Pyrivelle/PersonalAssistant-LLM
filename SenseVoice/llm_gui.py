@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from chat_worker import ChatWorker, MemoryWriteWorker
+from activity_log import log_event
 from emotion import EmotionState
 from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings
@@ -298,7 +299,7 @@ class ChatWindow(QMainWindow):
             self.status.setText(f"请先输入并保存{PROVIDERS[settings.provider]} API Key")
             return
         self.worker = ChatWorker(settings, key, list(self.history), message, self,
-                                 emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt())
+                                 emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt(), source="文字")
         self.worker.replied.connect(self.show_reply)
         self.worker.failed.connect(self.show_error)
         self.worker.memory_warning.connect(self.show_memory_warning)
@@ -328,6 +329,7 @@ class ChatWindow(QMainWindow):
             except Exception as error:
                 print(f"桌面上下文保存失败：{type(error).__name__}")
         self.transcript.appendPlainText(f"你：{message}\n庄方宜：{reply}\n")
+        log_event("文字", "回复", reply)
         self.input.clear()
         self.status.setText("回复完成")
         if self.worker.settings.memory_enabled and not self.worker.memory_command:

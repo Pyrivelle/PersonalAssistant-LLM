@@ -104,5 +104,5 @@ def plan_turn(settings, api_key: str, history: list[dict[str, str]],
     from llm import chat
     planner_settings = replace(settings, model=config.model or settings.model,
                                system_prompt=PLANNER_PROMPT, memory_enabled=False)
-    reply = chat(planner_settings, api_key, history[-8:], user_text[:1500], timeout=15)
+    reply = chat(planner_settings, api_key, history[-8:], user_text[:1500], timeout=15, stage="思考")
     return parse_plan(reply, direct_message=direct_message)

@@ -12,6 +12,7 @@ import uuid
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from activity_log import log_event
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,6 +25,7 @@ from fangyi_skill import guidance as fangyi_guidance
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
 LOCK_FILE = ROOT / ".qq_bridge.lock"
+IDENTITY_FILE = ROOT / "qq_identity.json"
 CQ_CODE = re.compile(r"\[CQ:[^\]]+\]")
 CQ_AT = re.compile(r"\[CQ:at,qq=(\d+)(?:,[^\]]*)?\]")
 
@@ -293,6 +295,7 @@ class QqBridge:
         if not state.pending:
             state.first_arrival = now
         state.pending.append(incoming.text)
+        log_event("QQ", "收到", f"{incoming.scope} · {incoming.text}")
         state.pending = state.pending[-4:]
         state.last_arrival = now
         if state.task is None or state.task.done():
@@ -319,6 +322,7 @@ class QqBridge:
             message = "\n".join(state.pending)
             state.pending.clear()
             current = state.incoming
+            log_event("QQ", "消息", f"{current.scope} · {message}")
             try:
                 if (current.kind == "private" and
                         message.strip() in {"/forget_me", "/删除我的记忆"}):
@@ -351,8 +355,12 @@ class QqBridge:
                             plan = await asyncio.to_thread(
                                 plan_turn, settings, key, state.context.history, message,
                                 self.planner_settings)
+                            log_event("QQ", "思考", f"{current.scope} · 语气：{plan.tone}；关注：{plan.attention or '当前话题'}；置信度：{plan.confidence:.2f}")
                         except Exception as error:
                             print(f"可选思考阶段失败，改为直接回复：{type(error).__name__}")
+                            log_event("QQ", "思考", f"{current.scope} · 阶段跳过：{type(error).__name__}")
+                    else:
+                        log_event("QQ", "思考", f"{current.scope} · 可选思考阶段未启用，直接生成回复")
                     emotion_prompt = candidate.to_prompt()
                     if plan.prompt():
                         emotion_prompt += "\n" + plan.prompt()
@@ -360,12 +368,14 @@ class QqBridge:
                                             enabled=self.planner_settings.fangyi_scene_skill)
                     if scene:
                         emotion_prompt += "\n" + scene
+                        log_event("QQ", "角色场景", f"{current.scope} · {scene}")
                     member_key = None
                     member_snapshot = ""
                     if (self.member_store is not None and current.kind == "private"
                             and current.user_id in self.planner_settings.memory_private_ids):
                         member_key = MemberKey(self.bot_id, current.user_id)
-                        member_snapshot = await asyncio.to_thread(self.member_store.snapshot, member_key)
+                        member_snapshot = await asyncio.to_thread(self.member_store.context_for, member_key)
+                        log_event("记忆", "读取", f"{current.scope} · QQ 个人记忆 {'已提供' if member_snapshot else '暂无'}")
                     notes = state.context.prompt()
                     if member_snapshot:
                         # LLMClient caps extra context; keep the member identity
@@ -391,11 +401,13 @@ class QqBridge:
                             count = await asyncio.to_thread(
                                 self.member_store.record_turn, member_key, message, reply)
                             if count >= REFLECT_AFTER_TURNS:
+                                log_event("记忆", "排队", f"{current.scope} · 已完成 {count} 轮，准备后台反思")
                                 self.queue_member_reflection(member_key, settings, key)
                         except Exception as error:
                             print(f"QQ 用户记忆排队失败：{type(error).__name__}")
             except Exception as error:
                 print(f"QQ 回复失败（{current.scope}）：{type(error).__name__}: {error}")
+                log_event("QQ", "失败", f"{current.scope} · {type(error).__name__}: {error}")
 
     def queue_member_reflection(self, identity: MemberKey, settings, api_key: str) -> None:
         previous = self.reflection_tasks.get(identity)
@@ -411,11 +423,13 @@ class QqBridge:
             async with self.reflection_lock:
                 await asyncio.to_thread(reflect_member, self.member_store, identity, settings, api_key)
             self.reflection_retry_at.pop(identity, None)
+            log_event("记忆", "完成", f"bot:{identity.bot_id}:private:{identity.sender_id} · 个人记忆反思完成")
         except asyncio.CancelledError:
             raise
         except Exception as error:
             self.reflection_retry_at[identity] = time.monotonic() + 120
             print(f"QQ 用户记忆反思失败，保留待处理消息：{type(error).__name__}")
+            log_event("记忆", "失败", f"bot:{identity.bot_id}:private:{identity.sender_id} · 反思失败：{type(error).__name__}")
 
     async def send_reply(self, incoming: Incoming, reply: str) -> bool:
         async with self.send_lock:
@@ -436,6 +450,7 @@ class QqBridge:
                                 {"type": "text", "data": {"text": " " + reply}}]})
             self.limiter.mark_sent(incoming, time.monotonic())
             print("已投递 QQ 私聊回复" if incoming.kind == "private" else "已投递 QQ 群回复", flush=True)
+            log_event("QQ", "回复", f"{incoming.scope} · {reply}")
             return True
 
     async def run_forever(self) -> None:
@@ -452,6 +467,13 @@ class QqBridge:
                     receiver = asyncio.create_task(self.receive())
                     login = await self.action("get_login_info", {})
                     self.bot_id = int(login["user_id"])
+                    try:
+                        identity_path = IDENTITY_FILE
+                        temporary = identity_path.with_suffix(".tmp")
+                        temporary.write_text(json.dumps({"bot_id": self.bot_id}) + "\n", encoding="utf-8")
+                        os.replace(temporary, identity_path)
+                    except OSError as error:
+                        print(f"无法保存当前机器人账号供语音关联：{error}")
                     for event in self.early_events:
                         self.accept(event)
                     self.early_events.clear()

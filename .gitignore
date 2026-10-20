@@ -25,3 +25,6 @@ Sakura-source/
 # Opt-in planning and local emotional-history database.
 **/cognition_settings.json
 **/conversation_data/
+**/logs/
+**/owner_link.json
+**/qq_identity.json

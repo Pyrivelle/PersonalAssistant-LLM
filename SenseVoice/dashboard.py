@@ -7,17 +7,20 @@ import os
 import socket
 import sys
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QFontDatabase
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
-    QScrollArea, QSpinBox, QDoubleSpinBox, QStackedWidget, QVBoxLayout, QWidget,
+    QScrollArea, QSpinBox, QDoubleSpinBox, QStackedWidget, QSystemTrayIcon,
+    QVBoxLayout, QWidget,
 )
 
+from activity_log import LOG_DIR, available_days, format_event, log_event, read_day
 from llm import (
     DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
     PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
@@ -25,6 +28,7 @@ from llm import (
 )
 from model_catalog import ModelCatalogWorker
 from persona_packs import BUILTIN_PACKS, matching_pack
+from owner_memory import current_bot_id, load_link, save_link
 from qq_bridge import QqSettings, SETTINGS_FILE as QQ_SETTINGS_FILE, load_snowluma_token
 
 
@@ -100,6 +104,21 @@ def _port_open(url: str) -> bool:
         return False
 
 
+def _app_icon() -> QIcon:
+    canvas = QPixmap(64, 64)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#5269c8"))
+    painter.drawEllipse(3, 3, 58, 58)
+    painter.setPen(QColor("#ffffff"))
+    painter.setFont(QFont("Microsoft YaHei UI", 27, QFont.Weight.Bold))
+    painter.drawText(canvas.rect(), Qt.AlignmentFlag.AlignCenter, "庄")
+    painter.end()
+    return QIcon(canvas)
+
+
 class Dashboard(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -113,6 +132,9 @@ class Dashboard(QMainWindow):
         self._auto_bridge_pending = False
         self._bridge_connected = False
         self._closing = False
+        self._really_quit = False
+        self._tray_hint_shown = False
+        self.setWindowIcon(_app_icon())
         self.snowluma = QProcess(self)
         self.bridge = QProcess(self)
         self._managed = {self.snowluma: "SnowLuma", self.bridge: "QQ 桥接"}
@@ -143,7 +165,7 @@ class Dashboard(QMainWindow):
         side.addWidget(subbrand)
         side.addSpacing(36)
         self.nav = []
-        for name in ("总览", "模型与人格", "QQ · SnowLuma"):
+        for name in ("总览", "模型与人格", "QQ · SnowLuma", "运行日志", "回到家 · 语音"):
             button = _button(name, lambda _checked=False, i=len(self.nav): self.switch_page(i))
             button.setObjectName("nav")
             side.addWidget(button)
@@ -154,7 +176,7 @@ class Dashboard(QMainWindow):
         side.addWidget(_button("文字对话测试  ↗", self.open_chat))
         side.addWidget(_button("长期记忆管理  ↗", self.open_memory))
         side.addStretch()
-        note = QLabel("设置保存在本机\n关闭控制台会停止由此启动的服务")
+        note = QLabel("设置与日志保存在本机\n关闭窗口会驻留托盘；从托盘退出会停止服务")
         note.setObjectName("sideNote")
         note.setWordWrap(True)
         side.addWidget(note)
@@ -166,6 +188,8 @@ class Dashboard(QMainWindow):
         self.pages.addWidget(self._overview())
         self.pages.addWidget(self._model_page())
         self.pages.addWidget(self._qq_page())
+        self.pages.addWidget(self._logs_page())
+        self.pages.addWidget(self._home_voice_page())
         self.switch_page(0)
         self.setStyleSheet(STYLE)
         self.statusBar().showMessage("控制台就绪")
@@ -173,7 +197,58 @@ class Dashboard(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
+        self.log_timer = QTimer(self)
+        self.log_timer.timeout.connect(self.refresh_logs)
+        self.log_timer.start(1500)
+        self._setup_tray()
         self.refresh_status()
+        self._log("控制台已启动")
+        self.refresh_logs()
+
+    def _setup_tray(self) -> None:
+        self.tray = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self.tray = QSystemTrayIcon(self.windowIcon(), self)
+        self.tray.setToolTip("庄方宜 · Shimano")
+        menu = self.tray.contextMenu()
+        if menu is None:
+            from PySide6.QtWidgets import QMenu
+            menu = QMenu(self)
+        for label, callback in (("打开控制台", self.show_console),
+                                ("打开语音窗口", self.open_voice),
+                                ("回到家 · 语音", lambda: self.show_console(4)),
+                                ("查看运行日志", lambda: self.show_console(3))):
+            action = QAction(label, self)
+            action.triggered.connect(callback)
+            menu.addAction(action)
+        menu.addSeparator()
+        quit_action = QAction("退出 Shimano", self)
+        quit_action.triggered.connect(self.quit_app)
+        menu.addAction(quit_action)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(lambda reason: self.show_console()
+                                    if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                                                  QSystemTrayIcon.ActivationReason.DoubleClick) else None)
+        self.tray.show()
+        QApplication.instance().setQuitOnLastWindowClosed(False)
+
+    def show_console(self, page: int | None = None) -> None:
+        if type(page) is int:
+            self.switch_page(page)
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def quit_app(self) -> None:
+        self._really_quit = True
+        self.close()
+        for window in (self.voice_window, self.chat_window, self.memory_window):
+            if window is not None:
+                window.close()
+        if self.tray is not None:
+            self.tray.hide()
+        QApplication.instance().quit()
 
     def _page(self, title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
         wrapper = QScrollArea()
@@ -199,6 +274,7 @@ class Dashboard(QMainWindow):
         hero, layout = _card("语音对话", "本机 SenseVoice 识别 + 唤醒监听 + 模型回复 + 分段语音播报。")
         actions = QHBoxLayout()
         actions.addWidget(_button("打开语音窗口", self.open_voice, primary=True))
+        actions.addWidget(_button("回到家 · 开始语音", lambda: self.switch_page(4)))
         actions.addWidget(_button("文字测试", self.open_chat))
         actions.addStretch()
         layout.addLayout(actions)
@@ -391,6 +467,269 @@ class Dashboard(QMainWindow):
         column.addStretch()
         return page
 
+    def _logs_page(self) -> QScrollArea:
+        page, column = self._page(
+            "运行日志", "按时间查看语音、文字、QQ 与模型调用过程。这里的“思考”是可选规划器的简短策略，不是模型内部推理。")
+        card, layout = _card("对话与调用记录", "日志保存在本机 logs/，包含消息与回复正文；密钥会遮盖。日志文件不会提交到 Git。")
+        controls = QHBoxLayout()
+        self.log_day = QComboBox()
+        self.log_day.addItems(available_days() or [date.today().isoformat()])
+        self.log_day.currentIndexChanged.connect(lambda _index: self.refresh_logs(force=True))
+        controls.addWidget(QLabel("日期"))
+        controls.addWidget(self.log_day)
+        self.log_filter = QComboBox()
+        self.log_filter.addItems(("全部来源", "控制台", "语音", "文字", "QQ", "模型", "记忆", "SnowLuma"))
+        self.log_filter.currentIndexChanged.connect(lambda _index: self.refresh_logs(force=True))
+        controls.addWidget(QLabel("来源"))
+        controls.addWidget(self.log_filter)
+        self.log_search = QLineEdit()
+        self.log_search.setPlaceholderText("搜索消息、回复或状态")
+        self.log_search.textChanged.connect(lambda _text: self.refresh_logs(force=True))
+        controls.addWidget(self.log_search, 1)
+        layout.addLayout(controls)
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        self.log_view.setMinimumHeight(370)
+        self.log_view.setPlaceholderText("操作、消息、模型调用与回复将按时间出现在这里。")
+        layout.addWidget(self.log_view)
+        bottom = QHBoxLayout()
+        self.log_count = QLabel()
+        bottom.addWidget(self.log_count)
+        bottom.addStretch()
+        bottom.addWidget(_button("刷新", lambda: self.refresh_logs(force=True)))
+        bottom.addWidget(_button("复制当前视图", lambda: QApplication.clipboard().setText(self.log_view.toPlainText())))
+        bottom.addWidget(_button("打开日志目录  ↗", self.open_log_dir))
+        layout.addLayout(bottom)
+        column.addWidget(card)
+        column.addStretch()
+        self._log_signature = None
+        return page
+
+    def _home_voice_page(self) -> QScrollArea:
+        page, column = self._page(
+            "回到家，和庄方宜说话。",
+            "选择麦克风后开启持续监听；说“庄方宜”“庄天师”或“小庄”唤醒，接下来可以自然接话。识别在本机运行，模型回复和记忆反思使用当前 API。")
+        link_card, link_layout = _card("同一个人，同一份记忆",
+                                      "将本机语音明确关联到你的 QQ 私聊账号。只共享个人长期档案；两个入口的最近对话上下文仍分别保存。")
+        self.voice_link_state = QLabel()
+        self.voice_link_state.setWordWrap(True)
+        link_layout.addWidget(self.voice_link_state)
+        link_row = QHBoxLayout()
+        self.voice_owner_qq = _line("关联的个人 QQ 号", "964692788")
+        self.voice_owner_qq.setMaximumWidth(190)
+        linked = load_link(validate=False)
+        if linked is not None:
+            self.voice_owner_qq.setText(str(linked.qq_id))
+        link_row.addWidget(QLabel("你的 QQ 号"))
+        link_row.addWidget(self.voice_owner_qq)
+        link_row.addWidget(_button("关联到当前机器人", self.link_voice_owner))
+        link_row.addStretch()
+        link_layout.addLayout(link_row)
+        self.voice_link_feedback = QLabel("仅白名单中已开启个人记忆的 QQ 账号可以关联。")
+        self.voice_link_feedback.setObjectName("muted")
+        self.voice_link_feedback.setWordWrap(True)
+        link_layout.addWidget(self.voice_link_feedback)
+        column.addWidget(link_card)
+
+        control, layout = _card("语音对话", "开始后会持续监听，唤醒后自动将识别文字发给模型，并通过扬声器分段播报。")
+        self.home_voice_state = QLabel("尚未启动")
+        layout.addWidget(self.home_voice_state)
+        form = QFormLayout()
+        self.home_mic = QComboBox()
+        self.home_mic.setMinimumContentsLength(38)
+        self.home_mic.currentIndexChanged.connect(self.select_home_mic)
+        mic_row = QHBoxLayout()
+        mic_row.addWidget(self.home_mic, 1)
+        mic_row.addWidget(_button("刷新设备", self.refresh_home_devices))
+        form.addRow("麦克风", mic_row)
+        self.home_voice = QComboBox()
+        self.home_voice.currentIndexChanged.connect(self.select_home_voice)
+        form.addRow("播报声音", self.home_voice)
+        layout.addLayout(form)
+        action_row = QHBoxLayout()
+        self.home_start = _button("开始回家对话", self.start_home_voice, primary=True)
+        self.home_stop = _button("停止监听", self.stop_home_voice)
+        action_row.addWidget(self.home_start)
+        action_row.addWidget(self.home_stop)
+        action_row.addWidget(_button("打开完整语音窗口  ↗", self.open_voice))
+        action_row.addStretch()
+        layout.addLayout(action_row)
+        tests = QHBoxLayout()
+        self.home_record = _button("单句麦克风测试", self.toggle_home_record)
+        tests.addWidget(self.home_record)
+        tests.addWidget(_button("示例音频识别", self.try_home_sample))
+        self.home_tts_test = _button("播报测试", self.test_home_tts)
+        tests.addWidget(self.home_tts_test)
+        tests.addStretch()
+        layout.addLayout(tests)
+        self.home_transcript = QPlainTextEdit()
+        self.home_transcript.setReadOnly(True)
+        self.home_transcript.setMinimumHeight(180)
+        self.home_transcript.setPlaceholderText("识别文字和模型回复会在这里同步显示。")
+        layout.addWidget(self.home_transcript)
+        column.addWidget(control)
+        column.addStretch()
+        self.refresh_home_voice_status()
+        return page
+
+    def _ensure_voice(self):
+        if self.voice_window is None:
+            from gui import MainWindow
+            self.voice_window = MainWindow()
+        return self.voice_window
+
+    def refresh_home_devices(self) -> None:
+        voice = self._ensure_voice()
+        if voice.continuous_worker is None and voice.stream is None:
+            voice.refresh_devices()
+        self.home_mic.blockSignals(True)
+        self.home_mic.clear()
+        for index in range(voice.device_combo.count()):
+            self.home_mic.addItem(voice.device_combo.itemText(index), voice.device_combo.itemData(index))
+        self.home_mic.setCurrentIndex(voice.device_combo.currentIndex())
+        self.home_mic.blockSignals(False)
+        self.home_voice.blockSignals(True)
+        self.home_voice.clear()
+        for index in range(voice.voice_combo.count()):
+            self.home_voice.addItem(voice.voice_combo.itemText(index), index)
+        self.home_voice.setCurrentIndex(voice.voice_combo.currentIndex())
+        self.home_voice.blockSignals(False)
+        self.refresh_home_voice_status()
+
+    def select_home_mic(self) -> None:
+        if self.voice_window is not None and self.voice_window.device_combo.isEnabled():
+            self.voice_window.device_combo.setCurrentIndex(self.home_mic.currentIndex())
+
+    def select_home_voice(self) -> None:
+        if self.voice_window is not None:
+            self.voice_window.voice_combo.setCurrentIndex(self.home_voice.currentIndex())
+
+    def link_voice_owner(self) -> None:
+        try:
+            raw = self.voice_owner_qq.text().strip()
+            if not raw.isdecimal() or int(raw) <= 0:
+                raise ValueError("请输入有效的 QQ 号")
+            bot_id = current_bot_id()
+            if bot_id is None:
+                raise ValueError("尚未取得机器人账号；请先连接 QQ 桥接")
+            link = save_link(bot_id, int(raw))
+            self.voice_link_feedback.setText(f"已关联 QQ {link.qq_id}。从下一轮语音对话开始共享个人记忆。")
+            self._log(f"语音已关联个人 QQ {link.qq_id}")
+        except (OSError, ValueError, TypeError) as error:
+            self.voice_link_feedback.setText(f"关联失败：{error}")
+        self.refresh_home_voice_status()
+
+    def start_home_voice(self) -> None:
+        voice = self._ensure_voice()
+        if voice.continuous_worker is not None:
+            self.open_voice()
+            return
+        if voice.stream is not None:
+            self.voice_link_feedback.setText("请先停止单句麦克风测试。")
+            return
+        voice.auto_reply.setChecked(True)
+        if voice.tts is not None:
+            voice.speak_reply.setChecked(True)
+        voice.start_continuous()
+        self.refresh_home_voice_status()
+        self._log("已从回到家页面开启语音监听")
+
+    def stop_home_voice(self) -> None:
+        voice = self.voice_window
+        if voice is not None and voice.continuous_worker is not None:
+            voice.stop_continuous()
+        self.refresh_home_voice_status()
+
+    def toggle_home_record(self) -> None:
+        voice = self._ensure_voice()
+        if voice.continuous_worker is not None:
+            self.voice_link_feedback.setText("请先停止持续监听，再做单句测试。")
+            return
+        voice.toggle_recording()
+        self.refresh_home_voice_status()
+
+    def try_home_sample(self) -> None:
+        voice = self._ensure_voice()
+        if voice.continuous_worker is None and voice.stream is None:
+            voice.try_sample()
+        self.refresh_home_voice_status()
+
+    def test_home_tts(self) -> None:
+        voice = self._ensure_voice()
+        if voice.tts is not None and voice.continuous_worker is None:
+            voice.tts.say("欢迎回来，我在这里。")
+        self.refresh_home_voice_status()
+
+    def refresh_home_voice_status(self) -> None:
+        if not hasattr(self, "voice_link_state"):
+            return
+        link = load_link()
+        self.voice_link_state.setText(
+            f"已连接：QQ {link.qq_id} · 机器人 {link.bot_id} · 使用同一个个人记忆库" if link else
+            "尚未建立有效关联。语音目前不会读取或写入 QQ 个人档案。")
+        voice = self.voice_window
+        if voice is None:
+            self.home_voice_state.setText("语音未启动 · 可先选设备并测试")
+            self.home_stop.setEnabled(False)
+            self.home_record.setText("单句麦克风测试")
+            return
+        active = voice.continuous_worker is not None
+        self.home_voice_state.setText(voice.state_label.text() + " · " + voice.status_label.text())
+        self.home_stop.setEnabled(active)
+        self.home_start.setEnabled(not active and voice.worker is None and voice.stream is None)
+        self.home_mic.setEnabled(voice.device_combo.isEnabled())
+        self.home_record.setText("停止单句录音" if voice.stream is not None else "单句麦克风测试")
+        self.home_record.setEnabled(not active)
+        self.home_tts_test.setEnabled(voice.tts is not None and not active)
+        if self.home_mic.currentIndex() != voice.device_combo.currentIndex():
+            self.home_mic.blockSignals(True)
+            self.home_mic.setCurrentIndex(voice.device_combo.currentIndex())
+            self.home_mic.blockSignals(False)
+        transcript = voice.result_edit.toPlainText()
+        if transcript != self.home_transcript.toPlainText():
+            self.home_transcript.setPlainText(transcript)
+            self.home_transcript.moveCursor(QTextCursor.MoveOperation.End)
+
+    def open_log_dir(self) -> None:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR)))
+
+    def refresh_logs(self, *, force: bool = False) -> None:
+        days = available_days()
+        selected = self.log_day.currentText()
+        if days and (self.log_day.count() != len(days) or
+                     [self.log_day.itemText(i) for i in range(self.log_day.count())] != days):
+            self.log_day.blockSignals(True)
+            self.log_day.clear()
+            self.log_day.addItems(days)
+            self.log_day.setCurrentText(selected if selected in days else days[0])
+            self.log_day.blockSignals(False)
+            force = True
+        day = self.log_day.currentText()
+        files = sorted(LOG_DIR.glob(f"activity-{day}-*.jsonl"))
+        signature = (day, tuple((str(path), path.stat().st_size, path.stat().st_mtime_ns)
+                                for path in files), self.log_filter.currentText(), self.log_search.text())
+        if not force and signature == self._log_signature:
+            return
+        self._log_signature = signature
+        entries = read_day(day)
+        source = self.log_filter.currentText()
+        query = self.log_search.text().strip().casefold()
+        lines = []
+        for entry in entries:
+            if source != "全部来源" and source not in str(entry["source"]):
+                continue
+            line = format_event(entry)
+            if not query or query in line.casefold():
+                lines.append(line)
+        scrollbar = self.log_view.verticalScrollBar()
+        at_end = scrollbar.value() >= scrollbar.maximum() - 3
+        old_position = scrollbar.value()
+        self.log_view.setPlainText("\n".join(lines))
+        scrollbar.setValue(scrollbar.maximum() if at_end else min(old_position, scrollbar.maximum()))
+        self.log_count.setText(f"显示 {len(lines)} / {len(entries)} 条 · {day}")
+
     @staticmethod
     def _number(value: float, minimum: int, maximum: int, *, decimal: bool = False) -> QSpinBox | QDoubleSpinBox:
         widget = QDoubleSpinBox() if decimal else QSpinBox()
@@ -403,6 +742,8 @@ class Dashboard(QMainWindow):
 
     def switch_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
+        if index == 4 and self.home_mic.count() == 0:
+            self.refresh_home_devices()
         for i, button in enumerate(self.nav):
             button.setProperty("selected", i == index)
             button.style().unpolish(button)
@@ -526,12 +867,11 @@ class Dashboard(QMainWindow):
             temporary.unlink(missing_ok=True)
 
     def open_voice(self) -> None:
-        if self.voice_window is None:
-            from gui import MainWindow
-            self.voice_window = MainWindow()
-        self.voice_window.show()
-        self.voice_window.raise_()
-        self.voice_window.activateWindow()
+        voice = self._ensure_voice()
+        voice.show()
+        voice.raise_()
+        voice.activateWindow()
+        self.refresh_home_devices()
 
     def open_chat(self) -> None:
         if self.chat_window is None:
@@ -615,8 +955,9 @@ class Dashboard(QMainWindow):
             process.waitForFinished(1500)
         self.refresh_status()
 
-    def _log(self, message: str) -> None:
+    def _log(self, message: str, source: str = "控制台") -> None:
         self.log.appendPlainText(message)
+        log_event(source, "服务", message)
 
     def _read_output(self, process: QProcess) -> None:
         if self._closing:
@@ -631,7 +972,7 @@ class Dashboard(QMainWindow):
                     self._bridge_connected = True
                 elif "连接中断" in message:
                     self._bridge_connected = False
-                self._log(f"[{self._managed[process]}] {message}")
+                self._log(f"[{self._managed[process]}] {message}", self._managed[process])
 
     def _process_error(self, process: QProcess) -> None:
         if self._closing:
@@ -651,6 +992,7 @@ class Dashboard(QMainWindow):
         self.refresh_status()
 
     def refresh_status(self) -> None:
+        self.refresh_home_voice_status()
         settings = load_settings()
         self.model_state.setText(f"模型：{settings.model}")
         self.api_state.setText("API Key：已保存" if load_key(settings.provider) else "API Key：未保存")
@@ -672,11 +1014,20 @@ class Dashboard(QMainWindow):
         self.bridge_button.setText("停止 QQ 桥接" if bridge_managed else "启动 QQ 桥接")
 
     def closeEvent(self, event) -> None:
+        if not self._really_quit and self.tray is not None and self.tray.isVisible():
+            event.ignore()
+            self.hide()
+            if not self._tray_hint_shown:
+                self.tray.showMessage("庄方宜仍在运行", "控制台已收起到系统托盘；从托盘菜单可以重新打开或退出。")
+                self._tray_hint_shown = True
+            return
         self._closing = True
         self.timer.stop()
+        self.log_timer.stop()
         for process in (self.bridge, self.snowluma):
             if process.state() != QProcess.ProcessState.NotRunning:
                 self._stop(process)
+        self._log("控制台退出")
         super().closeEvent(event)
 
 
@@ -715,6 +1066,8 @@ def main() -> None:
         QFontDatabase.addApplicationFont(str(font_file))
     window = Dashboard()
     window.show()
+    if "--start-services" in sys.argv:
+        QTimer.singleShot(0, window.toggle_snowluma)
     raise SystemExit(app.exec())
 
 

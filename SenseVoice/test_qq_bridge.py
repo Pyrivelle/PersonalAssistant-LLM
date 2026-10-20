@@ -13,6 +13,7 @@ from websockets.exceptions import ConnectionClosed
 import qq_bridge
 from llm import LlmSettings
 from qq_bridge import Conversation, Incoming, QqBridge, QqSettings, ReplyLimiter, parse_message
+from turn_planner import PlannerSettings
 
 
 class QqParsingTests(unittest.TestCase):
@@ -204,7 +205,9 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
                                   private_cooldown_seconds=0, quiet_seconds=0)
             with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
                  patch.object(qq_bridge, "load_key", return_value="test-key"), \
-                 patch.object(qq_bridge, "chat", return_value="你好，我是庄方宜"):
+                 patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()), \
+                 patch.object(qq_bridge, "chat", return_value="你好，我是庄方宜"), \
+                 patch.object(qq_bridge, "IDENTITY_FILE", Path(tempfile.gettempdir()) / "shimano-test-qq-identity.json"):
                 bridge = QqBridge(settings)
                 task = asyncio.create_task(bridge.run_forever())
                 try:

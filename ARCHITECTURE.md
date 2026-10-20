@@ -10,6 +10,7 @@ Shimano/
 ├─ SenseVoice/               Shimano 当前可运行的独立原型
 │  ├─ gui.py                 主界面、录音线程、流程协调、系统 TTS
 │  ├─ dashboard.py           统一控制台、设置编辑、服务状态与启停
+│  ├─ activity_log.py        本机跨进程活动日志，供控制台按日期查看
 │  ├─ continuous.py          流式 Silero VAD，分段与句尾检测
 │  ├─ recognize.py           SenseVoice 本地识别及命令行入口
 │  ├─ wake.py                唤醒别名校正、对话时间窗
@@ -83,6 +84,8 @@ QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot
 | 默认人格与表达规则 | `SenseVoice/persona.py`、`SenseVoice/llm_gui.py` | 编辑默认提示词或本机自定义提示词；保留旧设置与对话历史边界 |
 | 长期记忆 | `SenseVoice/memory.py`、`SenseVoice/memory_gui.py` | Mem0、Qdrant 与远程 Embedding；启用开关、记忆纠错、遗忘与本地目录隔离 |
 | QQ 消息桥接 | `SenseVoice/qq_bridge.py` | SnowLuma / OneBot 正向 WebSocket；白名单、@ 触发、去重、频率和独立历史 |
+| 跨端个人记忆 | `SenseVoice/owner_memory.py`、`SenseVoice/member_memory.py` | 本机显式关联机器人 QQ 与主人 QQ；语音和 QQ 共用该成员档案，短期上下文仍分开 |
+| 回到家语音控制 | `SenseVoice/dashboard.py`、`SenseVoice/gui.py` | 设备选择、持续监听、单句识别与 TTS 测试；共用同一个语音窗口实例 |
 | 文字调试与配置编辑 | `SenseVoice/llm_gui.py` | 调用 `llm.py` 的配置和聊天接口；不使用主界面的历史 |
 | 角色形象或桌宠窗口 | 尚无独立模块 | 可以新增表现层，优先消费现有状态与回复，避免复制语音/LLM 逻辑 |
 
