@@ -5,7 +5,8 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
 
-from llm import LlmSettings, chat
+from llm import ROOT, LlmSettings, chat
+from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from emotion import EmotionState
 
 
@@ -14,11 +15,12 @@ class ChatWorker(QThread):
     failed = Signal(str)
     memory_warning = Signal(str)
 
-    def __init__(self, settings: LlmSettings, key: str, history: list[dict[str, str]], message: str, parent: QWidget, emotion: EmotionState | None = None):
+    def __init__(self, settings: LlmSettings, key: str, history: list[dict[str, str]], message: str, parent: QWidget, emotion: EmotionState | None = None, context_notes: str = ""):
         super().__init__(parent)
         self.settings, self.key, self.history, self.message = settings, key, history, message
         self.memory_command = False
         self.emotion_candidate = emotion.observe(message) if emotion is not None else None
+        self.context_notes = context_notes
 
     def run(self) -> None:
         try:
@@ -48,8 +50,17 @@ class ChatWorker(QThread):
                     if self.memory_command:
                         raise
                     self.memory_warning.emit(f"记忆检索失败，本轮仍可对话：{error}")
+            plan = TurnPlan()
+            try:
+                planner_config = PlannerSettings.load(ROOT / "cognition_settings.json")
+                plan = plan_turn(self.settings, self.key, self.history, self.message, planner_config)
+            except Exception as error:
+                self.memory_warning.emit(f"可选思考阶段跳过：{type(error).__name__}")
+            emotion_prompt = self.emotion_candidate.to_prompt() if self.emotion_candidate else ""
+            if plan.prompt():
+                emotion_prompt += "\n" + plan.prompt()
             self.replied.emit(chat(self.settings, self.key, self.history, self.message, memories=memories,
-                                   emotion_context=self.emotion_candidate.to_prompt() if self.emotion_candidate else ""))
+                                   emotion_context=emotion_prompt, context_notes=self.context_notes))
         except Exception as error:
             self.failed.emit(str(error))
 
