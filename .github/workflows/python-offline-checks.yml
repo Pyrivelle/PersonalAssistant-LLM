@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feature/emotional-companion
+      - feature/member-memory-fangyi-skill
 
 jobs:
   test-context-and-qq:
