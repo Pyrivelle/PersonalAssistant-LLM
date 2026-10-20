@@ -6,6 +6,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
 
 from llm import LlmSettings, chat
+from emotion import EmotionState
 
 
 class ChatWorker(QThread):
@@ -13,10 +14,11 @@ class ChatWorker(QThread):
     failed = Signal(str)
     memory_warning = Signal(str)
 
-    def __init__(self, settings: LlmSettings, key: str, history: list[dict[str, str]], message: str, parent: QWidget):
+    def __init__(self, settings: LlmSettings, key: str, history: list[dict[str, str]], message: str, parent: QWidget, emotion: EmotionState | None = None):
         super().__init__(parent)
         self.settings, self.key, self.history, self.message = settings, key, history, message
         self.memory_command = False
+        self.emotion_candidate = emotion.observe(message) if emotion is not None else None
 
     def run(self) -> None:
         try:
@@ -46,7 +48,8 @@ class ChatWorker(QThread):
                     if self.memory_command:
                         raise
                     self.memory_warning.emit(f"记忆检索失败，本轮仍可对话：{error}")
-            self.replied.emit(chat(self.settings, self.key, self.history, self.message, memories=memories))
+            self.replied.emit(chat(self.settings, self.key, self.history, self.message, memories=memories,
+                                   emotion_context=self.emotion_candidate.to_prompt() if self.emotion_candidate else ""))
         except Exception as error:
             self.failed.emit(str(error))
 
