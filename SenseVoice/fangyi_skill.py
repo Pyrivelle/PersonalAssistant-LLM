@@ -66,7 +66,7 @@ def is_fangyi_persona(system_prompt: str) -> bool:
     """Never force this character's voice into an unrelated custom persona."""
     try:
         from persona_packs import matching_pack
-        if matching_pack(system_prompt) is not None:
+        if (pack := matching_pack(system_prompt)) is not None and pack.id == "zhuang_fangyi_v1":
             return True
     except (ImportError, ValueError):
         pass
