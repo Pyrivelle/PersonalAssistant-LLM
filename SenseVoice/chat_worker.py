@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QWidget
 from llm import ROOT, LlmSettings, chat
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from emotion import EmotionState
+from fangyi_skill import guidance as fangyi_guidance
 
 
 class ChatWorker(QThread):
@@ -51,6 +52,7 @@ class ChatWorker(QThread):
                         raise
                     self.memory_warning.emit(f"记忆检索失败，本轮仍可对话：{error}")
             plan = TurnPlan()
+            planner_config = PlannerSettings()
             try:
                 planner_config = PlannerSettings.load(ROOT / "cognition_settings.json")
                 plan = plan_turn(self.settings, self.key, self.history, self.message, planner_config)
@@ -59,6 +61,10 @@ class ChatWorker(QThread):
             emotion_prompt = self.emotion_candidate.to_prompt() if self.emotion_candidate else ""
             if plan.prompt():
                 emotion_prompt += "\n" + plan.prompt()
+            skill_hint = fangyi_guidance(self.settings.system_prompt, self.message,
+                                         enabled=planner_config.fangyi_scene_skill)
+            if skill_hint:
+                emotion_prompt += "\n" + skill_hint
             self.replied.emit(chat(self.settings, self.key, self.history, self.message, memories=memories,
                                    emotion_context=emotion_prompt, context_notes=self.context_notes))
         except Exception as error:
