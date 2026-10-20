@@ -142,6 +142,37 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(state.context.history)
                 bridge.send_reply.assert_awaited_once()
 
+    async def test_private_reply_receives_only_its_own_member_profile(self):
+        from member_memory import MemberKey
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cognition_settings.json").write_text(
+                json.dumps({"memory_private_ids": [42]}), encoding="utf-8")
+            with patch.object(qq_bridge, "ROOT", root):
+                bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                             private_cooldown_seconds=0, quiet_seconds=0))
+                bridge.bot_id = 88
+                bridge.member_store.apply(MemberKey(88, 42), [{"id": 1}], {
+                    "profile_add": [{"text": "用户在学习 C++", "evidence": "我在学习 C++"}],
+                })
+                bridge.member_store.apply(MemberKey(89, 42), [{"id": 2}], {
+                    "profile_add": [{"text": "另一个机器人账号的秘密", "evidence": "我的秘密"}],
+                })
+                seen = {}
+                def fake_chat(_settings, _key, _history, _message, **kwargs):
+                    seen["notes"] = kwargs.get("context_notes", "")
+                    return "我们继续聊吧"
+                incoming = Incoming("private", 42, None, "123", "你好")
+                state = Conversation(incoming, pending=["你好"])
+                bridge.send_reply = AsyncMock(return_value=True)
+                with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+                     patch.object(qq_bridge, "load_key", return_value="test-key"), \
+                     patch.object(qq_bridge, "chat", side_effect=fake_chat):
+                    await bridge.process(state)
+                self.assertIn("用户在学习 C++", seen["notes"])
+                self.assertNotIn("另一个机器人账号的秘密", seen["notes"])
+                bridge.send_reply.assert_awaited_once()
+
     async def test_mock_snowluma_receives_one_reply_and_ignores_duplicate(self):
         sent = asyncio.Event()
         actions = []
