@@ -17,9 +17,41 @@ ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env.local"
 SETTINGS_FILE = ROOT / "llm_settings.json"
 SILICONFLOW_URL = "https://api.siliconflow.cn/v1"
+DEEPSEEK_URL = "https://api.deepseek.com"
+KIMI_CN_URL = "https://api.moonshot.cn/v1"
+KIMI_GLOBAL_URL = "https://api.moonshot.ai/v1"
+HACHIMI_URL = "https://api.hilxyo.cn/v1"
+HACHIMI_PUBLIC_MODELS_URL = "https://idc.hilxyo.cn/api/pricing"
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Flash"
-PROVIDERS = {"siliconflow": "硅基流动", "custom": "自定义兼容接口"}
-KEY_NAMES = {"siliconflow": "SILICONFLOW_API_KEY", "custom": "SHIMANO_CUSTOM_API_KEY"}
+PROVIDERS = {
+    "siliconflow": "硅基流动", "deepseek": "DeepSeek 官方",
+    "kimi_cn": "Kimi 官方（中国站）", "kimi_global": "Kimi 官方（国际站）",
+    "hachimi": "哈基米 API",
+    "custom": "自定义兼容接口",
+}
+PROVIDER_BASE_URLS = {
+    "siliconflow": SILICONFLOW_URL, "deepseek": DEEPSEEK_URL,
+    "kimi_cn": KIMI_CN_URL, "kimi_global": KIMI_GLOBAL_URL,
+    "hachimi": HACHIMI_URL,
+}
+PROVIDER_DEFAULT_MODELS = {
+    "siliconflow": DEFAULT_MODEL, "deepseek": "deepseek-flash",
+    "kimi_cn": "kimi-k2.6", "kimi_global": "kimi-k2.6", "hachimi": "DeepSeek-V4-Flash", "custom": "",
+}
+PROVIDER_SUGGESTED_MODELS = {
+    "siliconflow": [DEFAULT_MODEL, "Pro/zai-org/GLM-5.1"],
+    "deepseek": ["deepseek-flash", "deepseek-v4-pro"],
+    "kimi_cn": ["kimi-k2.6", "kimi-k2.5"],
+    "kimi_global": ["kimi-k2.6", "kimi-k2.5"],
+    "hachimi": ["DeepSeek-V4-Flash", "GLM-5.1", "Kimi-K2.6-A"],
+    "custom": [],
+}
+KEY_NAMES = {
+    "siliconflow": "SILICONFLOW_API_KEY", "deepseek": "DEEPSEEK_API_KEY",
+    "kimi_cn": "KIMI_CN_API_KEY", "kimi_global": "KIMI_GLOBAL_API_KEY",
+    "hachimi": "HACHIMI_API_KEY",
+    "custom": "SHIMANO_CUSTOM_API_KEY",
+}
 
 
 @dataclass(frozen=True)
@@ -41,8 +73,8 @@ class LlmSettings:
             raise ValueError("API 地址须为 http(s) Base URL，且不能包含密钥或查询参数")
         if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise ValueError("远程 API 地址必须使用 HTTPS")
-        if self.provider == "siliconflow" and url != SILICONFLOW_URL:
-            raise ValueError("硅基流动地址应为官方 API 地址")
+        if self.provider in PROVIDER_BASE_URLS and url != PROVIDER_BASE_URLS[self.provider]:
+            raise ValueError(f"{PROVIDERS[self.provider]}地址应为官方 API 地址")
         return LlmSettings(self.provider, url, self.model.strip(), self.system_prompt.strip(), bool(self.memory_enabled))
 
 
@@ -90,12 +122,53 @@ def save_key(provider: str, key: str) -> None:
     os.replace(temporary, ENV_FILE)
 
 
+def list_models(settings: LlmSettings, key: str, *, timeout: float = 12) -> list[str]:
+    """Read /models, or Hachimi's public catalog before a key is supplied."""
+    settings = settings.validated()
+    public_hachimi = settings.provider == "hachimi" and not key
+    if settings.provider not in {"custom", "hachimi"} and not key:
+        raise ValueError(f"请先填写或保存{PROVIDERS[settings.provider]} API Key")
+    headers = {"Accept": "application/json"}
+    if public_hachimi:
+        # The public catalog rejects urllib's default Python-urllib user agent.
+        headers["User-Agent"] = "Mozilla/5.0"
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = urllib.request.Request(
+        HACHIMI_PUBLIC_MODELS_URL if public_hachimi else settings.base_url + "/models",
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(2_000_001)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"获取模型列表失败：HTTP {error.code}；请检查密钥和接口地址") from None
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise RuntimeError(f"无法连接模型列表接口：{getattr(error, 'reason', '请求超时')}") from None
+    if len(body) > 2_000_000:
+        raise RuntimeError("模型列表响应过大")
+    try:
+        data = json.loads(body)
+        entries = data["data"]
+        if not isinstance(entries, list):
+            raise ValueError
+        field = "model_name" if public_hachimi else "id"
+        models = sorted({item[field].strip() for item in entries
+                         if isinstance(item, dict) and isinstance(item.get(field), str)
+                         and item[field].strip()})
+    except (KeyError, TypeError, ValueError):
+        raise RuntimeError("模型列表格式不符合 /models 协议") from None
+    if not models:
+        raise RuntimeError("供应商没有返回可选模型，请手动填写模型 ID")
+    return models
+
+
 def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, timeout: float = 60) -> str:
     settings = settings.validated()
     if not user_text.strip():
         raise ValueError("请先输入消息")
-    if not key and settings.provider == "siliconflow":
-        raise ValueError("请先输入并保存硅基流动 API Key")
+    if not key and settings.provider != "custom":
+        raise ValueError(f"请先输入并保存{PROVIDERS[settings.provider]} API Key")
     messages = []
     if settings.system_prompt:
         messages.append({"role": "system", "content": settings.system_prompt})

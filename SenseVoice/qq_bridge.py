@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import re
 import time
 import uuid
 from collections import defaultdict, deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
@@ -17,6 +19,7 @@ from llm import ROOT, chat, load_key, load_settings
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
+LOCK_FILE = ROOT / ".qq_bridge.lock"
 CQ_CODE = re.compile(r"\[CQ:[^\]]+\]")
 CQ_AT = re.compile(r"\[CQ:at,qq=(\d+)(?:,[^\]]*)?\]")
 
@@ -81,6 +84,33 @@ def load_snowluma_token() -> str:
         if separator and name.strip() == "SNOWLUMA_ACCESS_TOKEN":
             return value.strip().strip('"').strip("'")
     return ""
+
+
+@contextmanager
+def single_instance():
+    """Prevent the standalone launcher and dashboard from replying twice."""
+    with LOCK_FILE.open("r+b" if LOCK_FILE.exists() else "w+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise SystemExit("QQ 桥接已经运行；请先停止现有进程，避免重复回复。") from None
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True)
@@ -266,7 +296,7 @@ class QqBridge:
                 async with self.generation_lock:
                     settings = load_settings()
                     key = load_key(settings.provider)
-                    if not key:
+                    if not key and settings.provider != "custom":
                         raise RuntimeError("对话模型 API Key 未配置")
                     settings = replace(settings, memory_enabled=False,
                                        system_prompt=settings.system_prompt + "\n你现在通过 QQ 文字聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。")
@@ -347,10 +377,11 @@ def main() -> None:
     if not settings.allowed_private_ids and not settings.allowed_group_ids:
         raise SystemExit("QQ 白名单为空：请在 qq_settings.json 填入你的 QQ 号，默认不回复任何人。")
     print("QQ 桥接启动。仅处理白名单私聊及白名单群中的 @ 消息；按 Ctrl+C 停止。")
-    try:
-        asyncio.run(QqBridge(settings).run_forever())
-    except KeyboardInterrupt:
-        pass
+    with single_instance():
+        try:
+            asyncio.run(QqBridge(settings).run_forever())
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":

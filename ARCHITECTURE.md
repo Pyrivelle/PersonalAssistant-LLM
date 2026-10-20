@@ -1,6 +1,6 @@
 # Shimano 当前结构与模块分工
 
-实际启动入口是 `SenseVoice/启动界面.cmd`（主语音界面）；`SenseVoice/启动LLM测试.cmd` 是独立的文字对话调试窗口。Sakura 的参考源码和便携版放在本仓库之外，不参与 Shimano 当前运行。
+实际启动入口是 `SenseVoice/启动界面.cmd`（统一控制台）；它可打开主语音窗口、文字测试、记忆管理以及配置/启动 QQ 连接。`SenseVoice/启动LLM测试.cmd` 仍是独立的文字对话调试窗口。Sakura 的参考源码和便携版放在本仓库之外，不参与 Shimano 当前运行。
 
 ```text
 Shimano/
@@ -9,16 +9,22 @@ Shimano/
 ├─ THIRD_PARTY.md            第三方来源与许可线索
 ├─ SenseVoice/               Shimano 当前可运行的独立原型
 │  ├─ gui.py                 主界面、录音线程、流程协调、系统 TTS
+│  ├─ dashboard.py           统一控制台、设置编辑、服务状态与启停
 │  ├─ continuous.py          流式 Silero VAD，分段与句尾检测
 │  ├─ recognize.py           SenseVoice 本地识别及命令行入口
 │  ├─ wake.py                唤醒别名校正、对话时间窗
 │  ├─ interaction.py         交互状态、分段播报与回声文本过滤
 │  ├─ llm.py                 模型配置、密钥读取和 HTTP 请求
-│  ├─ persona.py             默认人格提示词与旧版默认词迁移
+│  ├─ model_catalog.py       后台获取供应商 /models 列表
+│  ├─ persona.py             默认人格包入口与旧版默认词迁移
+│  ├─ persona_packs.py       人格包登记、读取及当前提示词匹配
+│  ├─ persona_packs/         内置、版本化的人格提示词与来源说明
 │  ├─ memory.py              Mem0 本地向量库、检索、提取、纠错与删除
 │  ├─ memory_gui.py          长期记忆查看、手动更正与遗忘界面
 │  ├─ chat_worker.py         模型请求的 Qt 后台线程
 │  ├─ llm_gui.py             供应商/模型/提示词配置与文字测试
+│  ├─ qq_bridge.py           SnowLuma / OneBot QQ 文字桥接
+│  ├─ qq_settings.json       本机生成：QQ 白名单与回复频率
 │  ├─ download_models.py     获取并校验本地语音资源
 │  ├─ settings.json          本机生成：唤醒、自动回复和 TTS 设置
 │  ├─ llm_settings.json      本机生成：供应商、模型、提示词
@@ -31,12 +37,14 @@ Shimano/
 │  ├─ test_memory.py         长期记忆命令、纠错与删除测试
 │  ├─ test_voice_loop.py     语音对话流程测试
 │  ├─ requirements.txt       Python 依赖版本
-│  ├─ 启动界面.cmd            主语音界面启动器
+│  ├─ 启动界面.cmd            统一控制台启动器
 │  ├─ 启动LLM测试.cmd         文字测试界面启动器
 │  └─ README.md              操作说明、验证记录和来源
 ```
 
 `Sakura-source/` 和 `Sakura-app/` 已移到 `C:\CProj\Airi\`，位于本项目之外。`.venv/`、`python-runtime/`、`.uv-cache/`、`__pycache__/` 是本机环境或生成物。`models/` 的权重、词表和 `samples/` 的音频通过 `download_models.py` 获取，不纳入 Git；本地密钥和个人设置也被 `.gitignore` 排除。仓库中的 README 和 `THIRD_PARTY.md` 说明安装与来源。
+
+`dashboard.py` 只协调已有模块：模型配置仍通过 `llm.py` 保存，`model_catalog.py` 在后台调用供应商的 `GET /models`；QQ 参数写入 `qq_settings.json` 并由 `qq_bridge.py` 在启动时读取；SnowLuma 的具体设置仍由其 WebUI 管理。控制台以本机端口检测服务可达性，用 `QProcess` 管理由它启动的 SnowLuma 和 QQ 桥接，默认在 OneBot 端口就绪后自动启动桥接；桥接进程内部负责断线重连。关闭控制台时停止由它启动的进程。端口可达不能证明 QQ 已登录，也不表示某个在外部启动的桥接进程受控制台管理。
 
 ## 一句话从麦克风走到扬声器
 
@@ -53,7 +61,7 @@ Shimano/
 
 `llm.py` 从 `llm_settings.json` 读取供应商、模型 ID、URL 和角色提示词，从 `.env.local` 读取密钥；它把角色提示词、最近六轮成功对话和当前**文字**发往 Chat Completions 接口。模型服务可选硅基流动或自定义兼容接口。API 调用放在 `ChatWorker` 中，避免卡住界面；成功后才将这一轮加入内存历史。主语音界面和文字测试界面的历史分别保存在各自窗口内存中，关闭即清空。
 
-`persona.py` 提供庄方宜的默认角色背景、称呼、说话习惯、按上下文调整的规则与交流边界；`llm_gui.py` 可编辑并保存完整人格提示词。旧版内置默认提示词会在加载时升级为新默认，用户自定义提示词不改动。人格指令与最近六轮历史一起构成当前对话的短期上下文。
+`persona_packs/zhuang_fangyi_v1/prompt.md` 是首套正式人格包，参考 MengPaul 的场景驱动角色 Skill，整理为现实桌面助手可用的角色背景、称呼、说话习惯和事实边界。`persona_packs.py` 登记内置包；`persona.py` 提供默认词和旧版默认词迁移。控制台及 `llm_gui.py` 可显式载入人格包并编辑，只有保存后才写入本机设置。旧版内置默认提示词会在加载时升级为新默认，用户自定义提示词不改动。人格指令与最近六轮历史一起构成当前对话的短期上下文。
 
 QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot v11 WebSocket 消息，桥接层先检查私聊/群聊白名单、机器人 @、消息去重与回复限速，再把本轮文字交给现有 `llm.chat`。每个发送者维护独立的短期历史。QQ 桥接当前不读写桌面主人的 Mem0 长期记忆，也不接收图片或语音；这避免把群成员信息混入私人记忆。`qq_settings.json` 与 SnowLuma token 只保存在本机，不纳入 Git。
 
@@ -65,12 +73,13 @@ QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot
 
 | 修改目标 | 主要文件 | 先确认的接口或影响 |
 | --- | --- | --- |
+| 控制台、设置入口和服务启停 | `SenseVoice/dashboard.py` | 复用 `llm.py` 与 `QqSettings` 的验证；SnowLuma WebUI 是独立服务 |
 | 麦克风、界面、TTS、流程编排 | `SenseVoice/gui.py` | Qt 信号/线程、监听暂停与恢复、手动录音入口 |
 | 说话起止与分段参数 | `SenseVoice/continuous.py` | `StreamingVad.accept()` 输出完整语音数组；`gui.py` 消费该输出 |
 | 本地语音识别或模型替换 | `SenseVoice/recognize.py`、`SenseVoice/models/` | `create_recognizer()`、`decode_segment()`；音频须为 16 kHz 单声道 |
 | 唤醒名称与超时规则 | `SenseVoice/wake.py` | `ConversationGate.process()` 返回 ignored / woke / accepted；别名校正在 ASR 后 |
 | 实时状态、分段和疑似回声判断 | `SenseVoice/interaction.py`、`SenseVoice/gui.py` | 区分完整回复的分段播报与真正的流式模型输出；扬声器模式仍依赖唤醒称呼 |
-| 模型供应商与请求格式 | `SenseVoice/llm.py`、`SenseVoice/chat_worker.py` | `chat()` 输入设置、密钥、历史、当前文字，返回回复文字 |
+| 模型供应商与请求格式 | `SenseVoice/llm.py`、`SenseVoice/model_catalog.py`、`SenseVoice/chat_worker.py` | `chat()` 输入设置、密钥、历史、当前文字，返回回复文字；`list_models()` 返回模型 ID |
 | 默认人格与表达规则 | `SenseVoice/persona.py`、`SenseVoice/llm_gui.py` | 编辑默认提示词或本机自定义提示词；保留旧设置与对话历史边界 |
 | 长期记忆 | `SenseVoice/memory.py`、`SenseVoice/memory_gui.py` | Mem0、Qdrant 与远程 Embedding；启用开关、记忆纠错、遗忘与本地目录隔离 |
 | QQ 消息桥接 | `SenseVoice/qq_bridge.py` | SnowLuma / OneBot 正向 WebSocket；白名单、@ 触发、去重、频率和独立历史 |

@@ -10,16 +10,16 @@
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe download_models.py --sample
-.\.venv\Scripts\python.exe gui.py
+.\.venv\Scripts\python.exe dashboard.py
 ```
 
 模型权重约 239 MB，下载脚本还会获取词表、VAD 模型和可选示例音频；下载后进行 SHA-256 校验，已校验的文件会复用。资源放在 `models/` 和 `samples/`，不纳入 Git。若无需“试用示例”按钮，可省略 `--sample`。VS Code 解释器选 `.venv\Scripts\python.exe`。`启动界面.cmd` 和 `启动LLM测试.cmd` 在完成上述环境安装后可直接双击使用。
 
 ## 独立 LLM 文字对话测试
 
-双击 `启动LLM测试.cmd`。窗口可选“硅基流动”或“自定义兼容接口”，填写模型 ID、角色提示词，并在密码输入框填入 API Key。点击“保存设置与密钥”后，供应商、模型、提示词保存在 `llm_settings.json`；密钥保存在本机 `.env.local`，界面只显示“已保存”，不会回显密钥。两个文件都已加入 `.gitignore`。无需另建文件，也不要把密钥发到聊天里。
+双击 `启动LLM测试.cmd`，或在统一控制台打开“模型与人格”。窗口可选“硅基流动”“DeepSeek 官方”“Kimi 官方（中国站/国际站）”“哈基米 API”或“自定义兼容接口”，填写模型 ID、角色提示词，并在密码输入框填入 API Key。点击“获取模型列表”会在后台调用当前供应商的 `GET /models`，把返回的模型 ID 放进可搜索的下拉框；该列表可能包含不支持文字对话的模型，也可手动输入。获取列表不发送对话，不自动保存密钥。点击保存后，供应商、模型、提示词保存在 `llm_settings.json`；各供应商的密钥分别保存在本机 `.env.local`，界面只显示“已保存”，不会回显密钥。两个文件都已加入 `.gitignore`。无需另建文件，也不要把密钥发到聊天里。
 
-硅基流动使用官方 `https://api.siliconflow.cn/v1/chat/completions`；默认模型 ID 是官方文档示例 `deepseek-ai/DeepSeek-V4-Flash`。服务商可能调整可用模型，请以账户中的模型列表为准，可在界面直接改成你有权限使用的 ID。自定义接口按同样的 chat/completions 协议工作；远程地址须为 HTTPS，本机 Ollama 一类服务可使用 `http://localhost:11434/v1`。自定义本地服务可不填密钥。
+硅基流动使用官方 `https://api.siliconflow.cn/v1/chat/completions`；原有默认模型 ID 为 `deepseek-ai/DeepSeek-V4-Flash`。DeepSeek 官方使用 `https://api.deepseek.com/chat/completions`，切换时初始模型为 `deepseek-flash`，也可选 `deepseek-v4-pro`。Kimi 中国站与国际站分别使用 `https://api.moonshot.cn/v1` 和 `https://api.moonshot.ai/v1`，Key 不互通；初始示例模型为 `kimi-k2.6`。哈基米 API 已按你确认的 `idc.hilxyo.cn` 设为 `https://api.hilxyo.cn/v1`，初始示例模型选自其当前公开目录的 `DeepSeek-V4-Flash`。未填密钥时，“获取模型列表”读取该站公开模型广场的 `/api/pricing`；填入密钥后改用账号的 `/v1/models`，实际可调用权限以账号为准。服务商可能调整可用模型，请以账户的实时模型列表为准，可在界面直接改成有权限使用的 ID。自定义接口按同样的 chat/completions 协议工作；远程地址须为 HTTPS，本机 Ollama 一类服务可使用 `http://localhost:11434/v1`。自定义本地服务可不填密钥。
 
 输入一句文字并点击“发送”即可验证连接。程序发送角色提示词、最近六轮消息和当前输入；本轮成功后才加入对话历史，点击“清空当前对话”可重置。历史当前只保存在该窗口的内存中，关闭即清空。这个窗口继续保留为独立的文字调试入口；主语音窗口也会读取这里保存的模型设置。`llm.py` 负责配置与 HTTP 请求，`chat_worker.py` 负责后台请求，`llm_gui.py` 负责文字测试界面。
 
@@ -37,9 +37,9 @@ py -3.12 -m venv .venv
 
 ## 庄方宜的人格设定
 
-默认人格写在 `persona.py`：庄方宜也可以称作庄天师或小庄。她温和、理性、成熟，能在复杂问题中抓住关键并承担责任；熟悉后会自然地调侃，关心用户时克制而具体。她有自己的原则，不盲从用户，也不会用甜腻的恋爱台词或虚构创伤来表现亲近。提示词约定了技术讨论、学习、闲聊和情绪低落时的不同表达方式，并要求参考真实对话与记忆、尊重隐私和事实边界。
+第一套正式人格包是 [`persona_packs/zhuang_fangyi_v1/prompt.md`](persona_packs/zhuang_fangyi_v1/prompt.md)，参考 [MengPaul07/zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill) 的场景判断、语气和设定核验规则，改写为现实中的日常助手提示词。庄方宜也可以称作庄天师或小庄；她温和、理性、能处理复杂问题，也能自然地陪伴。用户不是默认的游戏角色，剧情里的共同经历不会冒充现实记忆。来源、适配边界和后续新增人格包的方法见 [`人格包说明`](persona_packs/zhuang_fangyi_v1/README.md)。
 
-双击 `启动LLM测试.cmd`，在“人格设定”文本框修改角色背景、称呼和语言习惯，点击“保存设置与密钥”即可让主语音窗口在下一轮请求时使用新设定。密钥输入框留空不会覆盖已保存密钥。“恢复默认人格”只修改编辑框内容，仍须点击保存才会生效。旧版程序保存的原始默认短提示词会自动升级为本版默认人格；你自己写过的提示词保持原样。用户自定义内容只保存在本机 `llm_settings.json`，不纳入 Git。
+在控制台“模型与人格”或 `启动LLM测试.cmd` 中选择人格包，点击“载入人格包”会替换当前编辑框内容；再点击保存，语音窗口下一轮请求就会使用新设定，QQ 桥接重启后使用。直接编辑提示词也可以形成自定义版本。密钥输入框留空不会覆盖已保存密钥。旧版程序保存的内置默认词会自动升级为首套正式人格包；你自己写过的提示词保持原样。用户自定义内容只保存在本机 `llm_settings.json`，不纳入 Git。
 
 建议用三轮文字对话验收：先问一个编程问题，再说“没理解，请用生活中的例子解释”，最后换成轻松闲聊。检查她能沿用前文主题、调整解释深度、避免重复开场。如果修改了提示词，最好清空当前对话再测，以免旧回复影响比较。人格一致性依赖模型输出，提示词无法保证每句话都完全符合设定。
 
@@ -57,9 +57,15 @@ SnowLuma 独立安装在 `C:\CProj\Airi\SnowLuma\v2.0.3`，不进入 Shimano 仓
 
 不用登录真实 QQ 也能先验证接入层：运行 `.\.venv\Scripts\python.exe -m unittest -v test_qq_bridge.py`，测试会在本机模拟 OneBot 连接、消息事件和回复动作，不调用真实 QQ 或模型。
 
-## 图形界面
+## 统一控制台
 
-双击 `启动界面.cmd`。窗口中的“麦克风”可以选系统默认设备，也可以指定 Realtek 或其他输入设备；“刷新”会重新读取设备列表。“识别语言”默认是中文，需要时可改为自动识别或其他语言。
+双击 `启动界面.cmd` 打开 PySide6 控制台，或运行 `python dashboard.py`。总览显示模型、长期记忆、SnowLuma WebUI、OneBot 本机端口和由控制台启动的桥接进程状态；端口“可连接”只表示端口开放，不等于 QQ 已登录或 OneBot 已完成鉴权。
+
+“模型与人格”可以直接设置供应商、API 地址、模型 ID、密钥、提示词和长期记忆，并从供应商获取模型列表。密钥只写入本机 `.env.local`，保存后不回显；“文字对话测试”和“长期记忆管理”仍打开原有窗口。“QQ · SnowLuma”可保存 OneBot 地址、Token、私聊/群聊白名单和回复频率，启动或停止由控制台管理的 SnowLuma 与 QQ 桥接，并在浏览器打开 SnowLuma 自带的配置页面。默认勾选“启动 SnowLuma 后自动连接”：控制台每三秒检查本机 OneBot 端口，开放后自动启动桥接；桥接自身在 QQ 未就绪、断线或鉴权失败时每五秒重试。首次仍需在 WebUI 登录 QQ、启用 OneBot WebSocket 服务端，并设置与界面一致的 Token。WebUI (`5099`) 用来配置服务，OneBot (`3001`) 用来传送消息，不需要日常手动点击两次。SnowLuma 安装仍在 `C:\CProj\Airi\SnowLuma\v2.0.3`，不进入本仓库。控制台关闭时会停止由它启动的服务；从独立启动脚本运行的服务由其原窗口管理。QQ 桥接在启动时读取配置，修改后需重启桥接生效。
+
+## 语音窗口
+
+在控制台点击“打开语音窗口”，也可以直接运行 `python gui.py`。窗口中的“麦克风”可以选系统默认设备，也可以指定 Realtek 或其他输入设备；“刷新”会重新读取设备列表。“识别语言”默认是中文，需要时可改为自动识别或其他语言。
 
 点击“开始录音”后说话，再点击“停止并识别”。录音最多 60 秒，文字显示在结果框中，可以一键复制。“试用示例”会读取目录里的中文示例音频，供你先检查模型是否工作。录音只在内存中处理，不会保存麦克风音频文件。
 
@@ -89,7 +95,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 ## 代码路线
 
-界面入口是 `gui.py` 的 `MainWindow`。它负责麦克风选择、`Listening / Thinking / Speaking` 状态、打断、对话显示和分段 TTS；`RecognitionWorker` 处理单次录音，`ContinuousWorker` 处理持续监听，识别都在后台线程运行。`continuous.py` 的 `StreamingVad` 接受音频帧，返回已经说完的片段。`wake.py` 的 `ConversationGate` 接收每句识别文字，校正句首称呼并维护待唤醒/对话中的超时状态。`interaction.py` 拆分回复语句并过滤疑似播报回声。`chat_worker.py` 在后台发送模型请求；只有当前有效请求的成功回复才进入会话历史。
+控制台入口是 `dashboard.py`，负责设置、模块入口和服务启停；语音窗口是 `gui.py` 的 `MainWindow`。它负责麦克风选择、`Listening / Thinking / Speaking` 状态、打断、对话显示和分段 TTS；`RecognitionWorker` 处理单次录音，`ContinuousWorker` 处理持续监听，识别都在后台线程运行。`continuous.py` 的 `StreamingVad` 接受音频帧，返回已经说完的片段。`wake.py` 的 `ConversationGate` 接收每句识别文字，校正句首称呼并维护待唤醒/对话中的超时状态。`interaction.py` 拆分回复语句并过滤疑似播报回声。`chat_worker.py` 在后台发送模型请求；只有当前有效请求的成功回复才进入会话历史。
 
 1. `record()`：以 16 kHz、单声道采集麦克风声音，得到浮点数数组。
 2. `speech_spans()`：Silero VAD 找出数组中有人说话的位置，去掉较长的静音。

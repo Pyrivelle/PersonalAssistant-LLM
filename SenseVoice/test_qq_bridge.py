@@ -61,6 +61,16 @@ class QqParsingTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "quiet_seconds"):
                 QqSettings.load(path)
 
+    def test_second_bridge_instance_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(qq_bridge, "LOCK_FILE", Path(directory) / "bridge.lock"):
+                with qq_bridge.single_instance():
+                    with self.assertRaisesRegex(SystemExit, "已经运行"):
+                        with qq_bridge.single_instance():
+                            pass
+                with qq_bridge.single_instance():
+                    pass
+
 
 class QqSocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_mock_snowluma_receives_one_reply_and_ignores_duplicate(self):

@@ -16,6 +16,8 @@ Sakura-source/
 **/.env
 **/.env.*
 **/llm_settings.json
+**/persona_backup_*.json
 **/settings.json
 **/qq_settings.json
+**/.qq_bridge.lock
 **/memory_data/

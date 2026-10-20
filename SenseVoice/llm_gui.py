@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import Slot
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -12,7 +12,11 @@ from PySide6.QtWidgets import (
 )
 
 from chat_worker import ChatWorker, MemoryWriteWorker
-from llm import DEFAULT_MODEL, DEFAULT_PROMPT, LlmSettings, PROVIDERS, SILICONFLOW_URL, load_key, load_settings, save_key, save_settings
+from llm import (DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
+                 PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
+                 load_key, load_settings, save_key, save_settings)
+from model_catalog import ModelCatalogWorker
+from persona_packs import BUILTIN_PACKS, matching_pack
 
 
 class ChatWindow(QMainWindow):
@@ -26,6 +30,10 @@ class ChatWindow(QMainWindow):
         self.memory_workers: set[MemoryWriteWorker] = set()
         self.memory_window = None
         saved = load_settings()
+        self._last_provider = saved.provider
+        self._provider_values = {saved.provider: (saved.base_url, saved.model)}
+        self._model_choices = {}
+        self._model_worker = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -47,12 +55,23 @@ class ChatWindow(QMainWindow):
         form.addRow("供应商", self.provider)
 
         self.url = QLineEdit(saved.base_url)
+        self.url.setPlaceholderText("输入供应商提供的 API Base URL，例如 https://example.com/v1")
         form.addRow("API 地址", self.url)
         self.model = QComboBox()
         self.model.setEditable(True)
-        self.model.addItems([DEFAULT_MODEL, "Pro/zai-org/GLM-5.1"])
+        self.model.setMaxVisibleItems(16)
+        self.model.addItems(PROVIDER_SUGGESTED_MODELS[saved.provider])
         self.model.setCurrentText(saved.model)
-        form.addRow("模型 ID", self.model)
+        self.model.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+        self.model.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.model, 1)
+        self.fetch_button = QPushButton("获取模型列表")
+        self.fetch_button.clicked.connect(self.fetch_models)
+        model_row.addWidget(self.fetch_button)
+        form.addRow("模型 ID", model_row)
+        self.catalog_status = QLabel("可手动输入，或从供应商获取模型列表")
+        form.addRow("模型列表", self.catalog_status)
 
         self.key_edit = QLineEdit()
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -63,9 +82,23 @@ class ChatWindow(QMainWindow):
         key_row.addWidget(self.key_status)
         form.addRow("API Key", key_row)
 
+        self.persona_pack = QComboBox()
+        for pack in BUILTIN_PACKS:
+            self.persona_pack.addItem(pack.name, pack)
+        self.load_pack_button = QPushButton("载入人格包")
+        self.load_pack_button.clicked.connect(self.load_persona_pack)
+        pack_row = QHBoxLayout()
+        pack_row.addWidget(self.persona_pack, 1)
+        pack_row.addWidget(self.load_pack_button)
+        form.addRow("人格包", pack_row)
+
         self.prompt = QPlainTextEdit(saved.system_prompt or DEFAULT_PROMPT)
         self.prompt.setMinimumHeight(190)
         form.addRow("人格设定", self.prompt)
+        self.persona_state = QLabel()
+        self.prompt.textChanged.connect(self.update_persona_state)
+        form.addRow("当前提示词", self.persona_state)
+        self.update_persona_state()
         self.memory_enabled = QCheckBox("启用长期记忆：对话文字会发送给硅基流动做记忆提取和 Embedding")
         self.memory_enabled.setChecked(saved.memory_enabled)
         form.addRow("长期记忆", self.memory_enabled)
@@ -74,14 +107,11 @@ class ChatWindow(QMainWindow):
         buttons = QHBoxLayout()
         self.save_button = QPushButton("保存设置与密钥")
         self.save_button.clicked.connect(self.save)
-        self.reset_prompt_button = QPushButton("恢复默认人格")
-        self.reset_prompt_button.clicked.connect(lambda: self.prompt.setPlainText(DEFAULT_PROMPT))
         self.clear_button = QPushButton("清空当前对话")
         self.clear_button.clicked.connect(self.clear_history)
         self.memory_button = QPushButton("查看与管理记忆…")
         self.memory_button.clicked.connect(self.open_memory_manager)
         buttons.addWidget(self.save_button)
-        buttons.addWidget(self.reset_prompt_button)
         buttons.addWidget(self.clear_button)
         buttons.addWidget(self.memory_button)
         buttons.addStretch()
@@ -117,15 +147,78 @@ class ChatWindow(QMainWindow):
         self.send_button.setObjectName("send")
         self.provider_changed()
 
+    def load_persona_pack(self) -> None:
+        pack = self.persona_pack.currentData()
+        if pack is not None:
+            self.prompt.setPlainText(pack.prompt())
+
+    def update_persona_state(self) -> None:
+        pack = matching_pack(self.prompt.toPlainText())
+        self.persona_state.setText(pack.name if pack else "自定义；载入人格包后需保存")
+
     @Slot()
     def provider_changed(self) -> None:
         code = self.provider.currentData()
-        self.url.setReadOnly(code == "siliconflow")
-        if code == "siliconflow":
-            self.url.setText(SILICONFLOW_URL)
-        elif self.url.text() == SILICONFLOW_URL:
-            self.url.setText("http://localhost:11434/v1")
+        if code != self._last_provider:
+            self._provider_values[self._last_provider] = (self.url.text(), self.model.currentText())
+            url, model = self._provider_values.get(code, (
+                PROVIDER_BASE_URLS.get(code, "http://localhost:11434/v1"),
+                PROVIDER_DEFAULT_MODELS[code],
+            ))
+            self.url.setText(url)
+            self._set_model_choices(self._model_choices.get(code, PROVIDER_SUGGESTED_MODELS[code]), model)
+            self.catalog_status.setText("可手动输入，或从供应商获取模型列表")
+            self._last_provider = code
+        self.url.setReadOnly(code in PROVIDER_BASE_URLS)
         self.key_status.setText("已保存" if load_key(code) else "未保存")
+
+    def _set_model_choices(self, choices: list[str], selected: str) -> None:
+        self.model.clear()
+        self.model.addItems(choices)
+        self.model.setCurrentText(selected)
+
+    @Slot()
+    def fetch_models(self) -> None:
+        if self._model_worker is not None:
+            return
+        try:
+            settings = LlmSettings(
+                self.provider.currentData(), self.url.text(),
+                self.model.currentText().strip() or "_", self.prompt.toPlainText(),
+                self.memory_enabled.isChecked(),
+            ).validated()
+            key = self.key_edit.text().strip() or load_key(settings.provider)
+            if settings.provider not in {"custom", "hachimi"} and not key:
+                raise ValueError("请先填写或保存当前供应商的 API Key")
+            worker = ModelCatalogWorker(settings, key)
+            self._model_worker = worker
+            self.fetch_button.setEnabled(False)
+            self.catalog_status.setText("正在获取模型列表…")
+            worker.loaded.connect(lambda choices, p=settings.provider, u=settings.base_url: self._models_loaded(p, u, choices))
+            worker.failed.connect(lambda message: self.catalog_status.setText(message))
+            worker.finished.connect(self._models_finished)
+            worker.start()
+        except (OSError, ValueError) as error:
+            self.catalog_status.setText(str(error))
+
+    def _models_loaded(self, provider: str, url: str, choices: list[str]) -> None:
+        self._model_choices[provider] = choices
+        if self.provider.currentData() != provider or self.url.text().rstrip("/") != url:
+            return
+        selected = self.model.currentText()
+        self._set_model_choices(choices, selected)
+        note = "当前模型 ID 不在列表中；请检查后再使用" if selected and selected not in choices else "列表可能含非对话模型"
+        if provider == "hachimi" and not (self.key_edit.text().strip() or load_key("hachimi")):
+            note += "；这是公开目录，实际权限以账号为准"
+        self.catalog_status.setText(f"已获取 {len(choices)} 个模型；{note}")
+        self.model.showPopup()
+
+    def _models_finished(self) -> None:
+        worker = self._model_worker
+        self._model_worker = None
+        self.fetch_button.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
 
     def current_settings(self) -> LlmSettings:
         return LlmSettings(
@@ -181,8 +274,8 @@ class ChatWindow(QMainWindow):
             return
         settings = self.current_settings()
         key = load_key(settings.provider)
-        if settings.provider == "siliconflow" and not key:
-            self.status.setText("请先输入并保存硅基流动 API Key")
+        if settings.provider != "custom" and not key:
+            self.status.setText(f"请先输入并保存{PROVIDERS[settings.provider]} API Key")
             return
         self.worker = ChatWorker(settings, key, list(self.history), message, self)
         self.worker.replied.connect(self.show_reply)
@@ -192,7 +285,7 @@ class ChatWindow(QMainWindow):
         self.input.setEnabled(False)
         self.send_button.setEnabled(False)
         self.save_button.setEnabled(False)
-        self.reset_prompt_button.setEnabled(False)
+        self.load_pack_button.setEnabled(False)
         self.status.setText("正在等待模型回复…")
         self.worker.start()
 
@@ -233,7 +326,7 @@ class ChatWindow(QMainWindow):
         self.input.setEnabled(True)
         self.send_button.setEnabled(True)
         self.save_button.setEnabled(True)
-        self.reset_prompt_button.setEnabled(True)
+        self.load_pack_button.setEnabled(True)
         self.input.setFocus()
 
     def closeEvent(self, event) -> None:

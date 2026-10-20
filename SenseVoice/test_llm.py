@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import llm
-from persona import DEFAULT_PROMPT, LEGACY_DEFAULT_PROMPT
+from persona import DEFAULT_PROMPT, LEGACY_DEFAULT_PROMPT, PREVIOUS_SHIMANO_DEFAULT_PROMPT
+from persona_packs import ZHUANG_FANGYI_V1, matching_pack
 
 
 class FakeResponse:
@@ -61,6 +62,21 @@ class LlmTests(unittest.TestCase):
                 llm.save_settings(llm.LlmSettings(model="chosen/model", system_prompt="用户自己的角色设定"))
                 self.assertEqual(llm.load_settings().system_prompt, "用户自己的角色设定")
 
+    def test_formal_persona_pack_and_previous_default_migration(self):
+        self.assertEqual(DEFAULT_PROMPT, ZHUANG_FANGYI_V1.prompt())
+        self.assertEqual(matching_pack(DEFAULT_PROMPT), ZHUANG_FANGYI_V1)
+        self.assertIsNone(matching_pack(DEFAULT_PROMPT + "\n我的定制要求"))
+        self.assertIn("她关心的是具体的人", DEFAULT_PROMPT)
+        self.assertNotIn("Shimano", DEFAULT_PROMPT)
+        self.assertNotIn("你是庄方宜", DEFAULT_PROMPT)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(llm, "SETTINGS_FILE", Path(directory) / "settings.json"):
+                llm.save_settings(llm.LlmSettings(system_prompt=PREVIOUS_SHIMANO_DEFAULT_PROMPT))
+                self.assertEqual(llm.load_settings().system_prompt, DEFAULT_PROMPT)
+                customized = PREVIOUS_SHIMANO_DEFAULT_PROMPT + "\n用户自定义：称呼我为小朱"
+                llm.save_settings(llm.LlmSettings(system_prompt=customized))
+                self.assertEqual(llm.load_settings().system_prompt, customized)
+
     def test_recalled_memories_are_data_before_current_message(self):
         captured = {}
 
@@ -77,6 +93,72 @@ class LlmTests(unittest.TestCase):
     def test_remote_http_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             llm.LlmSettings(provider="custom", base_url="http://remote.example/v1").validated()
+
+    def test_deepseek_official_endpoint_and_separate_key(self):
+        settings = llm.LlmSettings(provider="deepseek", base_url=llm.DEEPSEEK_URL, model="deepseek-flash")
+        self.assertEqual(settings.validated().base_url, "https://api.deepseek.com")
+        with self.assertRaisesRegex(ValueError, "官方 API 地址"):
+            llm.LlmSettings(provider="deepseek", base_url="https://example.com/v1", model="deepseek-flash").validated()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(llm, "ENV_FILE", Path(directory) / ".env.local"):
+                llm.save_key("deepseek", "deepseek-test-key")
+                self.assertEqual(llm.load_key("deepseek"), "deepseek-test-key")
+                self.assertEqual(llm.load_key("siliconflow"), "")
+
+    def test_kimi_regions_and_hachimi_official_endpoint(self):
+        self.assertEqual(llm.LlmSettings(provider="kimi_cn", base_url=llm.KIMI_CN_URL,
+                                         model="kimi-k2.6").validated().base_url, llm.KIMI_CN_URL)
+        self.assertEqual(llm.LlmSettings(provider="kimi_global", base_url=llm.KIMI_GLOBAL_URL,
+                                         model="kimi-k2.6").validated().base_url, llm.KIMI_GLOBAL_URL)
+        with self.assertRaisesRegex(ValueError, "官方 API 地址"):
+            llm.LlmSettings(provider="kimi_cn", base_url=llm.KIMI_GLOBAL_URL,
+                            model="kimi-k2.6").validated()
+        self.assertEqual(llm.LlmSettings(provider="hachimi", base_url=llm.HACHIMI_URL,
+                                         model="DeepSeek-V4-Flash").validated().base_url, llm.HACHIMI_URL)
+        with self.assertRaisesRegex(ValueError, "官方 API 地址"):
+            llm.LlmSettings(provider="hachimi", base_url="https://other.example/v1",
+                            model="DeepSeek-V4-Flash").validated()
+
+    def test_hachimi_public_catalog_is_available_without_key(self):
+        requested = {}
+
+        class PublicResponse(FakeResponse):
+            def read(self, _limit):
+                return b'{"success":true,"data":[{"model_name":"DeepSeek-V4-Flash"},{"model_name":"GLM-5.1"}]}'
+
+        def fake_open(request, timeout):
+            requested["url"] = request.full_url
+            requested["headers"] = request.headers
+            return PublicResponse()
+
+        settings = llm.LlmSettings(provider="hachimi", base_url=llm.HACHIMI_URL,
+                                   model="DeepSeek-V4-Flash")
+        with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
+            models = llm.list_models(settings, "")
+        self.assertEqual(models, ["DeepSeek-V4-Flash", "GLM-5.1"])
+        self.assertEqual(requested["url"], llm.HACHIMI_PUBLIC_MODELS_URL)
+        self.assertNotIn("Authorization", requested["headers"])
+
+    def test_model_catalog_reads_ids_without_chat_request(self):
+        captured = {}
+
+        class ModelsResponse(FakeResponse):
+            def read(self, _limit):
+                return b'{"data":[{"id":"deepseek-v4-pro"},{"id":"deepseek-flash"},{"id":"deepseek-flash"}]}'
+
+        def fake_open(request, timeout):
+            captured["url"] = request.full_url
+            captured["method"] = request.get_method()
+            captured["headers"] = request.headers
+            return ModelsResponse()
+
+        with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
+            models = llm.list_models(llm.LlmSettings(provider="deepseek", base_url=llm.DEEPSEEK_URL,
+                                                      model="deepseek-flash"), "test-key")
+        self.assertEqual(models, ["deepseek-flash", "deepseek-v4-pro"])
+        self.assertEqual(captured["url"], "https://api.deepseek.com/models")
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(captured["headers"]["Authorization"], "Bearer test-key")
 
 
 if __name__ == "__main__":
