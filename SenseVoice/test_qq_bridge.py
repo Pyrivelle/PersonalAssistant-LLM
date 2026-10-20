@@ -5,14 +5,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 import qq_bridge
 from llm import LlmSettings
-from qq_bridge import Incoming, QqBridge, QqSettings, ReplyLimiter, parse_message
+from qq_bridge import Conversation, Incoming, QqBridge, QqSettings, ReplyLimiter, parse_message
 
 
 class QqParsingTests(unittest.TestCase):
@@ -93,6 +93,16 @@ class QqParsingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "私聊白名单"):
                     QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
 
+    def test_member_memory_requires_whitelisted_private_user(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cognition_settings.json").write_text(
+                json.dumps({"memory_private_ids": [43]}), encoding="utf-8"
+            )
+            with patch.object(qq_bridge, "ROOT", root):
+                with self.assertRaisesRegex(ValueError, "私聊白名单"):
+                    QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+
     def test_second_bridge_instance_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(qq_bridge, "LOCK_FILE", Path(directory) / "bridge.lock"):
@@ -105,6 +115,33 @@ class QqParsingTests(unittest.TestCase):
 
 
 class QqSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_private_forget_command_clears_both_scoped_stores(self):
+        from dialogue_context import DialogueContext
+        from member_memory import MemberKey
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cognition_settings.json").write_text(
+                json.dumps({"memory_private_ids": [42], "persist_private_ids": [42]}),
+                encoding="utf-8")
+            with patch.object(qq_bridge, "ROOT", root):
+                bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                             private_cooldown_seconds=0, quiet_seconds=0))
+                bridge.bot_id = 88
+                identity = MemberKey(88, 42)
+                bridge.member_store.apply(identity, [{"id": 2}],
+                    {"profile_add": [{"text": "用户喜欢编程", "evidence": "我喜欢编程"}]})
+                context = DialogueContext()
+                context.commit("代码遇到问题", "我帮你看看")
+                bridge.context_store.save("bot:88:private:0:42", context)
+                incoming = Incoming("private", 42, None, "1", "/forget_me")
+                state = Conversation(incoming, pending=["/forget_me"], context=context)
+                bridge.send_reply = AsyncMock(return_value=True)
+                await bridge.process(state)
+                self.assertEqual(bridge.member_store.snapshot(identity), "")
+                self.assertFalse(bridge.context_store.load("bot:88:private:0:42").history)
+                self.assertFalse(state.context.history)
+                bridge.send_reply.assert_awaited_once()
+
     async def test_mock_snowluma_receives_one_reply_and_ignores_duplicate(self):
         sent = asyncio.Event()
         actions = []
