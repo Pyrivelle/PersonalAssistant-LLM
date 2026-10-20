@@ -21,3 +21,7 @@ Sakura-source/
 **/qq_settings.json
 **/.qq_bridge.lock
 **/memory_data/
+
+# Opt-in planning and local emotional-history database.
+**/cognition_settings.json
+**/conversation_data/
