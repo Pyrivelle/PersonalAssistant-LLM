@@ -1,5 +1,6 @@
 {
   "enabled": false,
   "model": "",
-  "persist_private_ids": []
+  "persist_private_ids": [],
+  "persist_desktop_context": false
 }
