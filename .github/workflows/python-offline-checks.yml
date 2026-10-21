@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches:
+      - main
+      - feature/model-route-failover
       - feature/emotional-companion
       - feature/member-memory-fangyi-skill
 
@@ -23,4 +25,4 @@ jobs:
         run: python -m compileall -q SenseVoice
       - name: Offline tests without real LLM or OneBot
         working-directory: SenseVoice
-        run: python -m unittest -v test_emotion test_dialogue_context test_turn_planner test_llm test_qq_bridge test_member_memory test_fangyi_skill
+        run: python -m unittest -v test_emotion test_dialogue_context test_turn_planner test_llm test_model_routes test_qq_bridge test_member_memory test_fangyi_skill test_gpt_sovits test_activity_log
