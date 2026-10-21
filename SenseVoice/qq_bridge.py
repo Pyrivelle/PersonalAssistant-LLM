@@ -7,7 +7,9 @@ import json
 import math
 import os
 import re
+import tempfile
 import time
+import urllib.request
 import uuid
 from collections import defaultdict, deque
 from contextlib import contextmanager
@@ -21,6 +23,7 @@ from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
 from fangyi_skill import guidance as fangyi_guidance
+from gpt_sovits import load_settings as load_speech_settings
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
@@ -52,6 +55,7 @@ class QqSettings:
     private_max_replies_per_hour: int = 30
     group_max_replies_per_hour: int = 8
     quiet_seconds: float = 1.2
+    voice_private_ids: frozenset[int] = frozenset()
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "QqSettings":
@@ -76,8 +80,58 @@ class QqSettings:
             values[key] = int(values[key])
             if not 1 <= values[key] <= 120:
                 raise ValueError(f"{key} 必须在 1 到 120 之间")
-        return cls(url, _ids(raw.get("allowed_private_ids", [])),
-                   _ids(raw.get("allowed_group_ids", [])), **values)
+        private_ids = _ids(raw.get("allowed_private_ids", []))
+        voice_ids = _ids(raw.get("voice_private_ids", []))
+        if not voice_ids.issubset(private_ids):
+            raise ValueError("QQ 语音回复账号必须包含在私聊白名单内")
+        return cls(url, private_ids, _ids(raw.get("allowed_group_ids", [])),
+                   voice_private_ids=voice_ids, **values)
+
+
+MAX_VOICE_CHARS = 160
+MAX_VOICE_BYTES = 12_000_000
+VOICE_STAGE_CUE = re.compile(
+    r"(?:我|她|这就|现在)?(?:给你)?发(?:一条|个)?语音(?:了|吧|给你)?"
+    r"|(?:用语音|语音)(?:回复|说)"
+    r"|(?:她|庄方宜)?(?:(?:轻声|低声|柔声|温柔地|缓缓地|清楚地|清楚的|清晰地|清晰的)[\s、，,]*){1,3}"
+    r"(?:说|说道|开口|讲)"
+)
+VOICE_STAGE_END = re.compile(r"[，,：:。！!]\s*")
+
+
+def spoken_reply(text: str) -> str:
+    """Remove only short, leading delivery directions from a voice reply."""
+    spoken = text.strip()
+    for _ in range(3):
+        if spoken.startswith(("（", "(")):
+            closing = "）" if spoken[0] == "（" else ")"
+            end = spoken.find(closing, 1, 65)
+            if end > 0 and VOICE_STAGE_CUE.fullmatch(spoken[1:end].strip()):
+                spoken = spoken[end + 1:].lstrip(" ，,：:")
+                continue
+        match = VOICE_STAGE_END.search(spoken[:65])
+        if not match or not VOICE_STAGE_CUE.fullmatch(spoken[:match.start()].strip()):
+            break
+        spoken = spoken[match.end():].lstrip()
+    return spoken
+
+
+def synthesize_qq_voice(text: str) -> bytes:
+    """Generate a short WAV with the same saved local voice as the desktop UI."""
+    settings = load_speech_settings()
+    if settings.engine != "gpt_sovits":
+        raise ValueError("尚未启用本地 GPT-SoVITS 语音")
+    request = urllib.request.Request(
+        settings.endpoint.rstrip("/") + "/tts",
+        data=json.dumps(settings.payload(text), ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=60) as response:
+        if response.headers.get("Content-Length") and int(response.headers["Content-Length"]) > MAX_VOICE_BYTES:
+            raise ValueError("生成的语音文件过大")
+        audio = response.read(MAX_VOICE_BYTES + 1)
+    if len(audio) > MAX_VOICE_BYTES or not (audio.startswith(b"RIFF") and audio[8:12] == b"WAVE"):
+        raise ValueError("本地语音服务未返回有效 WAV")
+    return audio
 
 
 def load_snowluma_token() -> str:
@@ -225,6 +279,8 @@ class QqBridge:
         # Persistence is separate from Mem0 and only enabled for explicitly
         # selected, already-whitelisted private accounts. Groups never persist.
         self.planner_settings = PlannerSettings.load(ROOT / "cognition_settings.json")
+        if not settings.voice_private_ids.issubset(settings.allowed_private_ids):
+            raise ValueError("QQ 语音回复账号必须包含在私聊白名单内")
         if not self.planner_settings.persist_private_ids.issubset(settings.allowed_private_ids):
             raise ValueError("可持久化账号必须包含在 QQ 私聊白名单内")
         self.context_store = (DialogueStore(ROOT / "conversation_data" / "qq_context.sqlite3")
@@ -238,13 +294,13 @@ class QqBridge:
         self.reflection_retry_at: dict[MemberKey, float] = {}
         self.reflection_lock = asyncio.Semaphore(1)
 
-    async def action(self, name: str, params: dict) -> dict:
+    async def action(self, name: str, params: dict, *, timeout: float = 15) -> dict:
         echo = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self.pending_actions[echo] = future
         try:
             await self.ws.send(json.dumps({"action": name, "params": params, "echo": echo}, ensure_ascii=False))
-            result = await asyncio.wait_for(future, timeout=15)
+            result = await asyncio.wait_for(future, timeout=timeout)
             if result.get("status") != "ok" or result.get("retcode") != 0:
                 raise RuntimeError(f"OneBot 动作 {name} 失败，retcode={result.get('retcode')}")
             return result.get("data") or {}
@@ -347,15 +403,17 @@ class QqBridge:
                     if not key and settings.provider != "custom":
                         raise RuntimeError("对话模型 API Key 未配置")
                     settings = replace(settings, memory_enabled=False,
-                                       system_prompt=settings.system_prompt + "\n你现在通过 QQ 文字聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。")
+                                       system_prompt=settings.system_prompt + "\n你现在通过 QQ 聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。")
                     candidate = state.context.observe(message)
                     plan = TurnPlan()
                     if self.planner_settings.enabled:
                         try:
                             plan = await asyncio.to_thread(
                                 plan_turn, settings, key, state.context.history, message,
-                                self.planner_settings)
-                            log_event("QQ", "思考", f"{current.scope} · 语气：{plan.tone}；关注：{plan.attention or '当前话题'}；置信度：{plan.confidence:.2f}")
+                                self.planner_settings,
+                                allow_voice=(current.kind == "private" and
+                                             current.user_id in self.settings.voice_private_ids))
+                            log_event("QQ", "思考", f"{current.scope} · 语气：{plan.tone}；关注：{plan.attention or '当前话题'}；形式：{plan.delivery}；置信度：{plan.confidence:.2f}")
                         except Exception as error:
                             print(f"可选思考阶段失败，改为直接回复：{type(error).__name__}")
                             log_event("QQ", "思考", f"{current.scope} · 阶段跳过：{type(error).__name__}")
@@ -364,6 +422,12 @@ class QqBridge:
                     emotion_prompt = candidate.to_prompt()
                     if plan.prompt():
                         emotion_prompt += "\n" + plan.prompt()
+                    if (current.kind == "private" and
+                            current.user_id in self.settings.voice_private_ids and
+                            plan.delivery == "voice" and plan.confidence >= 0.5):
+                        emotion_prompt += ("\n本轮回复会直接作为语音内容播放。只输出你真正要对用户说的话，"
+                                           "不要写‘发语音了’、‘轻声说’等动作、语气或发送方式的旁白；"
+                                           "不用括号、角色名、Markdown 或表情符号，尽量不超过 160 字。")
                     scene = fangyi_guidance(settings.system_prompt, message,
                                             enabled=self.planner_settings.fangyi_scene_skill)
                     if scene:
@@ -388,7 +452,16 @@ class QqBridge:
                     continue
                 # One outbound message per turn. Never retry an unknown delivery result.
                 reply = reply[:1200]
-                if await self.send_reply(current, reply):
+                use_voice = (current.kind == "private" and
+                             current.user_id in self.settings.voice_private_ids and
+                             plan.delivery == "voice" and plan.confidence >= 0.5)
+                if use_voice:
+                    cleaned = spoken_reply(reply)
+                    if cleaned != reply and cleaned:
+                        log_event("QQ", "语音文本", f"{current.scope} · 已省略开头的动作描述")
+                        reply = cleaned
+                    use_voice = bool(cleaned) and len(reply) <= MAX_VOICE_CHARS
+                if await self.send_reply(current, reply, voice=use_voice):
                     state.context.commit(message, reply, candidate)
                     if (self.context_store and current.kind == "private"
                             and current.user_id in self.planner_settings.persist_private_ids):
@@ -431,7 +504,14 @@ class QqBridge:
             print(f"QQ 用户记忆反思失败，保留待处理消息：{type(error).__name__}")
             log_event("记忆", "失败", f"bot:{identity.bot_id}:private:{identity.sender_id} · 反思失败：{type(error).__name__}")
 
-    async def send_reply(self, incoming: Incoming, reply: str) -> bool:
+    async def send_reply(self, incoming: Incoming, reply: str, *, voice: bool = False) -> bool:
+        audio = None
+        if voice and incoming.kind == "private" and incoming.user_id in self.settings.voice_private_ids:
+            try:
+                audio = await asyncio.to_thread(synthesize_qq_voice, reply)
+            except Exception as error:
+                log_event("QQ", "语音回退", f"{incoming.scope} · {type(error).__name__}: {error}")
+                print(f"QQ 语音生成失败，改发文字：{type(error).__name__}")
         async with self.send_lock:
             now = time.monotonic()
             await asyncio.sleep(max(0.0, self.next_send_at - now))
@@ -442,15 +522,25 @@ class QqBridge:
                 await asyncio.sleep(wait)
             self.next_send_at = time.monotonic() + 1.2
             if incoming.kind == "private":
-                await self.action("send_private_msg", {"user_id": incoming.user_id,
-                                                       "message": reply, "auto_escape": True})
+                if audio is not None:
+                    # SnowLuma resolves a local OneBot record segment and transcodes WAV to SILK.
+                    # Keep the file until its action returns; never retry an uncertain delivery.
+                    with tempfile.TemporaryDirectory(prefix="zhuangfy-qq-") as directory:
+                        path = Path(directory) / "reply.wav"
+                        path.write_bytes(audio)
+                        await self.action("send_private_msg", {"user_id": incoming.user_id,
+                            "message": [{"type": "record", "data": {"file": path.as_uri()}}]}, timeout=60)
+                else:
+                    await self.action("send_private_msg", {"user_id": incoming.user_id,
+                                                           "message": reply, "auto_escape": True})
             else:
                 await self.action("send_group_msg", {"group_id": incoming.group_id,
                     "message": [{"type": "at", "data": {"qq": str(incoming.user_id)}},
                                 {"type": "text", "data": {"text": " " + reply}}]})
             self.limiter.mark_sent(incoming, time.monotonic())
-            print("已投递 QQ 私聊回复" if incoming.kind == "private" else "已投递 QQ 群回复", flush=True)
-            log_event("QQ", "回复", f"{incoming.scope} · {reply}")
+            print(("已投递 QQ 私聊语音" if audio is not None else "已投递 QQ 私聊回复")
+                  if incoming.kind == "private" else "已投递 QQ 群回复", flush=True)
+            log_event("QQ", "语音回复" if audio is not None else "回复", f"{incoming.scope} · {reply}")
             return True
 
     async def run_forever(self) -> None:

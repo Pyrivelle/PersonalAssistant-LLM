@@ -10,9 +10,11 @@ from queue import Empty, Full, Queue
 
 import numpy as np
 import sounddevice as sd
-from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QByteArray, QBuffer, QElapsedTimer, QIODevice, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtCore import QLocale
 from PySide6.QtGui import QFont
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtTextToSpeech import QTextToSpeech
 from PySide6.QtWidgets import (
     QApplication,
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuous import StreamingVad
+from branding import APP_NAME, app_icon
 from chat_worker import ChatWorker, MemoryWriteWorker, OwnerMemoryWriteWorker
 from owner_memory import load_link
 from activity_log import log_event
@@ -40,6 +43,7 @@ from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from llm import load_key, load_settings
+from gpt_sovits import load_settings as load_speech_settings
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
 from wake import ConversationGate, DEFAULT_ALIASES, DEFAULT_NAME, TRAILING, parse_aliases
 
@@ -168,7 +172,8 @@ class ContinuousWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Shimano · SenseVoice")
+        self.setWindowTitle(f"{APP_NAME} · SenseVoice")
+        self.setWindowIcon(app_icon())
         self.resize(670, 800)
         self.setMinimumSize(550, 720)
         self.stream: sd.InputStream | None = None
@@ -219,6 +224,19 @@ class MainWindow(QMainWindow):
         if self.tts is not None:
             self.tts.setLocale(QLocale("zh_CN"))
             self.tts.stateChanged.connect(self.tts_state_changed)
+        self.custom_tts_active = False
+        self.custom_tts_request = None
+        self.custom_tts_request_text = ""
+        self.custom_tts_ready_audio: bytes | None = None
+        self.custom_tts_ready_text = ""
+        self.custom_tts_playing = False
+        self.custom_tts_prefetch_failed = False
+        self.custom_tts_buffer = None
+        self.custom_tts_network = QNetworkAccessManager(self)
+        self.custom_tts_player = QMediaPlayer(self)
+        self.custom_tts_audio = QAudioOutput(self)
+        self.custom_tts_player.setAudioOutput(self.custom_tts_audio)
+        self.custom_tts_player.mediaStatusChanged.connect(self.custom_tts_media_status)
 
         central = QWidget()
         central.setObjectName("root")
@@ -279,8 +297,9 @@ class MainWindow(QMainWindow):
         self.auto_reply.setChecked(saved["auto_reply"])
         form.addRow("对话", self.auto_reply)
         self.speak_reply = QCheckBox("用扬声器朗读模型回复")
-        self.speak_reply.setChecked(saved["speak_reply"] and self.tts is not None)
-        self.speak_reply.setEnabled(self.tts is not None)
+        speech_available = self.tts is not None or load_speech_settings().engine == "gpt_sovits"
+        self.speak_reply.setChecked(saved["speak_reply"] and speech_available)
+        self.speak_reply.setEnabled(speech_available)
         form.addRow("语音输出", self.speak_reply)
         self.voice_combo = QComboBox()
         if self.tts is not None:
@@ -292,10 +311,11 @@ class MainWindow(QMainWindow):
             if preferred >= 0:
                 self.voice_combo.setCurrentIndex(preferred)
                 self.tts.setVoice(self.voice_combo.currentData())
-        self.voice_combo.setEnabled(self.tts is not None and self.speak_reply.isChecked())
+        self.voice_combo.setEnabled(self.tts is not None and self.speak_reply.isChecked()
+                                    and load_speech_settings().engine == "system")
         self.voice_combo.currentIndexChanged.connect(self.select_voice)
-        self.speak_reply.toggled.connect(self.voice_combo.setEnabled)
-        form.addRow("发音人", self.voice_combo)
+        self.speak_reply.toggled.connect(self.refresh_speech_engine)
+        self.voice_combo.hide()
         self.barge_in_mode = QComboBox()
         self.barge_in_mode.addItem("扬声器：说唤醒名后打断", "speakers")
         self.barge_in_mode.addItem("耳机：检测到说话立即打断", "headphones")
@@ -422,6 +442,27 @@ class MainWindow(QMainWindow):
     def select_voice(self) -> None:
         if self.tts is not None and self.voice_combo.currentData() is not None:
             self.tts.setVoice(self.voice_combo.currentData())
+
+    def refresh_speech_engine(self, _checked: bool = False) -> None:
+        custom = load_speech_settings().engine == "gpt_sovits"
+        available = self.tts is not None or custom
+        self.speak_reply.setEnabled(available)
+        self.voice_combo.setEnabled(self.tts is not None and self.speak_reply.isChecked() and not custom)
+
+    def play_test_phrase(self, text: str) -> bool:
+        if (self.interaction_state not in (InteractionState.IDLE, InteractionState.LISTENING)
+                or self.worker is not None or self.chat_worker is not None
+                or self.speech_started_at is not None):
+            return False
+        self.custom_tts_active = load_speech_settings().engine == "gpt_sovits"
+        if self.tts is None and not self.custom_tts_active:
+            return False
+        self.tts_chunks = [text]
+        self.spoken_answer = text
+        self.tts_pending = True
+        self.set_interaction_state(InteractionState.SPEAKING)
+        self.speak_next_chunk()
+        return True
 
     def set_interaction_state(self, state: InteractionState) -> None:
         self.interaction_state = state
@@ -764,7 +805,9 @@ class MainWindow(QMainWindow):
                 writer.failed.connect(lambda warning: self.result_edit.appendPlainText(f"系统：{warning}\n"))
                 writer.finished.connect(lambda w=writer: self.owner_memory_write_finished(w))
                 writer.start()
-        if self.speak_reply.isChecked() and self.tts is not None:
+        speech_settings = load_speech_settings()
+        self.custom_tts_active = speech_settings.engine == "gpt_sovits"
+        if self.speak_reply.isChecked() and (self.tts is not None or self.custom_tts_active):
             self.tts_chunks = speech_chunks(reply, limit=42 if self.barge_in_mode.currentData() == "speakers" else 90)
             log_event("语音", "播报", f"准备播放 {len(self.tts_chunks)} 段语音")
             self.spoken_answer = reply
@@ -792,12 +835,141 @@ class MainWindow(QMainWindow):
         self.current_tts_chunk = self.tts_chunks.pop(0)
         self.status_label.setText(f"庄方宜正在分段说话 · 剩余 {len(self.tts_chunks)} 段")
         try:
-            self.tts.say(self.current_tts_chunk)
-            QTimer.singleShot(150, self.check_tts_state)
+            if self.custom_tts_active:
+                self._request_custom_tts(self.current_tts_chunk)
+                self.status_label.setText("正在生成专属语音…")
+            elif self.tts is not None:
+                self.tts.say(self.current_tts_chunk)
+                QTimer.singleShot(150, self.check_tts_state)
+            else:
+                raise RuntimeError("没有可用的语音引擎")
         except Exception as error:
             self.tts_pending = False
             self.result_edit.appendPlainText(f"系统：语音播报失败：{error}\n")
             self.finish_chat_turn()
+
+    def _request_custom_tts(self, chunk: str) -> None:
+        settings = load_speech_settings()
+        request = QNetworkRequest(QUrl(settings.endpoint.rstrip("/") + "/tts"))
+        request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
+        reply = self.custom_tts_network.post(
+            request, QByteArray(json.dumps(settings.payload(chunk), ensure_ascii=False).encode("utf-8")))
+        self.custom_tts_request = reply
+        self.custom_tts_request_text = chunk
+        reply.finished.connect(lambda r=reply: self.custom_tts_received(r))
+
+    def _prefetch_custom_tts(self) -> None:
+        if not self.custom_tts_active or not self.tts_chunks or self.custom_tts_request is not None:
+            return
+        chunk = self.tts_chunks.pop(0)
+        try:
+            self._request_custom_tts(chunk)
+        except Exception:
+            self.tts_chunks.insert(0, chunk)
+            self.custom_tts_prefetch_failed = True
+
+    def custom_tts_received(self, reply) -> None:
+        if reply is not self.custom_tts_request:
+            reply.deleteLater()
+            return
+        self.custom_tts_request = None
+        chunk = self.custom_tts_request_text
+        self.custom_tts_request_text = ""
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        data = bytes(reply.readAll())
+        error = reply.error()
+        reply.deleteLater()
+        if not self.tts_pending or self.interaction_state != InteractionState.SPEAKING:
+            return
+        if error != QNetworkReply.NetworkError.NoError or status != 200 or len(data) > 20_000_000 or not data.startswith(b"RIFF"):
+            if self.custom_tts_playing:
+                self.tts_chunks.insert(0, chunk)
+                self.custom_tts_prefetch_failed = True
+            else:
+                self.current_tts_chunk = chunk
+                self._custom_tts_fallback("专属语音服务暂不可用，已切换系统语音")
+            return
+        if self.custom_tts_playing:
+            self.custom_tts_ready_audio = data
+            self.custom_tts_ready_text = chunk
+        else:
+            self.current_tts_chunk = chunk
+            self._play_custom_audio(data)
+
+    def _play_custom_audio(self, data: bytes) -> None:
+        self.custom_tts_player.stop()
+        if self.custom_tts_buffer is not None:
+            self.custom_tts_buffer.close()
+            self.custom_tts_buffer.deleteLater()
+        self.custom_tts_buffer = QBuffer(self)
+        self.custom_tts_buffer.setData(QByteArray(data))
+        self.custom_tts_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+        self.custom_tts_player.setSourceDevice(self.custom_tts_buffer)
+        self.custom_tts_playing = True
+        self.custom_tts_player.play()
+        self.status_label.setText(f"庄方宜正在播报 · 剩余 {len(self.tts_chunks)} 段")
+        self._prefetch_custom_tts()
+
+    def _advance_custom_tts(self) -> None:
+        self.custom_tts_playing = False
+        if self.custom_tts_ready_audio is not None:
+            data = self.custom_tts_ready_audio
+            self.current_tts_chunk = self.custom_tts_ready_text
+            self.custom_tts_ready_audio = None
+            self.custom_tts_ready_text = ""
+            self._play_custom_audio(data)
+        elif self.custom_tts_prefetch_failed:
+            self._custom_tts_fallback("专属语音服务暂不可用，已切换系统语音", replay_current=False)
+        elif self.custom_tts_request is not None:
+            self.status_label.setText("正在等待下一段专属语音…")
+        elif self.tts_chunks:
+            self.speak_next_chunk()
+        else:
+            self.finish_chat_turn()
+
+    def custom_tts_media_status(self, status) -> None:
+        if not self.custom_tts_active or not self.tts_pending or self.interaction_state != InteractionState.SPEAKING:
+            return
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self._advance_custom_tts()
+        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+            self._custom_tts_fallback("专属语音文件无法播放，已切换系统语音")
+
+    def _custom_tts_fallback(self, message: str, replay_current: bool = True) -> None:
+        self.custom_tts_active = False
+        self._stop_custom_audio()
+        self.result_edit.appendPlainText(f"系统：{message}\n")
+        if self.tts is None:
+            self.tts_pending = False
+            self.finish_chat_turn()
+            return
+        if replay_current:
+            self.tts.say(self.current_tts_chunk)
+            QTimer.singleShot(150, self.check_tts_state)
+        else:
+            self.speak_next_chunk()
+
+    def _advance_tts(self) -> None:
+        if not self.tts_advance_pending:
+            self.tts_advance_pending = True
+            delay = 1100 if self.barge_in_mode.currentData() == "speakers" and self.tts_chunks else 0
+            QTimer.singleShot(delay, self.speak_next_chunk)
+
+    def _stop_custom_audio(self) -> None:
+        reply = self.custom_tts_request
+        self.custom_tts_request = None
+        self.custom_tts_request_text = ""
+        self.custom_tts_ready_audio = None
+        self.custom_tts_ready_text = ""
+        self.custom_tts_playing = False
+        self.custom_tts_prefetch_failed = False
+        if reply is not None:
+            reply.abort()
+        self.custom_tts_player.stop()
+        if self.custom_tts_buffer is not None:
+            self.custom_tts_buffer.close()
+            self.custom_tts_buffer.deleteLater()
+        self.custom_tts_buffer = None
 
     def chat_failed(self, turn: int, error: str) -> None:
         if turn != self.active_turn:
@@ -829,12 +1001,12 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def check_tts_state(self) -> None:
-        if self.tts_pending and self.interaction_state == InteractionState.SPEAKING and self.tts is not None and self.tts.state() in (QTextToSpeech.State.Ready, QTextToSpeech.State.Error):
+        if not self.custom_tts_active and self.tts_pending and self.interaction_state == InteractionState.SPEAKING and self.tts is not None and self.tts.state() in (QTextToSpeech.State.Ready, QTextToSpeech.State.Error):
             self.tts_state_changed(self.tts.state())
 
     @Slot(QTextToSpeech.State)
     def tts_state_changed(self, state) -> None:
-        if not self.tts_pending or self.interaction_state != InteractionState.SPEAKING:
+        if self.custom_tts_active or not self.tts_pending or self.interaction_state != InteractionState.SPEAKING:
             return
         if state in (QTextToSpeech.State.Ready, QTextToSpeech.State.Error):
             if state == QTextToSpeech.State.Error and hasattr(self, "status_label"):
@@ -843,12 +1015,7 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("语音播报失败；文字回复仍可查看")
                 self.finish_chat_turn()
             else:
-                if not self.tts_advance_pending:
-                    self.tts_advance_pending = True
-                    # A short gap lets the 0.8 s VAD silence timer close a
-                    # segment before the next sentence feeds speaker echo.
-                    delay = 1100 if self.barge_in_mode.currentData() == "speakers" and self.tts_chunks else 0
-                    QTimer.singleShot(delay, self.speak_next_chunk)
+                self._advance_tts()
 
     @Slot()
     def interrupt_reply(self) -> None:
@@ -866,6 +1033,7 @@ class MainWindow(QMainWindow):
             self.echo_guard_until = time.monotonic() + 0.8
             if self.tts is not None:
                 self.tts.stop()
+            self._stop_custom_audio()
         else:
             return
         self.set_interaction_state(InteractionState.LISTENING)
@@ -917,6 +1085,7 @@ class MainWindow(QMainWindow):
         self.speech_started_during_playback = False
         if self.tts is not None:
             self.tts.stop()
+        self._stop_custom_audio()
         self.set_interaction_state(InteractionState.IDLE)
         self.continuous_button.setEnabled(False)
         stream = self.continuous_stream
@@ -1041,6 +1210,7 @@ class MainWindow(QMainWindow):
         self.tts_pending = False
         if self.tts is not None:
             self.tts.stop()
+        self._stop_custom_audio()
         self.save_wake_settings()
         if self.stream is not None:
             self.timer.stop()
@@ -1070,7 +1240,9 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("Shimano SenseVoice")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    app.setWindowIcon(app_icon())
     app.setFont(QFont("Microsoft YaHei UI", 10))
     window = MainWindow()
     window.show()

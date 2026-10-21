@@ -4,23 +4,27 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import shutil
 import socket
+import subprocess
 import sys
 from dataclasses import asdict
-from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QPainter, QPixmap, QTextCursor
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl, QUrlQuery
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QFontDatabase, QTextCursor
+from PySide6.QtNetwork import QHostAddress, QNetworkAccessManager, QNetworkReply, QNetworkRequest, QUdpSocket
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QScrollArea, QSpinBox, QDoubleSpinBox, QStackedWidget, QSystemTrayIcon,
     QVBoxLayout, QWidget,
 )
 
-from activity_log import LOG_DIR, available_days, format_event, log_event, read_day
+from activity_log import format_event, log_event, receive_event, session_snapshot
+from branding import APP_NAME, app_icon
 from llm import (
     DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
     PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
@@ -29,6 +33,8 @@ from llm import (
 from model_catalog import ModelCatalogWorker
 from persona_packs import BUILTIN_PACKS, matching_pack
 from owner_memory import current_bot_id, load_link, save_link
+from gpt_sovits import (ENGINE_ROOT, SpeechSettings, available_models, save_model_config,
+                        load_settings as load_speech_settings, save_settings as save_speech_settings)
 from qq_bridge import QqSettings, SETTINGS_FILE as QQ_SETTINGS_FILE, load_snowluma_token
 
 
@@ -104,40 +110,72 @@ def _port_open(url: str) -> bool:
         return False
 
 
-def _app_icon() -> QIcon:
-    canvas = QPixmap(64, 64)
-    canvas.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(canvas)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor("#5269c8"))
-    painter.drawEllipse(3, 3, 58, 58)
-    painter.setPen(QColor("#ffffff"))
-    painter.setFont(QFont("Microsoft YaHei UI", 27, QFont.Weight.Bold))
-    painter.drawText(canvas.rect(), Qt.AlignmentFlag.AlignCenter, "庄")
-    painter.end()
-    return QIcon(canvas)
+def _tts_python() -> tuple[Path, Path]:
+    """Use a real CPython executable in the venv, bypassing uv's Windows launcher."""
+    venv = ENGINE_ROOT / ".venv"
+    cfg = venv / "pyvenv.cfg"
+    if not cfg.is_file():
+        raise FileNotFoundError(f"GPT-SoVITS 虚拟环境配置不存在：{cfg}")
+    home = next((line.partition("=")[2].strip().strip('"')
+                 for line in cfg.read_text(encoding="utf-8").splitlines()
+                 if line.partition("=")[0].strip().lower() == "home"), "")
+    base_python = Path(home) / "python.exe" if home else None
+    if base_python is None or not base_python.is_file():
+        raise FileNotFoundError(f"GPT-SoVITS 虚拟环境的基础 Python 不存在：{home}")
+    direct_python = venv / "Scripts" / "python-gpt-sovits.exe"
+    source_stat = base_python.stat()
+    if (not direct_python.is_file() or
+            direct_python.stat().st_size != source_stat.st_size or
+            direct_python.stat().st_mtime_ns != source_stat.st_mtime_ns):
+        shutil.copy2(base_python, direct_python)
+    return direct_python, base_python.parent
+
+
+def _tts_process_environment(base_home: Path | None = None) -> QProcessEnvironment:
+    """Keep the desktop interpreter from leaking into GPT-SoVITS's venv."""
+    environment = QProcessEnvironment.systemEnvironment()
+    for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE",
+                 "__PYVENV_LAUNCHER__", "VIRTUAL_ENV"):
+        environment.remove(name)
+    if base_home is not None:
+        environment.insert("PATH", str(base_home) + os.pathsep + environment.value("PATH"))
+    return environment
 
 
 class Dashboard(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Shimano · 控制台")
+        self.setWindowTitle(f"{APP_NAME} · 控制台")
         self.resize(1120, 760)
         self.setMinimumSize(840, 590)
         self.voice_window = None
         self.chat_window = None
         self.memory_window = None
         self._model_worker = None
+        self._tts_network = QNetworkAccessManager(self)
+        self._tts_pending_settings = None
+        self._tts_pending_model = None
+        self._tts_switch_step = 0
         self._auto_bridge_pending = False
         self._bridge_connected = False
         self._closing = False
         self._really_quit = False
         self._tray_hint_shown = False
-        self.setWindowIcon(_app_icon())
+        self._event_token = secrets.token_urlsafe(24)
+        self._event_receiver = QUdpSocket(self)
+        self._event_receiver.bind(QHostAddress.SpecialAddress.LocalHost, 0)
+        self._event_receiver.readyRead.connect(self._receive_child_events)
+        self.setWindowIcon(app_icon())
         self.snowluma = QProcess(self)
+        # SnowLuma forks another Node process. Its child must never inherit a
+        # pipe owned by this window: after a UI restart that pipe becomes EPIPE
+        # and SnowLuma can flood its own log instead of completing OneBot calls.
+        self.snowluma.setStandardOutputFile(QProcess.nullDevice())
+        self.snowluma.setStandardErrorFile(QProcess.nullDevice())
         self.bridge = QProcess(self)
-        self._managed = {self.snowluma: "SnowLuma", self.bridge: "QQ 桥接"}
+        self.tts_server = QProcess(self)
+        self._managed = {self.snowluma: "SnowLuma", self.bridge: "QQ 桥接",
+                         self.tts_server: "GPT-SoVITS"}
         for process in self._managed:
             process.errorOccurred.connect(lambda _error, p=process: self._process_error(p))
             process.finished.connect(lambda _code, _status, p=process: self._process_finished(p))
@@ -160,12 +198,12 @@ class Dashboard(QMainWindow):
         brand = QLabel("庄方宜")
         brand.setObjectName("brand")
         side.addWidget(brand)
-        subbrand = QLabel("SHIMANO  /  CONTROL")
+        subbrand = QLabel("ZhuangFY  /  CONTROL")
         subbrand.setObjectName("subbrand")
         side.addWidget(subbrand)
         side.addSpacing(36)
         self.nav = []
-        for name in ("总览", "模型与人格", "QQ · SnowLuma", "运行日志", "回到家 · 语音"):
+        for name in ("总览", "模型与人格", "QQ · SnowLuma", "运行过程", "语音交互"):
             button = _button(name, lambda _checked=False, i=len(self.nav): self.switch_page(i))
             button.setObjectName("nav")
             side.addWidget(button)
@@ -175,8 +213,9 @@ class Dashboard(QMainWindow):
         side.addWidget(_button("打开语音窗口  ↗", self.open_voice))
         side.addWidget(_button("文字对话测试  ↗", self.open_chat))
         side.addWidget(_button("长期记忆管理  ↗", self.open_memory))
+        side.addWidget(_button("重启连接  ↻", self.restart_connections))
         side.addStretch()
-        note = QLabel("设置与日志保存在本机\n关闭窗口会驻留托盘；从托盘退出会停止服务")
+        note = QLabel("设置保存在本机；运行过程仅保留本次启动\n关闭窗口会驻留托盘；从托盘退出会停止服务")
         note.setObjectName("sideNote")
         note.setWordWrap(True)
         side.addWidget(note)
@@ -210,20 +249,21 @@ class Dashboard(QMainWindow):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self.tray = QSystemTrayIcon(self.windowIcon(), self)
-        self.tray.setToolTip("庄方宜 · Shimano")
+        self.tray.setToolTip("庄方宜 · ZhuangFY")
         menu = self.tray.contextMenu()
         if menu is None:
             from PySide6.QtWidgets import QMenu
             menu = QMenu(self)
         for label, callback in (("打开控制台", self.show_console),
                                 ("打开语音窗口", self.open_voice),
-                                ("回到家 · 语音", lambda: self.show_console(4)),
-                                ("查看运行日志", lambda: self.show_console(3))):
+                                ("语音交互", lambda: self.show_console(4)),
+                                ("查看运行过程", lambda: self.show_console(3)),
+                                ("重启连接", self.restart_connections)):
             action = QAction(label, self)
             action.triggered.connect(callback)
             menu.addAction(action)
         menu.addSeparator()
-        quit_action = QAction("退出 Shimano", self)
+        quit_action = QAction("退出 ZhuangFY", self)
         quit_action.triggered.connect(self.quit_app)
         menu.addAction(quit_action)
         self.tray.setContextMenu(menu)
@@ -250,6 +290,36 @@ class Dashboard(QMainWindow):
             self.tray.hide()
         QApplication.instance().quit()
 
+    def restart_connections(self) -> None:
+        bridge_running = self.bridge.state() != QProcess.ProcessState.NotRunning
+        speech_running = self.tts_server.state() != QProcess.ProcessState.NotRunning
+        self._auto_bridge_pending = False
+        if bridge_running:
+            self._stop(self.bridge)
+        if speech_running:
+            self._stop(self.tts_server)
+        if bridge_running:
+            self._start_bridge()
+        if speech_running:
+            self.toggle_tts_service()
+        if self.voice_window is not None:
+            self.voice_window.refresh_speech_engine()
+        active = [name for name, running in (("QQ 桥接", bridge_running),
+                                              ("GPT-SoVITS", speech_running)) if running]
+        message = (f"已重启 {'、'.join(active)}；控制台与 SnowLuma 保持运行" if active else
+                   "没有由控制台管理的连接需要重启；界面设置会在下一轮读取")
+        self._log(message)
+        self.statusBar().showMessage(message)
+
+    def _receive_child_events(self) -> None:
+        received = False
+        while self._event_receiver.hasPendingDatagrams():
+            datagram = self._event_receiver.receiveDatagram(20_000)
+            if datagram.senderAddress().isLoopback():
+                received = receive_event(bytes(datagram.data()), self._event_token) or received
+        if received and self.pages.currentIndex() == 3:
+            self.refresh_logs()
+
     def _page(self, title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
         wrapper = QScrollArea()
         wrapper.setWidgetResizable(True)
@@ -274,7 +344,7 @@ class Dashboard(QMainWindow):
         hero, layout = _card("语音对话", "本机 SenseVoice 识别 + 唤醒监听 + 模型回复 + 分段语音播报。")
         actions = QHBoxLayout()
         actions.addWidget(_button("打开语音窗口", self.open_voice, primary=True))
-        actions.addWidget(_button("回到家 · 开始语音", lambda: self.switch_page(4)))
+        actions.addWidget(_button("语音交互", lambda: self.switch_page(4)))
         actions.addWidget(_button("文字测试", self.open_chat))
         actions.addStretch()
         layout.addLayout(actions)
@@ -438,6 +508,9 @@ class Dashboard(QMainWindow):
         self.private_ids = _line("私聊白名单", ", ".join(map(str, sorted(saved.allowed_private_ids))))
         self.private_ids.setPlaceholderText("多个 QQ 号用逗号分隔")
         rule_form.addRow("私聊 QQ 号", self.private_ids)
+        self.voice_private_ids = _line("允许模型选择语音的 QQ 号", ", ".join(map(str, sorted(saved.voice_private_ids))))
+        self.voice_private_ids.setPlaceholderText("留空则只发文字；仅限已在私聊白名单中的账号")
+        rule_form.addRow("语音回复 QQ 号", self.voice_private_ids)
         self.group_ids = _line("群聊白名单", ", ".join(map(str, sorted(saved.allowed_group_ids))))
         self.group_ids.setPlaceholderText("不填则关闭群聊")
         rule_form.addRow("群号", self.group_ids)
@@ -469,14 +542,9 @@ class Dashboard(QMainWindow):
 
     def _logs_page(self) -> QScrollArea:
         page, column = self._page(
-            "运行日志", "按时间查看语音、文字、QQ 与模型调用过程。这里的“思考”是可选规划器的简短策略，不是模型内部推理。")
-        card, layout = _card("对话与调用记录", "日志保存在本机 logs/，包含消息与回复正文；密钥会遮盖。日志文件不会提交到 Git。")
+            "运行过程", "查看本次启动的语音、文字、QQ 与模型调用。这里的“思考”是规划器返回的表达策略，不是模型内部推理。")
+        card, layout = _card("本次启动的对话与调用", "内容只保存在当前程序内存中，退出后清空；新运行不写入日志文件。")
         controls = QHBoxLayout()
-        self.log_day = QComboBox()
-        self.log_day.addItems(available_days() or [date.today().isoformat()])
-        self.log_day.currentIndexChanged.connect(lambda _index: self.refresh_logs(force=True))
-        controls.addWidget(QLabel("日期"))
-        controls.addWidget(self.log_day)
         self.log_filter = QComboBox()
         self.log_filter.addItems(("全部来源", "控制台", "语音", "文字", "QQ", "模型", "记忆", "SnowLuma"))
         self.log_filter.currentIndexChanged.connect(lambda _index: self.refresh_logs(force=True))
@@ -499,7 +567,6 @@ class Dashboard(QMainWindow):
         bottom.addStretch()
         bottom.addWidget(_button("刷新", lambda: self.refresh_logs(force=True)))
         bottom.addWidget(_button("复制当前视图", lambda: QApplication.clipboard().setText(self.log_view.toPlainText())))
-        bottom.addWidget(_button("打开日志目录  ↗", self.open_log_dir))
         layout.addLayout(bottom)
         column.addWidget(card)
         column.addStretch()
@@ -508,7 +575,7 @@ class Dashboard(QMainWindow):
 
     def _home_voice_page(self) -> QScrollArea:
         page, column = self._page(
-            "回到家，和庄方宜说话。",
+            "语音交互",
             "选择麦克风后开启持续监听；说“庄方宜”“庄天师”或“小庄”唤醒，接下来可以自然接话。识别在本机运行，模型回复和记忆反思使用当前 API。")
         link_card, link_layout = _card("同一个人，同一份记忆",
                                       "将本机语音明确关联到你的 QQ 私聊账号。只共享个人长期档案；两个入口的最近对话上下文仍分别保存。")
@@ -516,7 +583,8 @@ class Dashboard(QMainWindow):
         self.voice_link_state.setWordWrap(True)
         link_layout.addWidget(self.voice_link_state)
         link_row = QHBoxLayout()
-        self.voice_owner_qq = _line("关联的个人 QQ 号", "964692788")
+        self.voice_owner_qq = _line("关联的个人 QQ 号", "")
+        self.voice_owner_qq.setPlaceholderText("填写已加入私聊白名单的 QQ 号")
         self.voice_owner_qq.setMaximumWidth(190)
         linked = load_link(validate=False)
         if linked is not None:
@@ -545,7 +613,7 @@ class Dashboard(QMainWindow):
         form.addRow("麦克风", mic_row)
         self.home_voice = QComboBox()
         self.home_voice.currentIndexChanged.connect(self.select_home_voice)
-        form.addRow("播报声音", self.home_voice)
+        self.home_voice.hide()
         layout.addLayout(form)
         action_row = QHBoxLayout()
         self.home_start = _button("开始回家对话", self.start_home_voice, primary=True)
@@ -569,9 +637,189 @@ class Dashboard(QMainWindow):
         self.home_transcript.setPlaceholderText("识别文字和模型回复会在这里同步显示。")
         layout.addWidget(self.home_transcript)
         column.addWidget(control)
+
+        speech = load_speech_settings()
+        voice_card, voice_layout = _card(
+            "庄方宜的声音 · GPT-SoVITS v2Pro",
+            "训练权重决定音色；GPT-SoVITS 合成时仍需要参考片段。庄方宜模型会自动填入已匹配的录音和台词。")
+        self.tts_service_state = QLabel()
+        voice_layout.addWidget(self.tts_service_state)
+        voice_form = QFormLayout()
+        self.tts_engine = QComboBox()
+        self.tts_engine.addItem("系统语音（当前可用）", "system")
+        self.tts_engine.addItem("GPT-SoVITS v2Pro", "gpt_sovits")
+        self.tts_engine.setCurrentIndex(self.tts_engine.findData(speech.engine))
+        voice_form.addRow("语音引擎", self.tts_engine)
+        self.tts_models = available_models()
+        self.tts_model = QComboBox()
+        for model in self.tts_models:
+            self.tts_model.addItem(model.label, model.model_id)
+        model_id = speech.model_id or (
+            "zhuangfangyi_v2pro" if "zhaungfyvoice" in speech.reference_audio.lower() else "v2pro_base")
+        model_index = self.tts_model.findData(model_id)
+        self.tts_model.setCurrentIndex(model_index if model_index >= 0 else 0)
+        self.tts_model.setEnabled(speech.engine == "gpt_sovits")
+        voice_form.addRow("本地模型", self.tts_model)
+        self.tts_reference = _line("参考音频路径", speech.reference_audio)
+        reference_row = QHBoxLayout()
+        reference_row.addWidget(self.tts_reference, 1)
+        reference_row.addWidget(_button("选择音频…", self.choose_tts_reference))
+        voice_form.addRow("参考音频", reference_row)
+        self.tts_reference_text = _line("参考音频中的准确台词", speech.reference_text)
+        self.tts_reference_text.setPlaceholderText("与参考音频逐字一致的中文台词")
+        voice_form.addRow("参考台词", self.tts_reference_text)
+        self.tts_model_hint = QLabel("可改用自己的参考片段；切换模型会填入该模型的默认参考。")
+        self.tts_model_hint.setObjectName("muted")
+        self.tts_model_hint.setWordWrap(True)
+        voice_form.addRow("", self.tts_model_hint)
+        voice_layout.addLayout(voice_form)
+        self.tts_model.currentIndexChanged.connect(self.select_tts_model)
+        self.tts_engine.currentIndexChanged.connect(self.select_tts_engine)
+        voice_actions = QHBoxLayout()
+        self.tts_service_button = _button("启动本地语音服务", self.toggle_tts_service)
+        voice_actions.addWidget(self.tts_service_button)
+        self.tts_save_button = _button("应用模型与语音设置", self.save_tts_settings, primary=True)
+        voice_actions.addWidget(self.tts_save_button)
+        voice_actions.addStretch()
+        voice_layout.addLayout(voice_actions)
+        self.tts_feedback = QLabel("服务默认绑定 127.0.0.1:9880；参考音频只存于本机。")
+        self.tts_feedback.setObjectName("muted")
+        self.tts_feedback.setWordWrap(True)
+        voice_layout.addWidget(self.tts_feedback)
+        column.addWidget(voice_card)
         column.addStretch()
         self.refresh_home_voice_status()
         return page
+
+    def choose_tts_reference(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "选择参考音频", str(Path.home()), "音频文件 (*.wav *.mp3 *.flac)")
+        if filename:
+            self.tts_reference.setText(filename)
+
+    def select_tts_model(self, _index: int = -1) -> None:
+        index = self.tts_model.currentIndex()
+        if index < 0 or index >= len(self.tts_models):
+            return
+        model = self.tts_models[index]
+        self.tts_reference.setText(model.reference_audio)
+        self.tts_reference_text.setText(model.reference_text)
+        self.tts_model_hint.setText(
+            "庄方宜的参考录音和准确台词已自动填入；可以按需要替换。" if model.reference_audio else
+            "这个模型没有预设参考。请选一段清晰录音，并填写其中的准确台词。")
+
+    def select_tts_engine(self, _index: int = -1) -> None:
+        self.tts_model.setEnabled(self.tts_engine.currentData() == "gpt_sovits")
+
+    def save_tts_settings(self) -> None:
+        try:
+            model = next((item for item in self.tts_models
+                          if item.model_id == self.tts_model.currentData()), None)
+            settings = SpeechSettings(self.tts_engine.currentData(), "http://127.0.0.1:9880",
+                                      self.tts_reference.text().strip(),
+                                      self.tts_reference_text.text().strip(),
+                                      model.model_id if model else "")
+            settings.validated()
+            if settings.engine == "gpt_sovits" and model is None:
+                raise ValueError("未找到可用的 GPT 与 SoVITS 模型权重")
+            if settings.engine == "gpt_sovits" and _port_open(settings.endpoint):
+                self._tts_pending_settings = settings
+                self._tts_pending_model = model
+                self._tts_switch_step = 0
+                self.tts_save_button.setEnabled(False)
+                self.tts_feedback.setText("正在加载所选模型权重…")
+                self._send_tts_model_switch()
+            else:
+                if settings.engine == "gpt_sovits":
+                    save_model_config(model)
+                self._finish_tts_save(settings)
+        except (OSError, ValueError, TypeError) as error:
+            self.tts_feedback.setText(f"保存失败：{error}")
+
+    def _send_tts_model_switch(self) -> None:
+        model = self._tts_pending_model
+        if model is None:
+            return
+        endpoint, weight = (("set_sovits_weights", model.sovits_weight)
+                            if self._tts_switch_step == 0 else
+                            ("set_gpt_weights", model.gpt_weight))
+        url = QUrl(f"http://127.0.0.1:9880/{endpoint}")
+        query = QUrlQuery()
+        query.addQueryItem("weights_path", str(weight))
+        url.setQuery(query)
+        request = QNetworkRequest(url)
+        request.setTransferTimeout(30_000)
+        reply = self._tts_network.get(request)
+        reply.finished.connect(lambda r=reply: self._tts_model_switch_finished(r))
+
+    def _tts_model_switch_finished(self, reply: QNetworkReply) -> None:
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        error = reply.error()
+        error_text = reply.errorString()
+        detail = bytes(reply.readAll()).decode("utf-8", errors="replace")[:240]
+        reply.deleteLater()
+        if error != QNetworkReply.NetworkError.NoError or status != 200:
+            self.tts_feedback.setText(f"模型加载失败：{detail or error_text}")
+            self.tts_save_button.setEnabled(True)
+            self._tts_pending_settings = None
+            self._tts_pending_model = None
+            return
+        self._tts_switch_step += 1
+        if self._tts_switch_step < 2:
+            self._send_tts_model_switch()
+            return
+        try:
+            save_model_config(self._tts_pending_model)
+            self._finish_tts_save(self._tts_pending_settings)
+        except (OSError, ValueError, TypeError) as error:
+            self.tts_feedback.setText(f"模型已加载，但保存设置失败：{error}")
+        finally:
+            self.tts_save_button.setEnabled(True)
+            self._tts_pending_settings = None
+            self._tts_pending_model = None
+
+    def _finish_tts_save(self, settings: SpeechSettings) -> None:
+        save_speech_settings(settings)
+        self.tts_feedback.setText("已应用语音设置；下一轮播报使用所选模型。")
+        self._log(f"语音引擎已设置为 {settings.engine}；模型 {settings.model_id or '系统语音'}")
+        if self.voice_window is not None:
+            self.voice_window.refresh_speech_engine()
+        self.home_voice.setEnabled(settings.engine == "system" and self.home_voice.count() > 0)
+        if settings.engine == "gpt_sovits":
+            QTimer.singleShot(0, self.start_tts_service)
+
+    def toggle_tts_service(self) -> None:
+        if self.tts_server.state() != QProcess.ProcessState.NotRunning:
+            self._stop(self.tts_server)
+            self.refresh_home_voice_status()
+            return
+        self.start_tts_service()
+
+    def start_tts_service(self) -> None:
+        """Start the selected local TTS once, also used during console startup."""
+        if self.tts_server.state() != QProcess.ProcessState.NotRunning:
+            return
+        if _port_open("http://127.0.0.1:9880"):
+            self.tts_feedback.setText("本机 9880 端口已有语音服务运行；可以直接使用（不由本控制台管理）。")
+            self.refresh_home_voice_status()
+            return
+        config = ENGINE_ROOT / "GPT_SoVITS" / "configs" / "shimano_v2pro.yaml"
+        if not config.is_file():
+            self.tts_feedback.setText("GPT-SoVITS v2Pro 配置尚未安装完成。")
+            return
+        try:
+            interpreter, base_home = _tts_python()
+        except (OSError, ValueError) as error:
+            self.tts_feedback.setText(f"GPT-SoVITS Python 启动失败：{error}")
+            self._log(f"GPT-SoVITS Python 启动失败：{error}")
+            return
+        self.tts_server.setProcessEnvironment(_tts_process_environment(base_home))
+        self.tts_server.setWorkingDirectory(str(ENGINE_ROOT))
+        self.tts_server.start(str(interpreter), [str(ENGINE_ROOT / "api_v2.py"),
+                                                  "-a", "127.0.0.1", "-p", "9880", "-c", str(config)])
+        self.tts_feedback.setText("正在加载 v2Pro 模型；首次启动可能需要几十秒。")
+        self._log("正在启动 GPT-SoVITS v2Pro…")
+        self.refresh_home_voice_status()
 
     def _ensure_voice(self):
         if self.voice_window is None:
@@ -595,6 +843,7 @@ class Dashboard(QMainWindow):
             self.home_voice.addItem(voice.voice_combo.itemText(index), index)
         self.home_voice.setCurrentIndex(voice.voice_combo.currentIndex())
         self.home_voice.blockSignals(False)
+        self.home_voice.setEnabled(load_speech_settings().engine == "system" and voice.voice_combo.isEnabled())
         self.refresh_home_voice_status()
 
     def select_home_mic(self) -> None:
@@ -602,7 +851,7 @@ class Dashboard(QMainWindow):
             self.voice_window.device_combo.setCurrentIndex(self.home_mic.currentIndex())
 
     def select_home_voice(self) -> None:
-        if self.voice_window is not None:
+        if self.voice_window is not None and load_speech_settings().engine == "system":
             self.voice_window.voice_combo.setCurrentIndex(self.home_voice.currentIndex())
 
     def link_voice_owner(self) -> None:
@@ -629,11 +878,11 @@ class Dashboard(QMainWindow):
             self.voice_link_feedback.setText("请先停止单句麦克风测试。")
             return
         voice.auto_reply.setChecked(True)
-        if voice.tts is not None:
+        if voice.tts is not None or load_speech_settings().engine == "gpt_sovits":
             voice.speak_reply.setChecked(True)
         voice.start_continuous()
         self.refresh_home_voice_status()
-        self._log("已从回到家页面开启语音监听")
+        self._log("已从语音交互页面开启语音监听")
 
     def stop_home_voice(self) -> None:
         voice = self.voice_window
@@ -656,9 +905,12 @@ class Dashboard(QMainWindow):
         self.refresh_home_voice_status()
 
     def test_home_tts(self) -> None:
+        if load_speech_settings().engine == "gpt_sovits" and not _port_open("http://127.0.0.1:9880"):
+            self.tts_feedback.setText("请先启动本地语音服务，再做播报测试。")
+            return
         voice = self._ensure_voice()
-        if voice.tts is not None and voice.continuous_worker is None:
-            voice.tts.say("欢迎回来，我在这里。")
+        if not voice.play_test_phrase("欢迎回来，我在这里。"):
+            self.tts_feedback.setText("语音正在工作，请等当前录音或播报结束后重试。")
         self.refresh_home_voice_status()
 
     def refresh_home_voice_status(self) -> None:
@@ -668,6 +920,11 @@ class Dashboard(QMainWindow):
         self.voice_link_state.setText(
             f"已连接：QQ {link.qq_id} · 机器人 {link.bot_id} · 使用同一个个人记忆库" if link else
             "尚未建立有效关联。语音目前不会读取或写入 QQ 个人档案。")
+        server_running = self.tts_server.state() != QProcess.ProcessState.NotRunning
+        service_ready = _port_open("http://127.0.0.1:9880")
+        self.tts_service_state.setText("本地服务：已就绪" if service_ready else
+                                       ("本地服务：加载模型中" if server_running else "本地服务：未启动"))
+        self.tts_service_button.setText("停止本地语音服务" if server_running else "启动本地语音服务")
         voice = self.voice_window
         if voice is None:
             self.home_voice_state.setText("语音未启动 · 可先选设备并测试")
@@ -691,29 +948,12 @@ class Dashboard(QMainWindow):
             self.home_transcript.setPlainText(transcript)
             self.home_transcript.moveCursor(QTextCursor.MoveOperation.End)
 
-    def open_log_dir(self) -> None:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR)))
-
     def refresh_logs(self, *, force: bool = False) -> None:
-        days = available_days()
-        selected = self.log_day.currentText()
-        if days and (self.log_day.count() != len(days) or
-                     [self.log_day.itemText(i) for i in range(self.log_day.count())] != days):
-            self.log_day.blockSignals(True)
-            self.log_day.clear()
-            self.log_day.addItems(days)
-            self.log_day.setCurrentText(selected if selected in days else days[0])
-            self.log_day.blockSignals(False)
-            force = True
-        day = self.log_day.currentText()
-        files = sorted(LOG_DIR.glob(f"activity-{day}-*.jsonl"))
-        signature = (day, tuple((str(path), path.stat().st_size, path.stat().st_mtime_ns)
-                                for path in files), self.log_filter.currentText(), self.log_search.text())
+        revision, entries = session_snapshot()
+        signature = (revision, self.log_filter.currentText(), self.log_search.text())
         if not force and signature == self._log_signature:
             return
         self._log_signature = signature
-        entries = read_day(day)
         source = self.log_filter.currentText()
         query = self.log_search.text().strip().casefold()
         lines = []
@@ -728,7 +968,7 @@ class Dashboard(QMainWindow):
         old_position = scrollbar.value()
         self.log_view.setPlainText("\n".join(lines))
         scrollbar.setValue(scrollbar.maximum() if at_end else min(old_position, scrollbar.maximum()))
-        self.log_count.setText(f"显示 {len(lines)} / {len(entries)} 条 · {day}")
+        self.log_count.setText(f"显示 {len(lines)} / {len(entries)} 条 · 本次启动（最多保留 2000 条）")
 
     @staticmethod
     def _number(value: float, minimum: int, maximum: int, *, decimal: bool = False) -> QSpinBox | QDoubleSpinBox:
@@ -841,6 +1081,7 @@ class Dashboard(QMainWindow):
                 ws_url=self.ws_url.text().strip(),
                 allowed_private_ids=frozenset(_ids(self.private_ids.text())),
                 allowed_group_ids=frozenset(_ids(self.group_ids.text())),
+                voice_private_ids=frozenset(_ids(self.voice_private_ids.text())),
                 private_cooldown_seconds=self.private_cooldown.value(),
                 group_cooldown_seconds=self.group_cooldown.value(),
                 private_max_replies_per_hour=self.private_hourly.value(),
@@ -849,6 +1090,7 @@ class Dashboard(QMainWindow):
             ))
             data["allowed_private_ids"] = sorted(data["allowed_private_ids"])
             data["allowed_group_ids"] = sorted(data["allowed_group_ids"])
+            data["voice_private_ids"] = sorted(data["voice_private_ids"])
             temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             QqSettings.load(temporary)
             if self.qq_token.text().strip():
@@ -939,6 +1181,9 @@ class Dashboard(QMainWindow):
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONIOENCODING", "utf-8")
         environment.insert("PYTHONUNBUFFERED", "1")
+        if self._event_receiver.localPort():
+            environment.insert("ZHUANGFY_EVENT_PORT", str(self._event_receiver.localPort()))
+            environment.insert("ZHUANGFY_EVENT_TOKEN", self._event_token)
         self.bridge.setProcessEnvironment(environment)
         self.bridge.setWorkingDirectory(str(ROOT))
         interpreter = Path(sys.executable)
@@ -949,6 +1194,18 @@ class Dashboard(QMainWindow):
         self.refresh_status()
 
     def _stop(self, process: QProcess) -> None:
+        if process is self.snowluma and os.name == "nt" and process.processId():
+            # QProcess.terminate() only stops the launcher, leaving SnowLuma's
+            # Node child and its OneBot port alive. Stop the managed tree.
+            try:
+                subprocess.run(["taskkill", "/PID", str(process.processId()), "/T", "/F"],
+                               capture_output=True, timeout=10, check=False)
+                process.waitForFinished(1500)
+                if process.state() == QProcess.ProcessState.NotRunning:
+                    self.refresh_status()
+                    return
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         process.terminate()
         if not process.waitForFinished(1500):
             process.kill()
@@ -1024,7 +1281,7 @@ class Dashboard(QMainWindow):
         self._closing = True
         self.timer.stop()
         self.log_timer.stop()
-        for process in (self.bridge, self.snowluma):
+        for process in (self.bridge, self.snowluma, self.tts_server):
             if process.state() != QProcess.ProcessState.NotRunning:
                 self._stop(process)
         self._log("控制台退出")
@@ -1058,7 +1315,9 @@ QStatusBar { background: #f4f6fa; color: #66758b; }
 
 def main() -> None:
     app = QApplication(sys.argv)
-    app.setApplicationName("Shimano")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    app.setWindowIcon(app_icon())
     # Qt's offscreen plugin and some minimal Windows installations do not
     # discover the system's CJK fonts automatically.
     font_file = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "msyh.ttc"
@@ -1068,6 +1327,8 @@ def main() -> None:
     window.show()
     if "--start-services" in sys.argv:
         QTimer.singleShot(0, window.toggle_snowluma)
+    if "--start-tts" in sys.argv or load_speech_settings().engine == "gpt_sovits":
+        QTimer.singleShot(0, window.start_tts_service)
     raise SystemExit(app.exec())
 
 

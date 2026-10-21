@@ -1,16 +1,18 @@
-# Shimano 当前结构与模块分工
+# ZhuangFY 当前结构与模块分工
 
-实际启动入口是 `SenseVoice/启动界面.cmd`（统一控制台）；它可打开主语音窗口、文字测试、记忆管理以及配置/启动 QQ 连接。`SenseVoice/启动LLM测试.cmd` 仍是独立的文字对话调试窗口。Sakura 的参考源码和便携版放在本仓库之外，不参与 Shimano 当前运行。
+实际启动入口是 `SenseVoice/启动界面.cmd`（统一控制台）；它可打开主语音窗口、文字测试、记忆管理以及配置/启动 QQ 连接。`SenseVoice/启动LLM测试.cmd` 仍是独立的文字对话调试窗口。Sakura 的参考源码和便携版放在本仓库之外，不参与 ZhuangFY 当前运行。
 
 ```text
 Shimano/
 ├─ README.md                 项目入口与当前范围
 ├─ ARCHITECTURE.md           本文件
 ├─ THIRD_PARTY.md            第三方来源与许可线索
-├─ SenseVoice/               Shimano 当前可运行的独立原型
+├─ SenseVoice/               ZhuangFY 当前可运行的独立原型
+│  ├─ assets/zhuangfy.png    桌面、窗口与托盘共用的角色图标
+│  ├─ branding.py            应用名称与图标路径
 │  ├─ gui.py                 主界面、录音线程、流程协调、系统 TTS
 │  ├─ dashboard.py           统一控制台、设置编辑、服务状态与启停
-│  ├─ activity_log.py        本机跨进程活动日志，供控制台按日期查看
+│  ├─ activity_log.py        当前会话的内存事件流，接收 QQ 桥接事件
 │  ├─ continuous.py          流式 Silero VAD，分段与句尾检测
 │  ├─ recognize.py           SenseVoice 本地识别及命令行入口
 │  ├─ wake.py                唤醒别名校正、对话时间窗
@@ -24,7 +26,7 @@ Shimano/
 │  ├─ memory_gui.py          长期记忆查看、手动更正与遗忘界面
 │  ├─ chat_worker.py         模型请求的 Qt 后台线程
 │  ├─ llm_gui.py             供应商/模型/提示词配置与文字测试
-│  ├─ qq_bridge.py           SnowLuma / OneBot QQ 文字桥接
+│  ├─ qq_bridge.py           SnowLuma / OneBot QQ 消息桥接，可选语音回复
 │  ├─ qq_settings.json       本机生成：QQ 白名单与回复频率
 │  ├─ download_models.py     获取并校验本地语音资源
 │  ├─ settings.json          本机生成：唤醒、自动回复和 TTS 设置
@@ -45,7 +47,7 @@ Shimano/
 
 `Sakura-source/` 和 `Sakura-app/` 已移到 `C:\CProj\Airi\`，位于本项目之外。`.venv/`、`python-runtime/`、`.uv-cache/`、`__pycache__/` 是本机环境或生成物。`models/` 的权重、词表和 `samples/` 的音频通过 `download_models.py` 获取，不纳入 Git；本地密钥和个人设置也被 `.gitignore` 排除。仓库中的 README 和 `THIRD_PARTY.md` 说明安装与来源。
 
-`dashboard.py` 只协调已有模块：模型配置仍通过 `llm.py` 保存，`model_catalog.py` 在后台调用供应商的 `GET /models`；QQ 参数写入 `qq_settings.json` 并由 `qq_bridge.py` 在启动时读取；SnowLuma 的具体设置仍由其 WebUI 管理。控制台以本机端口检测服务可达性，用 `QProcess` 管理由它启动的 SnowLuma 和 QQ 桥接，默认在 OneBot 端口就绪后自动启动桥接；桥接进程内部负责断线重连。关闭控制台时停止由它启动的进程。端口可达不能证明 QQ 已登录，也不表示某个在外部启动的桥接进程受控制台管理。
+`dashboard.py` 只协调已有模块：模型配置仍通过 `llm.py` 保存，`model_catalog.py` 在后台调用供应商的 `GET /models`；QQ 参数写入 `qq_settings.json` 并由 `qq_bridge.py` 在启动时读取；SnowLuma 的具体设置仍由其 WebUI 管理。控制台以本机端口检测服务可达性，用 `QProcess` 管理由它启动的 SnowLuma、QQ 桥接和 GPT-SoVITS。保存 GPT-SoVITS 为语音引擎后，下次打开控制台自动启动其本机服务；启动子进程时清除桌面 Python 的环境提示，避免污染引擎独立的虚拟环境。OneBot 端口就绪后可自动启动桥接；桥接进程内部负责断线重连。退出控制台时停止由它启动的进程。端口可达不能证明 QQ 已登录，也不表示某个在外部启动的服务受控制台管理。
 
 ## 一句话从麦克风走到扬声器
 
@@ -64,11 +66,11 @@ Shimano/
 
 `persona_packs/zhuang_fangyi_v1/prompt.md` 是首套正式人格包，参考 MengPaul 的场景驱动角色 Skill，整理为现实桌面助手可用的角色背景、称呼、说话习惯和事实边界。`persona_packs.py` 登记内置包；`persona.py` 提供默认词和旧版默认词迁移。控制台及 `llm_gui.py` 可显式载入人格包并编辑，只有保存后才写入本机设置。旧版内置默认提示词会在加载时升级为新默认，用户自定义提示词不改动。人格指令与最近六轮历史一起构成当前对话的短期上下文。
 
-QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot v11 WebSocket 消息，桥接层先检查私聊/群聊白名单、机器人 @、消息去重与回复限速，再把本轮文字交给现有 `llm.chat`。每个发送者维护独立的短期历史。QQ 桥接当前不读写桌面主人的 Mem0 长期记忆，也不接收图片或语音；这避免把群成员信息混入私人记忆。`qq_settings.json` 与 SnowLuma token 只保存在本机，不纳入 Git。
+QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot v11 WebSocket 消息，桥接层先检查私聊/群聊白名单、机器人 @、消息去重与回复限速，再把本轮文字交给现有 `llm.chat`。每个发送者维护独立的短期历史。指定私聊账号可由思考模型选择文字或语音回复；语音使用本机 GPT-SoVITS，再通过 OneBot `record` 段交给 SnowLuma 转码、发送，仍计入同一限额。群聊只发文字，QQ 入站语音尚不识别。个人记忆按明确白名单隔离，不混入桌面主人的 Mem0。`qq_settings.json` 与 SnowLuma token 只保存在本机，不纳入 Git。
 
 `memory.py` 在用户启用长期记忆后，以 Mem0 + 本地 Qdrant 存储提炼出的事实，并通过硅基流动 `BAAI/bge-m3` 进行 Embedding 检索。`ChatWorker` 在回复前检索最多五条相关记忆，`MemoryWriteWorker` 只在有效回复被界面接受后后台提炼。当前六轮历史仍只用于短期上下文；长期记忆跨窗口重启保留。明确的记住/遗忘命令由 `ChatWorker` 直接处理。更新冲突时先写入新事实，再严格筛选要删除的旧记忆；无法确认则保留供用户在 `memory_gui.py` 中更正。原始消息不长期保存在 Mem0 的消息表，单条删除清除对应历史，“遗忘全部”删除整个 `memory_data/`。长期记忆默认关闭，启用意味着对话文字将再用于云端 Embedding 与提取。
 
-`gui.py` 用 `Listening / Thinking / Speaking` 状态协调监听、模型请求与播报。麦克风在生成和播放期间保持工作；新讲话可以令旧请求失效，或中断正在分段播放的 TTS。扬声器模式要求插话以唤醒名开头，并用 `interaction.py` 对照当前回复过滤疑似回声；这是文字层防护，不等于 AEC。耳机模式支持 VAD 起声后立即停播。TTS 使用 PySide6 的 `QTextToSpeech` 与系统发音人；当前在收到完整模型回复后按句分段播放，没有单独的云端 TTS 或 LLM token 流式播放。
+`gui.py` 用 `Listening / Thinking / Speaking` 状态协调监听、模型请求与播报。麦克风在生成和播放期间保持工作；新讲话可以令旧请求失效，或中断正在分段播放的 TTS。扬声器模式要求插话以唤醒名开头，并用 `interaction.py` 对照当前回复过滤疑似回声；这是文字层防护，不等于 AEC。耳机模式支持 VAD 起声后立即停播。语音输出可选 PySide6 `QTextToSpeech` 或本机 GPT-SoVITS；后者在播放当前段时预生成下一段。当前在收到完整模型回复后按句分段播放，没有 LLM token 流式播放。
 
 ## 协作边界
 
@@ -85,7 +87,8 @@ QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot
 | 长期记忆 | `SenseVoice/memory.py`、`SenseVoice/memory_gui.py` | Mem0、Qdrant 与远程 Embedding；启用开关、记忆纠错、遗忘与本地目录隔离 |
 | QQ 消息桥接 | `SenseVoice/qq_bridge.py` | SnowLuma / OneBot 正向 WebSocket；白名单、@ 触发、去重、频率和独立历史 |
 | 跨端个人记忆 | `SenseVoice/owner_memory.py`、`SenseVoice/member_memory.py` | 本机显式关联机器人 QQ 与主人 QQ；语音和 QQ 共用该成员档案，短期上下文仍分开 |
-| 回到家语音控制 | `SenseVoice/dashboard.py`、`SenseVoice/gui.py` | 设备选择、持续监听、单句识别与 TTS 测试；共用同一个语音窗口实例 |
+| 语音交互 | `SenseVoice/dashboard.py`、`SenseVoice/gui.py` | 设备选择、持续监听、单句识别与 TTS 测试；共用同一个语音窗口实例 |
+| 可选专属音色 | `SenseVoice/gpt_sovits.py`、`SenseVoice/gui.py`、`SenseVoice/dashboard.py` | 扫描成对 GPT/SoVITS 权重并在控制台切换本机模型；参考音频与台词独立配置。播放时预生成下一段，支持打断、清空预存音频与系统语音回退。引擎权重位于仓库外 |
 | 文字调试与配置编辑 | `SenseVoice/llm_gui.py` | 调用 `llm.py` 的配置和聊天接口；不使用主界面的历史 |
 | 角色形象或桌宠窗口 | 尚无独立模块 | 可以新增表现层，优先消费现有状态与回复，避免复制语音/LLM 逻辑 |
 

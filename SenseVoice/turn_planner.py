@@ -11,11 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PLANNER_PROMPT = """你是虚拟陪伴者的对话决策模块，不进行角色扮演。
-只输出一个 JSON 对象，字段为 should_reply(boolean)、tone(string)、attention(string)、confidence(number)。
+只输出一个 JSON 对象，字段为 should_reply(boolean)、tone(string)、attention(string)、confidence(number)、delivery(string)。
 根据最近消息判断本轮表达风格以及应当关注的用户明确说过的事情。
 只允许 tone 为：自然、认真、关切、轻松、欣喜、简洁。
 attention 应是简短、谨慎、与当前对话相关的提醒，最长 60 字，不能编造经历或确定用户心理。
 confidence 介于 0 和 1。should_reply 仅对非定向的系统主动事件有意义。
+delivery 只能是 text 或 voice。只有用户明确想听语音，或短小的陪伴式回应更适合听觉表达时才选 voice；代码、链接、步骤和较长内容选 text。拿不准时选 text。
 不要输出推理步骤、Markdown、额外字段或用户个人资料。"""
 ALLOWED_TONES = frozenset({"自然", "认真", "关切", "轻松", "欣喜", "简洁"})
 
@@ -62,6 +63,7 @@ class TurnPlan:
     tone: str = "自然"
     attention: str = ""
     confidence: float = 0.0
+    delivery: str = "text"
 
     def prompt(self) -> str:
         if self.confidence < 0.5:
@@ -83,26 +85,31 @@ def parse_plan(text: str, *, direct_message: bool = True) -> TurnPlan:
         attention = data.get("attention", "")
         confidence = data.get("confidence", 0)
         reply = data.get("should_reply", True)
+        delivery = data.get("delivery", "text")
         if tone not in ALLOWED_TONES or not isinstance(attention, str):
             return TurnPlan()
         if type(confidence) not in {float, int} or not 0 <= confidence <= 1:
             return TurnPlan()
         if type(reply) is not bool:
             return TurnPlan()
+        if delivery not in {"text", "voice"}:
+            delivery = "text"
         return TurnPlan(True if direct_message else reply, tone,
-                        attention.replace("\n", " ")[:60], float(confidence))
+                        attention.replace("\n", " ")[:60], float(confidence), delivery)
     except (ValueError, TypeError):
         return TurnPlan()
 
 
 def plan_turn(settings, api_key: str, history: list[dict[str, str]],
-              user_text: str, config: PlannerSettings, *, direct_message: bool = True) -> TurnPlan:
+              user_text: str, config: PlannerSettings, *, direct_message: bool = True,
+              allow_voice: bool = False) -> TurnPlan:
     """Second model call is strictly opt-in; exceptions are for callers to catch."""
     if not config.enabled:
         return TurnPlan()
     from dataclasses import replace
     from llm import chat
+    prompt = PLANNER_PROMPT if allow_voice else PLANNER_PROMPT + "\n本轮只能回复文字，delivery 必须为 text。"
     planner_settings = replace(settings, model=config.model or settings.model,
-                               system_prompt=PLANNER_PROMPT, memory_enabled=False)
+                               system_prompt=prompt, memory_enabled=False)
     reply = chat(planner_settings, api_key, history[-8:], user_text[:1500], timeout=15, stage="思考")
     return parse_plan(reply, direct_message=direct_message)

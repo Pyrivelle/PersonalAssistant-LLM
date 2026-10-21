@@ -1,6 +1,6 @@
 # 第三方来源与发布边界
 
-本仓库只保存 Shimano 原型源码与说明，不包含 Sakura 的完整源码或便携版，也不提交本地模型权重、词表和音频样本。
+本仓库只保存 ZhuangFY 原型源码与说明，不包含 Sakura 的完整源码或便携版，也不提交本地模型权重、词表和音频样本。
 
 | 项目或资源 | 在本项目中的用途 | 来源和许可线索 |
 | --- | --- | --- |
@@ -13,6 +13,6 @@
 | Mem0 OSS | 长期记忆提取、检索与操作 | [Mem0 仓库](https://github.com/mem0ai/mem0)，Apache-2.0；通过 PyPI 安装，不复制其源码 |
 | Qdrant Client | Mem0 的本地向量存储 | [Qdrant Python 客户端](https://github.com/qdrant/qdrant-client)，Apache-2.0；作为 Mem0 依赖安装 |
 | SnowLuma | 本机 QQ / OneBot v11 协议层，独立部署，不放入仓库 | [SnowLuma 仓库与发行包](https://github.com/SnowLuma/SnowLuma)；源码可见、非商业许可及发行包 EULA，使用前核对其条款 |
-| websockets | Shimano 的 OneBot WebSocket 客户端 | [websockets](https://pypi.org/project/websockets/)，BSD-3-Clause；通过 PyPI 安装 |
+| websockets | ZhuangFY 的 OneBot WebSocket 客户端 | [websockets](https://pypi.org/project/websockets/)，BSD-3-Clause；通过 PyPI 安装 |
 
 运行依赖版本见 `SenseVoice/requirements.txt`。这些软件和资源各有自己的许可；此处保留来源供协作者核对，尤其是在打包分发模型文件之前。

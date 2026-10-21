@@ -63,7 +63,7 @@ def fetch(path: Path, url: str, expected: str | None) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="下载 Shimano 使用的本地语音模型")
+    parser = argparse.ArgumentParser(description="下载 ZhuangFY 使用的本地语音模型")
     parser.add_argument("--sample", action="store_true", help="同时下载 GUI 的中文示例音频")
     args = parser.parse_args()
     for name, (url, digest) in FILES.items():

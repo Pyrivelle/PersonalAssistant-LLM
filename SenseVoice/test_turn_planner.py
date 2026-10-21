@@ -17,6 +17,8 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(parse_plan("not json"), TurnPlan())
         self.assertEqual(parse_plan('{"tone":"讨好","confidence":1}'), TurnPlan())
         self.assertEqual(parse_plan('{"tone":"自然","confidence":0.3}').prompt(), "")
+        self.assertEqual(parse_plan('{"tone":"自然","confidence":0.9,"delivery":"voice"}').delivery, "voice")
+        self.assertEqual(parse_plan('{"tone":"自然","confidence":0.9,"delivery":"video"}').delivery, "text")
 
     def test_optional_planner_is_off_by_default(self):
         with tempfile.TemporaryDirectory() as directory:

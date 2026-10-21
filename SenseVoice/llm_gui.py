@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from chat_worker import ChatWorker, MemoryWriteWorker
+from branding import APP_NAME, app_icon
 from activity_log import log_event
 from emotion import EmotionState
 from dialogue_context import DialogueContext, DialogueStore
@@ -27,7 +28,8 @@ from persona_packs import BUILTIN_PACKS, matching_pack
 class ChatWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Shimano · LLM 对话测试")
+        self.setWindowTitle(f"{APP_NAME} · LLM 对话测试")
+        self.setWindowIcon(app_icon())
         self.resize(720, 820)
         self.setMinimumSize(560, 640)
         self.context_store = None
@@ -54,7 +56,7 @@ class ChatWindow(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setContentsMargins(22, 20, 22, 20)
         layout.setSpacing(12)
-        title = QLabel("Shimano · 文字对话测试")
+        title = QLabel(f"{APP_NAME} · 文字对话测试")
         title.setObjectName("title")
         layout.addWidget(title)
         layout.addWidget(QLabel("在这里调整庄方宜的人格设定，并用文字验证多轮对话。设置也会用于主语音窗口。"))
@@ -374,6 +376,9 @@ class ChatWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    app.setWindowIcon(app_icon())
     app.setFont(QFont("Microsoft YaHei UI", 10))
     window = ChatWindow()
     window.show()

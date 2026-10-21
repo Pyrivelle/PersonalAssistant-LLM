@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from unittest.mock import AsyncMock, patch
 
 from websockets.asyncio.server import serve
@@ -12,11 +13,17 @@ from websockets.exceptions import ConnectionClosed
 
 import qq_bridge
 from llm import LlmSettings
-from qq_bridge import Conversation, Incoming, QqBridge, QqSettings, ReplyLimiter, parse_message
-from turn_planner import PlannerSettings
+from qq_bridge import Conversation, Incoming, QqBridge, QqSettings, ReplyLimiter, parse_message, spoken_reply
+from turn_planner import PlannerSettings, TurnPlan
 
 
 class QqParsingTests(unittest.TestCase):
+    def test_spoken_reply_removes_only_leading_stage_directions(self):
+        self.assertEqual(spoken_reply("发语音了，轻声清楚的说，晚安，早点休息。"), "晚安，早点休息。")
+        self.assertEqual(spoken_reply("（轻声说）晚安，今天辛苦了。"), "晚安，今天辛苦了。")
+        self.assertEqual(spoken_reply("我发语音了这件事，你不用担心。"), "我发语音了这件事，你不用担心。")
+        self.assertEqual(spoken_reply("晚安，轻声说也没关系。"), "晚安，轻声说也没关系。")
+
     def setUp(self):
         self.settings = QqSettings(allowed_private_ids=frozenset({42}),
                                    allowed_group_ids=frozenset({9}))
@@ -60,6 +67,9 @@ class QqParsingTests(unittest.TestCase):
                 QqSettings.load(path)
             path.write_text(json.dumps({"quiet_seconds": "NaN"}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "quiet_seconds"):
+                QqSettings.load(path)
+            path.write_text(json.dumps({"allowed_private_ids": [42], "voice_private_ids": [43]}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "私聊白名单"):
                 QqSettings.load(path)
 
     def test_explicit_private_context_opt_in_is_scoped(self):
@@ -116,6 +126,57 @@ class QqParsingTests(unittest.TestCase):
 
 
 class QqSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_planner_voice_choice_routes_only_short_private_reply(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings(enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         voice_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        bridge.send_reply = AsyncMock(return_value=True)
+        state = Conversation(Incoming("private", 42, None, "1", "说给我听"), pending=["说给我听"])
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn", return_value=TurnPlan(confidence=0.9, delivery="voice")), \
+             patch.object(qq_bridge, "chat", return_value="发语音了，轻声清楚的说，好好休息，晚安。"):
+            await bridge.process(state)
+        bridge.send_reply.assert_awaited_once()
+        self.assertEqual(bridge.send_reply.await_args.args[1], "好好休息，晚安。")
+        self.assertTrue(bridge.send_reply.await_args.kwargs["voice"])
+        self.assertEqual(state.context.history[-1]["content"], "好好休息，晚安。")
+
+    async def test_voice_reply_uses_record_segment_once_and_cleans_temporary_wav(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         voice_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0))
+        incoming = Incoming("private", 42, None, "1", "给我听听")
+        paths = []
+        async def fake_action(name, params, **kwargs):
+            self.assertEqual(name, "send_private_msg")
+            self.assertEqual(params["message"][0]["type"], "record")
+            url = params["message"][0]["data"]["file"]
+            path = Path(unquote(urlparse(url).path.lstrip("/")))
+            self.assertTrue(path.is_file())
+            self.assertEqual(path.read_bytes(), b"RIFF1234WAVE")
+            paths.append(path)
+            return {"message_id": 1}
+        bridge.action = fake_action
+        with patch.object(qq_bridge, "synthesize_qq_voice", return_value=b"RIFF1234WAVE"):
+            self.assertTrue(await bridge.send_reply(incoming, "你好", voice=True))
+        self.assertEqual(len(paths), 1)
+        self.assertFalse(paths[0].exists())
+
+    async def test_voice_synthesis_failure_falls_back_to_single_text_reply(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         voice_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0))
+        bridge.action = AsyncMock(return_value={"message_id": 1})
+        with patch.object(qq_bridge, "synthesize_qq_voice", side_effect=RuntimeError("offline")):
+            self.assertTrue(await bridge.send_reply(Incoming("private", 42, None, "1", "你好"),
+                                                    "文字回退", voice=True))
+        bridge.action.assert_awaited_once_with("send_private_msg", {
+            "user_id": 42, "message": "文字回退", "auto_escape": True})
+
     async def test_private_forget_command_clears_both_scoped_stores(self):
         from dialogue_context import DialogueContext
         from member_memory import MemberKey

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
+from branding import app_icon
 from memory import get_memory
 
 
@@ -31,6 +32,7 @@ class MemoryDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("庄方宜的长期记忆")
+        self.setWindowIcon(app_icon())
         self.resize(650, 570)
         self.task: MemoryTask | None = None
         self._refresh_after_task = False

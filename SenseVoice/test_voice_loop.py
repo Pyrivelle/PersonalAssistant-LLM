@@ -10,10 +10,13 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtNetwork import QNetworkReply, QNetworkRequest
 from PySide6.QtTextToSpeech import QTextToSpeech
 from PySide6.QtWidgets import QApplication
 
 import gui
+from gpt_sovits import SpeechSettings
 from llm import LlmSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from wake import ConversationGate
@@ -100,6 +103,37 @@ class FakeTts:
         self.stops += 1
 
 
+class FakeSpeechReply(QObject):
+    finished = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.aborted = False
+
+    def attribute(self, _attribute):
+        return 200
+
+    def readAll(self):
+        return b"RIFFmock-audio"
+
+    def error(self):
+        return QNetworkReply.NetworkError.NoError
+
+    def abort(self):
+        self.aborted = True
+
+
+class FakeSpeechNetwork:
+    def __init__(self):
+        self.requests = []
+
+    def post(self, _request, payload):
+        import json
+        reply = FakeSpeechReply()
+        self.requests.append((json.loads(bytes(payload))["text"], reply))
+        return reply
+
+
 class VoiceLoopTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -111,10 +145,91 @@ class VoiceLoopTests(unittest.TestCase):
         self.settings_patch.start()
         self.owner_patch = patch.object(gui, "load_link", return_value=None)
         self.owner_patch.start()
+        self.speech_patch = patch.object(gui, "load_speech_settings", return_value=SpeechSettings())
+        self.speech_patch.start()
 
     def tearDown(self):
+        self.speech_patch.stop()
         self.owner_patch.stop()
         self.settings_patch.stop()
+
+    def test_custom_speech_prefetches_while_playing_and_discards_on_interrupt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.wav"
+            reference.write_bytes(b"RIFFmock-audio")
+            settings = SpeechSettings("gpt_sovits", reference_audio=str(reference), reference_text="你好")
+            with patch.object(gui, "SETTINGS", Path(directory) / "settings.json"), \
+                    patch.object(gui, "load_speech_settings", return_value=settings):
+                window = gui.MainWindow()
+                network = FakeSpeechNetwork()
+                window.custom_tts_network = network
+                played = []
+
+                def start_playback(_data):
+                    played.append(window.current_tts_chunk)
+                    window.custom_tts_playing = True
+                    window._prefetch_custom_tts()
+
+                try:
+                    with patch.object(window, "_play_custom_audio", side_effect=start_playback):
+                        window.custom_tts_active = True
+                        window.tts_pending = True
+                        window.tts_chunks = ["第一段", "第二段", "第三段"]
+                        window.set_interaction_state(InteractionState.SPEAKING)
+                        window.speak_next_chunk()
+                        self.assertEqual([item[0] for item in network.requests], ["第一段"])
+                        network.requests[0][1].finished.emit()
+                        self.assertEqual(played, ["第一段"])
+                        self.assertEqual([item[0] for item in network.requests], ["第一段", "第二段"])
+                        network.requests[1][1].finished.emit()
+                        self.assertEqual(played, ["第一段"])
+                        window.custom_tts_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+                        self.assertEqual(played, ["第一段", "第二段"])
+                        self.assertEqual([item[0] for item in network.requests],
+                                         ["第一段", "第二段", "第三段"])
+                        window.interrupt_reply()
+                        self.assertTrue(network.requests[2][1].aborted)
+                        network.requests[2][1].finished.emit()
+                        self.assertEqual(played, ["第一段", "第二段"])
+                        self.assertIsNone(window.custom_tts_ready_audio)
+                finally:
+                    window.close()
+
+    def test_custom_speech_waits_for_late_prefetch_then_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.wav"
+            reference.write_bytes(b"RIFFmock-audio")
+            settings = SpeechSettings("gpt_sovits", reference_audio=str(reference), reference_text="你好")
+            with patch.object(gui, "SETTINGS", Path(directory) / "settings.json"), \
+                    patch.object(gui, "load_speech_settings", return_value=settings):
+                window = gui.MainWindow()
+                network = FakeSpeechNetwork()
+                window.custom_tts_network = network
+                played = []
+
+                def start_playback(_data):
+                    played.append(window.current_tts_chunk)
+                    window.custom_tts_playing = True
+                    window._prefetch_custom_tts()
+
+                try:
+                    with patch.object(window, "_play_custom_audio", side_effect=start_playback):
+                        window.custom_tts_active = True
+                        window.tts_pending = True
+                        window.tts_chunks = ["第一段", "第二段"]
+                        window.set_interaction_state(InteractionState.SPEAKING)
+                        window.speak_next_chunk()
+                        network.requests[0][1].finished.emit()
+                        self.assertEqual(played, ["第一段"])
+                        window.custom_tts_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+                        self.assertEqual(played, ["第一段"])
+                        self.assertIn("等待下一段", window.status_label.text())
+                        network.requests[1][1].finished.emit()
+                        self.assertEqual(played, ["第一段", "第二段"])
+                        window.custom_tts_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+                        self.assertFalse(window.tts_pending)
+                finally:
+                    window.close()
 
     def test_wake_sends_command_once_and_resumes_capture(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(gui, "SETTINGS", Path(directory) / "settings.json"):

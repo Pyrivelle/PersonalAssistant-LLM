@@ -219,4 +219,6 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
         log_event("模型", "失败", f"{stage} · 空回复")
         raise RuntimeError("模型没有返回可显示的文字")
     log_event("模型", "完成", f"{stage} · {time.monotonic() - started:.1f} 秒 · {len(content)} 字")
+    if stage == "思考":
+        log_event("模型", "思考内容", content.strip())
     return content.strip()

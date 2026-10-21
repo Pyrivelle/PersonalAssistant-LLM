@@ -1,8 +1,7 @@
-"""Local, cross-process activity journal for the desktop control console.
+"""Bounded, current-process activity stream for the desktop console.
 
-One file per process and day avoids competing log rotation on Windows. Message
-text is intentionally logged for the owner's console; obvious credentials are
-redacted, and HTTP headers or raw requests are never recorded.
+Managed child processes can forward events over a local UDP socket. Nothing is
+written to disk; a new console launch begins with an empty view.
 """
 
 from __future__ import annotations
@@ -10,13 +9,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import threading
+from collections import deque
 from datetime import datetime
-from pathlib import Path
 
 
-LOG_DIR = Path(__file__).resolve().parent / "logs"
 _LOCK = threading.Lock()
+_EVENTS: deque[dict] = deque(maxlen=2000)
+_REVISION = 0
 _SECRET = re.compile(
     r"(?i)(Bearer\s+)[^\s]+|(sk-[A-Za-z0-9_-]{8,})|"
     r"((?:[A-Z_]*API_KEY|ACCESS_TOKEN|PASSWORD|密码|密钥)\s*[:=]\s*)[^\s,，;；]+"
@@ -28,46 +29,59 @@ def redact(value: object) -> str:
     return _SECRET.sub(lambda match: (match.group(1) or match.group(3) or "") + "[已隐藏]", text)
 
 
+def _append(entry: dict) -> None:
+    global _REVISION
+    with _LOCK:
+        _EVENTS.append(entry)
+        _REVISION += 1
+
+
 def log_event(source: str, phase: str, detail: object = "") -> None:
-    """Best-effort append: a log failure must never interrupt a conversation."""
-    now = datetime.now().astimezone()
-    entry = {"time": now.isoformat(timespec="milliseconds"), "pid": os.getpid(),
-             "source": redact(source), "phase": redact(phase), "detail": redact(detail)}
-    path = LOG_DIR / f"activity-{now:%Y-%m-%d}-{os.getpid()}.jsonl"
-    try:
-        with _LOCK:
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-
-
-def available_days() -> list[str]:
-    try:
-        return sorted({path.name[9:19] for path in LOG_DIR.glob("activity-????-??-??-*.jsonl")},
-                      reverse=True)
-    except OSError:
-        return []
-
-
-def read_day(day: str) -> list[dict]:
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
-        return []
-    entries = []
-    for path in LOG_DIR.glob(f"activity-{day}-*.jsonl"):
+    """Record a visible event without interrupting a conversation on failure."""
+    entry = {
+        "time": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        "pid": os.getpid(),
+        "source": redact(source)[:80],
+        "phase": redact(phase)[:80],
+        "detail": redact(detail)[:4000],
+    }
+    _append(entry)
+    port = os.environ.get("ZHUANGFY_EVENT_PORT", "")
+    token = os.environ.get("ZHUANGFY_EVENT_TOKEN", "")
+    if port.isdecimal() and token:
         try:
-            with path.open(encoding="utf-8") as stream:
-                for line in stream:
-                    try:
-                        item = json.loads(line)
-                    except ValueError:
-                        continue
-                    if isinstance(item, dict) and {"time", "source", "phase", "detail"} <= item.keys():
-                        entries.append(item)
-        except OSError:
-            continue
-    return sorted(entries, key=lambda item: (item["time"], item.get("pid", 0)))
+            packet = json.dumps({"token": token, "event": entry}, ensure_ascii=False).encode("utf-8")
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                sender.sendto(packet, ("127.0.0.1", int(port)))
+        except (OSError, ValueError):
+            pass
+
+
+def receive_event(packet: bytes, token: str) -> bool:
+    """Accept one event from a managed child, authenticated to this launch."""
+    try:
+        data = json.loads(packet)
+        event = data["event"]
+        if data["token"] != token or not isinstance(event, dict):
+            return False
+        if not all(isinstance(event.get(field), str) for field in ("time", "source", "phase", "detail")):
+            return False
+        entry = {
+            "time": event["time"][:40],
+            "pid": int(event.get("pid", 0)),
+            "source": redact(event["source"])[:80],
+            "phase": redact(event["phase"])[:80],
+            "detail": redact(event["detail"])[:4000],
+        }
+        _append(entry)
+        return True
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
+def session_snapshot() -> tuple[int, list[dict]]:
+    with _LOCK:
+        return _REVISION, list(_EVENTS)
 
 
 def format_event(event: dict) -> str:

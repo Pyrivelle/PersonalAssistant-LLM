@@ -52,6 +52,13 @@ class LlmTests(unittest.TestCase):
         self.assertEqual(captured["body"]["messages"][0], {"role": "system", "content": DEFAULT_PROMPT})
         self.assertEqual(captured["headers"]["Authorization"], "Bearer test-key")
 
+    def test_planning_response_is_visible_in_current_session(self):
+        with patch.object(llm.urllib.request, "urlopen", return_value=FakeResponse()), \
+                patch.object(llm, "log_event") as record:
+            llm.chat(llm.LlmSettings(), "test-key", [], "你好", stage="思考")
+        self.assertIn(("模型", "思考内容", "Hello from the model"),
+                      [call.args for call in record.call_args_list])
+
     def test_old_default_upgrades_without_changing_model_or_custom_prompt(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(llm, "SETTINGS_FILE", Path(directory) / "settings.json"):
