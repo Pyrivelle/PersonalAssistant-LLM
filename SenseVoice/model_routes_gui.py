@@ -26,7 +26,7 @@ from turn_planner import PlannerSettings
 
 
 class CandidateEditor(QFrame):
-    def __init__(self, candidate: ModelCandidate, on_delete, parent=None):
+    def __init__(self, candidate: ModelCandidate, on_delete, on_move, parent=None):
         super().__init__(parent)
         self.route_id = candidate.id
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -36,6 +36,12 @@ class CandidateEditor(QFrame):
         self.active.setChecked(candidate.enabled)
         header.addWidget(self.active)
         header.addStretch(1)
+        up = QPushButton("↑ 优先")
+        up.clicked.connect(lambda: on_move(self, -1))
+        down = QPushButton("↓ 次选")
+        down.clicked.connect(lambda: on_move(self, 1))
+        header.addWidget(up)
+        header.addWidget(down)
         remove = QPushButton("移除候选")
         remove.clicked.connect(lambda: on_delete(self))
         header.addWidget(remove)
@@ -143,7 +149,7 @@ class StageEditor(QWidget):
         self._update_add()
 
     def _append(self, candidate: ModelCandidate):
-        row = CandidateEditor(candidate, self.remove_candidate, self)
+        row = CandidateEditor(candidate, self.remove_candidate, self.move_candidate, self)
         self.rows.append(row)
         self.entries.insertWidget(self.entries.count() - 1, row)
 
@@ -157,6 +163,16 @@ class StageEditor(QWidget):
         self._append(ModelCandidate(
             f"{self.stage}_{index}", default.provider, default.base_url, default.model))
         self._update_add()
+
+    def move_candidate(self, row: CandidateEditor, direction: int):
+        position = self.rows.index(row)
+        target = position + direction
+        if target < 0 or target >= len(self.rows):
+            return
+        self.rows.pop(position)
+        self.rows.insert(target, row)
+        self.entries.removeWidget(row)
+        self.entries.insertWidget(target, row)
 
     def remove_candidate(self, row: CandidateEditor):
         self.rows.remove(row)
@@ -187,6 +203,7 @@ class ModelRoutesDialog(QDialog):
         intro = QLabel(
             "不同任务可以分别设置多个 API。按列表优先级依次尝试；所有思考模型不可用时，"
             "仍会直接调用回复模型。没有配置候选时沿用旧版模型设置。"
+            "注意：切换至其他供应商会将当前对话及相关记忆发送给那个供应商。"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
