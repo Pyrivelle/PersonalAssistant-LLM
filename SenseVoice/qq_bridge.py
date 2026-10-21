@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from llm import ROOT, load_key, load_settings
-from model_routes import invoke_stage, can_attempt_stage
+from model_routes import invoke_stage, can_attempt_stage, ModelRoutesFailed
 from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
@@ -261,6 +261,7 @@ class Conversation:
     first_arrival: float = 0
     last_arrival: float = 0
     context: DialogueContext = field(default_factory=DialogueContext)
+    last_failed_generation: str = ""
     task: asyncio.Task | None = None
 
 
@@ -381,6 +382,12 @@ class QqBridge:
             current = state.incoming
             log_event("QQ", "消息", f"{current.scope} · {message}")
             try:
+                if message.strip() == "/retry":
+                    if not state.last_failed_generation:
+                        await self.send_reply(current, "系统提示：当前会话没有需要重新生成的失败消息。")
+                        continue
+                    message = state.last_failed_generation
+                    log_event("QQ", "手动重试", f"{current.scope} · 重新提交上次生成失败的文字")
                 if (current.kind == "private" and
                         message.strip() in {"/forget_me", "/删除我的记忆"}):
                     # Wait for pending background writes before erasing. Otherwise
@@ -467,6 +474,7 @@ class QqBridge:
                         reply = cleaned
                     use_voice = bool(cleaned) and len(reply) <= MAX_VOICE_CHARS
                 if await self.send_reply(current, reply, voice=use_voice):
+                    state.last_failed_generation = ""
                     log_event("QQ", "已投递", f"turn:{turn_id} · {current.scope}")
                     state.context.commit(message, reply, candidate)
                     if (self.context_store and current.kind == "private"
@@ -484,6 +492,19 @@ class QqBridge:
                                 self.queue_member_reflection(member_key, settings, key)
                         except Exception as error:
                             print(f"QQ 用户记忆排队失败：{type(error).__name__}")
+            except ModelRoutesFailed as error:
+                state.last_failed_generation = message
+                log_event("QQ", "模型全部失败",
+                          f"{current.scope} · 已保留本轮文字，发送 /retry 可再试；{error}")
+                # A status notice is not an AI reply and must not enter
+                # dialogue history or memory. Never retry uncertain delivery.
+                if current.kind == "private":
+                    try:
+                        await self.send_reply(
+                            current, "系统提示：这句话暂时没能生成回复。稍后发送 /retry 可重试，无需重新输入。")
+                    except Exception as delivery_error:
+                        log_event("QQ", "错误通知投递失败",
+                                  f"{current.scope} · {type(delivery_error).__name__}")
             except Exception as error:
                 print(f"QQ 回复失败（{current.scope}）：{type(error).__name__}: {error}")
                 log_event("QQ", "失败", f"{current.scope} · {type(error).__name__}: {error}")
