@@ -10,9 +10,10 @@ import re
 import shutil
 
 from llm import DEFAULT_MODEL, LlmSettings, ROOT, SILICONFLOW_URL, chat, load_key
+from zhuangfy.paths import Paths
 
 
-DATA_DIR = ROOT / "memory_data"
+DATA_DIR = Paths.current().memory_root
 USER_ID = "shimano-owner"
 EMBEDDING_MODEL = "BAAI/bge-m3"
 EMBEDDING_DIMS = 1024

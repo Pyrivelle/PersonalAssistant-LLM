@@ -10,11 +10,17 @@ from pathlib import Path
 import numpy as np
 import sherpa_onnx
 
+from _package_bootstrap import ensure_src_path
+
+ensure_src_path()
+
+from zhuangfy.paths import Paths
+
 
 ROOT = Path(__file__).resolve().parent
-MODEL = ROOT / "models" / "model.int8.onnx"
-TOKENS = ROOT / "models" / "tokens.txt"
-VAD_MODEL = ROOT / "models" / "silero_vad.onnx"
+MODEL = Paths.current().models_root / "model.int8.onnx"
+TOKENS = Paths.current().models_root / "tokens.txt"
+VAD_MODEL = Paths.current().models_root / "silero_vad.onnx"
 TAGS = re.compile(r"<\|[^|<>]*\|>")
 
 

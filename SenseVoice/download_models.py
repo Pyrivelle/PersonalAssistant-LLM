@@ -8,6 +8,12 @@ import os
 import urllib.request
 from pathlib import Path
 
+from _package_bootstrap import ensure_src_path
+
+ensure_src_path()
+
+from zhuangfy.paths import Paths
+
 
 ROOT = Path(__file__).resolve().parent
 MODEL_REVISION = "2365baeacb507f821a0c8120fcee3d484dba7a07"
@@ -67,7 +73,7 @@ def main() -> None:
     parser.add_argument("--sample", action="store_true", help="同时下载 GUI 的中文示例音频")
     args = parser.parse_args()
     for name, (url, digest) in FILES.items():
-        fetch(ROOT / "models" / name, url, digest)
+        fetch(Paths.current().models_root / name, url, digest)
     if args.sample:
         fetch(ROOT / "samples" / "zh.wav", *SAMPLE)
     print("语音资源已就绪")

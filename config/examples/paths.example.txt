@@ -1,0 +1,7 @@
+# Model and external-engine overrides used by the existing runtime.
+# The current checkout keeps its configuration, databases and model weights
+# under SenseVoice/ until all runtime modules are migrated.
+# ZHUANGFY_MODELS_DIR=C:\\path\\to\\models
+# ZHUANGFY_GPT_SOVITS_DIR=C:\\CProj\\Airi\\GPT-SoVITS
+# ZHUANGFY_SNOWLUMA_DIR=C:\\CProj\\Airi\\SnowLuma
+# ZHUANGFY_VOICE_TRAINING_DIR=C:\\CProj\\Airi\\zhaungfyvoice

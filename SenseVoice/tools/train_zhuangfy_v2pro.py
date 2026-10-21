@@ -199,7 +199,7 @@ def activate() -> None:
         "reference_audio": str(wav),
         "reference_text": reference["transcript"],
     }
-    settings_path = ROOT / "Shimano" / "SenseVoice" / "gpt_sovits_settings.json"
+    settings_path = ROOT / "ZhuangFY" / "SenseVoice" / "gpt_sovits_settings.json"
     temporary = settings_path.with_suffix(".tmp")
     temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, settings_path)

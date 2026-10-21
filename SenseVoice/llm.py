@@ -1,4 +1,4 @@
-"""Small, independent chat-completions client for Shimano's LLM exercise."""
+"""Small, independent chat-completions client for ZhuangFY."""
 
 from __future__ import annotations
 
@@ -13,11 +13,12 @@ from urllib.parse import urlparse
 
 from persona import DEFAULT_PROMPT, migrate_legacy_prompt
 from activity_log import log_event
+from zhuangfy.paths import Paths
 
 
 ROOT = Path(__file__).resolve().parent
-ENV_FILE = ROOT / ".env.local"
-SETTINGS_FILE = ROOT / "llm_settings.json"
+ENV_FILE = Paths.current().config_file(".env.local")
+SETTINGS_FILE = Paths.current().config_file("llm_settings.json")
 SILICONFLOW_URL = "https://api.siliconflow.cn/v1"
 DEEPSEEK_URL = "https://api.deepseek.com"
 KIMI_CN_URL = "https://api.moonshot.cn/v1"

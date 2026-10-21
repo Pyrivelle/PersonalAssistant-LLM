@@ -37,7 +37,7 @@ py -3.12 -m venv .venv
 
 ## 庄方宜的人格设定
 
-第一套正式人格包是 [`persona_packs/zhuang_fangyi_v1/prompt.md`](persona_packs/zhuang_fangyi_v1/prompt.md)，参考 [MengPaul07/zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill) 的场景判断、语气和设定核验规则，改写为现实中的日常助手提示词。庄方宜也可以称作庄天师或小庄；她温和、理性、能处理复杂问题，也能自然地陪伴。用户不是默认的游戏角色，剧情里的共同经历不会冒充现实记忆。来源、适配边界和后续新增人格包的方法见 [`人格包说明`](persona_packs/zhuang_fangyi_v1/README.md)。
+第一套正式人格包是 [`resources/personas/zhuang_fangyi_v1/prompt.md`](../resources/personas/zhuang_fangyi_v1/prompt.md)，参考 [MengPaul07/zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill) 的场景判断、语气和设定核验规则，改写为现实中的日常助手提示词。庄方宜也可以称作庄天师或小庄；她温和、理性、能处理复杂问题，也能自然地陪伴。用户不是默认的游戏角色，剧情里的共同经历不会冒充现实记忆。来源、适配边界和后续新增人格包的方法见 [`人格包说明`](../resources/personas/zhuang_fangyi_v1/README.md)。
 
 在控制台“模型与人格”或 `启动LLM测试.cmd` 中选择人格包，点击“载入人格包”会替换当前编辑框内容；再点击保存，语音窗口下一轮请求就会使用新设定，QQ 桥接重启后使用。直接编辑提示词也可以形成自定义版本。密钥输入框留空不会覆盖已保存密钥。旧版程序保存的内置默认词会自动升级为首套正式人格包；你自己写过的提示词保持原样。用户自定义内容只保存在本机 `llm_settings.json`，不纳入 Git。
 
@@ -92,7 +92,7 @@ SnowLuma 独立安装在 `C:\CProj\Airi\SnowLuma\v2.0.3`，不进入 ZhuangFY �
 在 PowerShell 中进入本目录：
 
 ```powershell
-cd C:\CProj\Airi\Shimano\SenseVoice
+cd C:\CProj\Airi\ZhuangFY\SenseVoice
 $env:PYTHONIOENCODING = 'utf-8'
 .\.venv\Scripts\python.exe .\recognize.py --file .\samples\zh.wav --language zh
 .\.venv\Scripts\python.exe .\recognize.py --list-devices
@@ -155,7 +155,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 
 ## 分用户记忆与庄方宜 Skill 场景路由（第二阶段）
 
-这一阶段参考 [dsh-qqchat](https://github.com/Coffeiz/dsh-qqchat) 的 member scope / 五层资料和证据约束反思，并将 [MengPaul07/zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill) 的场景行为规则**改写**进 `fangyi_skill.py`。未复制该仓库的原始台词、场景正文或 Wiki 数据；`persona_packs/zhuang_fangyi_v1/prompt.md` 继续负责稳定人物底色，场景路由只在问题涉及相关情境时附加一条短建议。不会把用户当作剧情管理员，也不会把原作故事记入用户个人档案。
+这一阶段参考 [dsh-qqchat](https://github.com/Coffeiz/dsh-qqchat) 的 member scope / 五层资料和证据约束反思，并将 [MengPaul07/zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill) 的场景行为规则**改写**进 `fangyi_skill.py`。未复制该仓库的原始台词、场景正文或 Wiki 数据；`resources/personas/zhuang_fangyi_v1/prompt.md` 继续负责稳定人物底色，场景路由只在问题涉及相关情境时附加一条短建议。不会把用户当作剧情管理员，也不会把原作故事记入用户个人档案。
 
 ### 配置
 
@@ -228,7 +228,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 - 日常与亲近对应场景 03/10/14 的生活气息和有分寸的关心；
 - 原作设定问答按 `references/epistemics.md` 的原则区分官设、推断与演绎。
 
-这些都是**现实场景的行为迁移**，不能据此宣称角色已经与现实用户共同经历过任何剧情。原仓库 MIT 署名见 `third_party/Zhuang-Fangyi-Skill-LICENSE.txt`。
+这些都是**现实场景的行为迁移**，不能据此宣称角色已经与现实用户共同经历过任何剧情。原仓库 MIT 署名见 `../third_party/licenses/Zhuang-Fangyi-Skill-LICENSE.txt`。
 
 ### 测试与限制
 

@@ -11,13 +11,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from llm import ROOT
+from zhuangfy.paths import Paths
 
 
-SETTINGS_FILE = ROOT / "gpt_sovits_settings.json"
-ENGINE_ROOT = ROOT.parents[1] / "GPT-SoVITS"
+SETTINGS_FILE = Paths.current().config_file("gpt_sovits_settings.json")
+ENGINE_ROOT = Paths.current().gpt_sovits_root
 API_PORT = 9880
 MODEL_CONFIG = ENGINE_ROOT / "GPT_SoVITS" / "configs" / "shimano_v2pro.yaml"
-VOICE_DATA = ROOT.parents[1] / "zhaungfyvoice" / "prepared"
+VOICE_DATA = Paths.current().voice_training_root / "prepared"
 
 
 @dataclass(frozen=True)

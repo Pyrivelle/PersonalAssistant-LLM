@@ -1,27 +1,41 @@
 # ZhuangFY 当前结构与模块分工
 
-实际启动入口是 `SenseVoice/启动界面.cmd`（统一控制台）；它可打开主语音窗口、文字测试、记忆管理以及配置/启动 QQ 连接。`SenseVoice/启动LLM测试.cmd` 仍是独立的文字对话调试窗口。
+实际启动入口仍是 `SenseVoice/启动界面.cmd`（统一控制台）；可编辑安装后也可运行 `python -m zhuangfy`。控制台可打开主语音窗口、文字测试、记忆管理以及配置/启动 QQ 连接。`SenseVoice/启动LLM测试.cmd` 仍是独立的文字对话调试窗口。以下是迁移中的目录快照；大型界面与 QQ 流程尚未迁入新包。
 
 ```text
-Shimano/
+ZhuangFY/
 ├─ README.md                 项目入口与当前范围
 ├─ ARCHITECTURE.md           本文件
 ├─ THIRD_PARTY.md            第三方来源与许可线索
+├─ pyproject.toml            可编辑安装与包入口
+├─ src/zhuangfy/             正式 Python 包
+│  ├─ paths.py               资源、配置、模型、数据库与外部服务路径
+│  ├─ core/emotion.py        情绪状态
+│  ├─ speech/wake.py         唤醒校正与对话时间窗
+│  ├─ persona/packs.py       人格包登记与读取
+│  ├─ channels/qq/reply_formatter.py  QQ 回复格式化
+│  └─ observability/activity_log.py  当前会话事件流
+├─ resources/images/         桌面角色图标
+├─ resources/personas/       版本化人格包
+├─ config/examples/          路径配置示例
+├─ tests/                    新包的单元与集成测试
+├─ scripts/                  后续迁移的启动与训练脚本位置
+├─ docs/                     后续整理的架构、开发和使用文档
+├─ data/                     后续运行数据位置（当前不迁移）
+├─ third_party/licenses/     第三方许可文本
 ├─ SenseVoice/               ZhuangFY 当前可运行的独立原型
-│  ├─ assets/zhuangfy.png    桌面、窗口与托盘共用的角色图标
 │  ├─ branding.py            应用名称与图标路径
 │  ├─ gui.py                 语音窗口、录音线程、流程协调与语音播放
 │  ├─ dashboard.py           统一控制台、设置编辑、服务状态与启停
-│  ├─ activity_log.py        当前会话的内存事件流，接收 QQ 桥接事件
+│  ├─ activity_log.py        新包模块的兼容导入
 │  ├─ continuous.py          流式 Silero VAD，分段与句尾检测
 │  ├─ recognize.py           SenseVoice 本地识别及命令行入口
-│  ├─ wake.py                唤醒别名校正、对话时间窗
+│  ├─ wake.py                新包模块的兼容导入
 │  ├─ interaction.py         交互状态、分段播报与回声文本过滤
 │  ├─ llm.py                 模型配置、密钥读取和 HTTP 请求
 │  ├─ model_catalog.py       后台获取供应商 /models 列表
 │  ├─ persona.py             默认人格包入口与旧版默认词迁移
-│  ├─ persona_packs.py       人格包登记、读取及当前提示词匹配
-│  ├─ persona_packs/         内置、版本化的人格提示词与来源说明
+│  ├─ persona_packs.py       新包模块的兼容导入
 │  ├─ memory.py              Mem0 本地向量库、检索、提取、纠错与删除
 │  ├─ memory_gui.py          长期记忆查看、手动更正与遗忘界面
 │  ├─ chat_worker.py         模型请求的 Qt 后台线程
@@ -34,7 +48,6 @@ Shimano/
 │  ├─ .env.local             本机生成：API 密钥；绝不提交
 │  ├─ models/                下载获得：SenseVoice、词表和 VAD 模型
 │  ├─ samples/zh.wav         可选下载：识别测试音频
-│  ├─ third_party/           第三方许可文本
 │  ├─ test_wake.py           唤醒状态测试
 │  ├─ test_llm.py            模型客户端测试
 │  ├─ test_memory.py         长期记忆命令、纠错与删除测试
@@ -64,7 +77,7 @@ Shimano/
 
 `llm.py` 从 `llm_settings.json` 读取供应商、模型 ID、URL 和角色提示词，从 `.env.local` 读取密钥；它把角色提示词、最近六轮成功对话和当前**文字**发往 Chat Completions 接口。模型服务可选硅基流动或自定义兼容接口。API 调用放在 `ChatWorker` 中，避免卡住界面；成功后才将这一轮加入内存历史。主语音界面和文字测试界面的历史分别保存在各自窗口内存中，关闭即清空。
 
-`persona_packs/zhuang_fangyi_v1/prompt.md` 是首套正式人格包，参考 MengPaul 的场景驱动角色 Skill，整理为现实桌面助手可用的角色背景、称呼、说话习惯和事实边界。`persona_packs.py` 登记内置包；`persona.py` 提供默认词和旧版默认词迁移。控制台及 `llm_gui.py` 可显式载入人格包并编辑，只有保存后才写入本机设置。旧版内置默认提示词会在加载时升级为新默认，用户自定义提示词不改动。人格指令与最近六轮历史一起构成当前对话的短期上下文。
+`resources/personas/zhuang_fangyi_v1/prompt.md` 是首套正式人格包，参考 MengPaul 的场景驱动角色 Skill，整理为现实桌面助手可用的角色背景、称呼、说话习惯和事实边界。`persona_packs.py` 登记内置包；`persona.py` 提供默认词和旧版默认词迁移。控制台及 `llm_gui.py` 可显式载入人格包并编辑，只有保存后才写入本机设置。旧版内置默认提示词会在加载时升级为新默认，用户自定义提示词不改动。人格指令与最近六轮历史一起构成当前对话的短期上下文。
 
 QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot v11 WebSocket 消息，桥接层先检查私聊/群聊白名单、机器人 @、消息去重与回复限速，再把本轮文字交给现有 `llm.chat`。每个发送者维护独立的短期历史。指定私聊账号可由思考模型选择文字或语音回复；语音使用本机 GPT-SoVITS，再通过 OneBot `record` 段交给 SnowLuma 转码、发送，仍计入同一限额。群聊只发文字，QQ 入站语音尚不识别。个人记忆按明确白名单隔离，不混入桌面主人的 Mem0。`qq_settings.json` 与 SnowLuma token 只保存在本机，不纳入 Git。
 

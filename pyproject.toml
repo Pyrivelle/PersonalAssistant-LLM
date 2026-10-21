@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zhuangfy"
+version = "0.1.0"
+description = "Local desktop and QQ assistant with voice interaction"
+readme = "README.md"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[project.scripts]
+zhuangfy = "zhuangfy.bootstrap:main"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["SenseVoice/requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+zhuangfy = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "SenseVoice"]
+pythonpath = ["src", "SenseVoice"]

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from activity_log import format_event, log_event, receive_event, session_snapshot
 from branding import APP_NAME, app_icon
+from zhuangfy.paths import Paths
 from llm import (
     DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
     PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
@@ -40,7 +41,7 @@ from qq_bridge import QqSettings, SETTINGS_FILE as QQ_SETTINGS_FILE, load_snowlu
 
 ROOT = Path(__file__).resolve().parent
 SNOWLUMA_WEBUI = QUrl("http://127.0.0.1:5099/")
-SNOWLUMA_DIR = ROOT.parents[1] / "SnowLuma" / "v2.0.3"
+SNOWLUMA_DIR = Paths.current().snowluma_root
 
 
 def _button(label: str, callback, *, primary: bool = False) -> QPushButton:

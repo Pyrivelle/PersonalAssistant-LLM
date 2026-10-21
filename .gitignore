@@ -7,6 +7,9 @@ Sakura-source/
 **/.uv-cache/
 **/python-runtime/
 **/__pycache__/
+**/*.egg-info/
+build/
+dist/
 **/.pytest_cache/
 **/.vscode/
 
@@ -29,6 +32,8 @@ Sakura-source/
 **/owner_link.json
 **/qq_identity.json
 **/gpt_sovits_settings.json
+data/*
+!data/.gitkeep
 
 # Candidate API routing metadata (credentials stay in .env.local).
 **/model_routes.json
