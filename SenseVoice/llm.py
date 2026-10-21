@@ -56,6 +56,17 @@ KEY_NAMES = {
 }
 
 
+class ModelRequestError(RuntimeError):
+    """Structured error for stage-aware retry/failover; no credentials stored."""
+
+    def __init__(self, message: str, *, kind: str = "other",
+                 status: int | None = None, retryable: bool = False):
+        super().__init__(message)
+        self.kind = kind
+        self.status = status
+        self.retryable = retryable
+
+
 @dataclass(frozen=True)
 class LlmSettings:
     provider: str = "siliconflow"
@@ -203,21 +214,29 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
             body = response.read(2_000_001)
     except urllib.error.HTTPError as error:
         log_event("模型", "失败", f"{stage} · HTTP {error.code} · {time.monotonic() - started:.1f} 秒")
-        raise RuntimeError(f"模型服务返回 HTTP {error.code}；请检查密钥、模型 ID 和账户额度") from None
-    except (urllib.error.URLError, TimeoutError) as error:
-        log_event("模型", "失败", f"{stage} · 连接失败 · {time.monotonic() - started:.1f} 秒")
-        raise RuntimeError(f"无法连接模型服务：{getattr(error, 'reason', '请求超时')}") from None
+        # Authentication and bad model IDs can use another configured provider,
+        # but retrying the same endpoint is rarely useful.
+        retryable = error.code in {408, 409, 425, 429, 500, 502, 503, 504}
+        raise ModelRequestError(
+            f"模型服务返回 HTTP {error.code}；请检查模型配置、服务状态和额度",
+            kind="http", status=error.code, retryable=retryable) from None
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        timed_out = isinstance(error, TimeoutError) or isinstance(getattr(error, "reason", None), TimeoutError)
+        log_event("模型", "失败", f"{stage} · {'超时' if timed_out else '网络错误'} · {time.monotonic() - started:.1f} 秒")
+        raise ModelRequestError(
+            "模型请求超时" if timed_out else "无法连接模型服务",
+            kind="timeout" if timed_out else "network", retryable=True) from None
     if len(body) > 2_000_000:
         log_event("模型", "失败", f"{stage} · 响应过大")
-        raise RuntimeError("模型响应过大")
+        raise ModelRequestError("模型响应过大", kind="protocol", retryable=False)
     try:
         content = json.loads(body)["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError):
         log_event("模型", "失败", f"{stage} · 返回格式错误")
-        raise RuntimeError("模型返回格式不符合 chat/completions 协议") from None
+        raise ModelRequestError("模型返回格式不符合 chat/completions 协议", kind="protocol", retryable=True) from None
     if not isinstance(content, str) or not content.strip():
         log_event("模型", "失败", f"{stage} · 空回复")
-        raise RuntimeError("模型没有返回可显示的文字")
+        raise ModelRequestError("模型没有返回可显示的文字", kind="empty", retryable=True)
     log_event("模型", "完成", f"{stage} · {time.monotonic() - started:.1f} 秒 · {len(content)} 字")
     if stage == "思考":
         log_event("模型", "思考内容", content.strip())
