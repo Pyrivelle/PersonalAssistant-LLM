@@ -531,6 +531,8 @@ class Dashboard(QMainWindow):
         rule_form.addRow("群号", self.group_ids)
         self.private_cooldown = self._number(saved.private_cooldown_seconds, 0, 120, decimal=True)
         rule_form.addRow("私聊间隔 / 秒", self.private_cooldown)
+        self.private_reply_parts = self._number(saved.private_max_reply_parts, 1, 3)
+        rule_form.addRow("私聊一轮最多分几条", self.private_reply_parts)
         self.group_cooldown = self._number(saved.group_cooldown_seconds, 0, 120, decimal=True)
         rule_form.addRow("群聊间隔 / 秒", self.group_cooldown)
         self.private_hourly = self._number(saved.private_max_replies_per_hour, 1, 120)
@@ -1098,6 +1100,7 @@ class Dashboard(QMainWindow):
                 allowed_group_ids=frozenset(_ids(self.group_ids.text())),
                 voice_private_ids=frozenset(_ids(self.voice_private_ids.text())),
                 private_cooldown_seconds=self.private_cooldown.value(),
+                private_max_reply_parts=self.private_reply_parts.value(),
                 group_cooldown_seconds=self.group_cooldown.value(),
                 private_max_replies_per_hour=self.private_hourly.value(),
                 group_max_replies_per_hour=self.group_hourly.value(),
