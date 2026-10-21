@@ -406,6 +406,29 @@ class QqBridge:
             current = state.incoming
             log_event("QQ", "消息", f"{current.scope} · {message}")
             try:
+                if current.kind == "private" and message.strip() == "/continue":
+                    if not state.partial_replies:
+                        await self.send_reply(current, "系统提示：没有待补发的回复片段。")
+                        continue
+                    partial = state.partial_replies[0]
+                    sent, uncertain = await self._send_reply_parts(
+                        current, partial.parts[partial.delivered:],
+                        voice=partial.voice and partial.delivered == 0,
+                        continuation=partial.delivered > 0)
+                    partial.delivered += sent
+                    partial.uncertain = uncertain
+                    if partial.delivered == len(partial.parts):
+                        await self._finish_reply(state, current, partial)
+                    else:
+                        log_event("QQ", "补发未完成",
+                                  f"turn:{partial.turn_id} · 剩余 {len(partial.parts)-partial.delivered} 段")
+                    continue
+                if current.kind == "private" and message.strip() == "/discard":
+                    if state.partial_replies:
+                        discarded = state.partial_replies.popleft()
+                        log_event("QQ", "取消补发", f"turn:{discarded.turn_id} · 用户明确放弃")
+                    await self.send_reply(current, "系统提示：已放弃最早一条未完成回复的剩余片段。")
+                    continue
                 if message.strip() == "/retry":
                     if not state.last_failed_generation:
                         await self.send_reply(current, "系统提示：当前会话没有需要重新生成的失败消息。")
@@ -427,6 +450,8 @@ class QqBridge:
                         self.context_store.delete(f"bot:{self.bot_id}:{current.scope}")
                         self.context_store.delete(current.scope)  # legacy pre-bot scope
                     state.context = DialogueContext()
+                    state.partial_replies.clear()
+                    state.last_failed_generation = ""
                     await self.send_reply(current, "已清除这个 QQ 账号在本机器人中的会话与成员记忆。")
                     continue
                 async with self.generation_lock:
@@ -487,38 +512,50 @@ class QqBridge:
                         state.context.history, message, emotion_context=emotion_prompt,
                         context_notes=notes, trace_id=turn_id)
                     log_event("QQ", "已生成", f"turn:{turn_id} · {current.scope}")
-                if not reply.strip():
+                # Format only model output; system commands and status notices
+                # are never passed through role/stage-cue cleanup.
+                cleaned, parts = format_qq_reply(reply, private=current.kind == "private")
+                if not cleaned:
+                    state.last_failed_generation = message
+                    log_event("QQ", "格式问题",
+                              f"turn:{turn_id} · 模型只返回了旁白或空文本，已保留用户原文")
+                    if current.kind == "private":
+                        await self.send_reply(
+                            current, "系统提示：模型没有生成可以发送的对白。稍后发 /retry 再试。")
                     continue
-                # One outbound message per turn. Never retry an unknown delivery result.
-                reply = reply[:1200]
                 use_voice = (current.kind == "private" and
                              current.user_id in self.settings.voice_private_ids and
                              plan.delivery == "voice" and plan.confidence >= 0.5)
                 if use_voice:
-                    cleaned = spoken_reply(reply)
-                    if cleaned != reply and cleaned:
-                        log_event("QQ", "语音文本", f"{current.scope} · 已省略开头的动作描述")
-                        reply = cleaned
-                    use_voice = bool(cleaned) and len(reply) <= MAX_VOICE_CHARS
-                if await self.send_reply(current, reply, voice=use_voice):
-                    state.last_failed_generation = ""
-                    log_event("QQ", "已投递", f"turn:{turn_id} · {current.scope}")
-                    state.context.commit(message, reply, candidate)
-                    if (self.context_store and current.kind == "private"
-                            and current.user_id in self.planner_settings.persist_private_ids):
-                        try:
-                            self.context_store.save(f"bot:{self.bot_id}:{current.scope}", state.context)
-                        except Exception as error:
-                            print(f"QQ 会话上下文保存失败：{type(error).__name__}")
-                    if member_key is not None:
-                        try:
-                            count = await asyncio.to_thread(
-                                self.member_store.record_turn, member_key, message, reply)
-                            if count >= REFLECT_AFTER_TURNS:
-                                log_event("记忆", "排队", f"{current.scope} · 已完成 {count} 轮，准备后台反思")
-                                self.queue_member_reflection(member_key, settings, key)
-                        except Exception as error:
-                            print(f"QQ 用户记忆排队失败：{type(error).__name__}")
+                    spoken = spoken_reply(cleaned)
+                    if spoken != cleaned and spoken:
+                        log_event("QQ", "语音文本", f"{current.scope} · 省略开头的发送方式描述")
+                        cleaned = spoken
+                    use_voice = bool(cleaned) and len(cleaned) <= MAX_VOICE_CHARS
+                    if use_voice:
+                        parts = [cleaned]  # A spoken turn is one audio message.
+                if not use_voice:
+                    # For long voice-request replies, fall back to short text
+                    # bubbles as usual rather than synthesizing partial audio.
+                    cleaned, parts = format_qq_reply(cleaned, private=current.kind == "private")
+                delivery = PartialReply(
+                    user_text=message, canonical_reply=cleaned, parts=tuple(parts),
+                    delivered=0, emotion=candidate, settings=settings,
+                    api_key=key, member_key=member_key, turn_id=turn_id, voice=use_voice)
+                count, uncertain = await self._send_reply_parts(
+                    current, delivery.parts, voice=delivery.voice)
+                delivery.delivered = count
+                delivery.uncertain = uncertain
+                if delivery.delivered == len(delivery.parts):
+                    await self._finish_reply(state, current, delivery)
+                else:
+                    # The remaining parts are kept in memory: explicit
+                    # /continue never resends already acknowledged bubbles.
+                    if current.kind == "private":
+                        state.partial_replies.append(delivery)
+                    log_event("QQ", "未完全投递",
+                              f"turn:{turn_id} · {count}/{len(delivery.parts)} 段已确认"
+                              + (" · 某段的确认状态不明" if uncertain else " · 发送被限制"))
             except ModelRoutesFailed as error:
                 state.last_failed_generation = message
                 log_event("QQ", "模型全部失败",
