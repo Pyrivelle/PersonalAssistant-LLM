@@ -5,7 +5,9 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
 
-from llm import ROOT, LlmSettings, chat
+from llm import ROOT, LlmSettings
+from model_routes import invoke_stage
+from uuid import uuid4
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from emotion import EmotionState
 from fangyi_skill import guidance as fangyi_guidance
@@ -24,9 +26,10 @@ class ChatWorker(QThread):
         self.emotion_candidate = emotion.observe(message) if emotion is not None else None
         self.context_notes = context_notes
         self.source = source
+        self.turn_id = uuid4().hex[:12]
 
     def run(self) -> None:
-        log_event(self.source, "消息", self.message)
+        log_event(self.source, "消息", f"turn:{self.turn_id} · {self.message}")
         try:
             memories = []
             from memory import memory_command
@@ -88,10 +91,13 @@ class ChatWorker(QThread):
             if skill_hint:
                 emotion_prompt += "\n" + skill_hint
                 log_event(self.source, "角色场景", skill_hint)
-            self.replied.emit(chat(self.settings, self.key, self.history, self.message, memories=memories,
-                                   emotion_context=emotion_prompt, context_notes=context_notes))
+            reply = invoke_stage(
+                "reply", self.settings, self.key, self.history, self.message,
+                memories=memories, emotion_context=emotion_prompt,
+                context_notes=context_notes, trace_id=self.turn_id)
+            self.replied.emit(reply)
         except Exception as error:
-            log_event(self.source, "失败", f"对话失败：{type(error).__name__}: {error}")
+            log_event(self.source, "失败", f"turn:{self.turn_id} · 对话失败：{type(error).__name__}: {error}")
             self.failed.emit(str(error))
 
 
