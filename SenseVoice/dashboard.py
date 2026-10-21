@@ -381,7 +381,7 @@ class Dashboard(QMainWindow):
         self._provider_values = {saved.provider: (saved.base_url, saved.model)}
         self._model_choices = {}
         self._last_provider = saved.provider
-        card, layout = _card("对话接口", "支持硅基流动、DeepSeek、Kimi、哈基米 API 及兼容接口。保存设置不会发送模型请求。")
+        card, layout = _card("默认模型（兼容单 API 设置）", "只有对应阶段没有配置模型候选时才使用这里的供应商与模型。人格与记忆仍使用下方原有设置。")
         form = QFormLayout()
         form.setSpacing(12)
         self.provider = QComboBox()
@@ -418,6 +418,14 @@ class Dashboard(QMainWindow):
         form.addRow("密钥状态", self.key_state)
         layout.addLayout(form)
         column.addWidget(card)
+        routes_card, routes_layout = _card(
+            "分阶段模型 API 与容灾",
+            "思考、回复、识图可分别配置多条 API；按优先级故障切换，支持单次超时和重试。"
+            "识图目前仅配置备用服务，尚未接入图片输入。")
+        routes_layout.addWidget(_button(
+            "配置各阶段的 API 候选、密钥及重试策略  →",
+            self.open_model_routes, primary=True))
+        column.addWidget(routes_card)
 
         persona, persona_layout = _card("人格与长期记忆", "可编辑庄方宜的角色提示词。长期记忆启用后，记忆提取与向量化会使用硅基流动 API。")
         pack_row = QHBoxLayout()
@@ -450,6 +458,13 @@ class Dashboard(QMainWindow):
         column.addStretch()
         self.provider_changed()
         return page
+
+    def open_model_routes(self) -> None:
+        from model_routes_gui import ModelRoutesDialog
+        try:
+            ModelRoutesDialog(self).exec()
+        except (OSError, ValueError, TypeError) as error:
+            QMessageBox.warning(self, "API 路由配置无效", str(error))
 
     def load_persona_pack(self) -> None:
         pack = self.persona_pack.currentData()
@@ -516,6 +531,8 @@ class Dashboard(QMainWindow):
         rule_form.addRow("群号", self.group_ids)
         self.private_cooldown = self._number(saved.private_cooldown_seconds, 0, 120, decimal=True)
         rule_form.addRow("私聊间隔 / 秒", self.private_cooldown)
+        self.private_reply_parts = self._number(saved.private_max_reply_parts, 1, 3)
+        rule_form.addRow("私聊一轮最多分几条", self.private_reply_parts)
         self.group_cooldown = self._number(saved.group_cooldown_seconds, 0, 120, decimal=True)
         rule_form.addRow("群聊间隔 / 秒", self.group_cooldown)
         self.private_hourly = self._number(saved.private_max_replies_per_hour, 1, 120)
@@ -1083,6 +1100,7 @@ class Dashboard(QMainWindow):
                 allowed_group_ids=frozenset(_ids(self.group_ids.text())),
                 voice_private_ids=frozenset(_ids(self.voice_private_ids.text())),
                 private_cooldown_seconds=self.private_cooldown.value(),
+                private_max_reply_parts=self.private_reply_parts.value(),
                 group_cooldown_seconds=self.group_cooldown.value(),
                 private_max_replies_per_hour=self.private_hourly.value(),
                 group_max_replies_per_hour=self.group_hourly.value(),

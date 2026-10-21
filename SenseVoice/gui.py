@@ -44,6 +44,7 @@ from turn_planner import PlannerSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from llm import load_key, load_settings
 from gpt_sovits import load_settings as load_speech_settings
+from model_routes import can_attempt_stage
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
 from wake import ConversationGate, DEFAULT_ALIASES, DEFAULT_NAME, TRAILING, parse_aliases
 
@@ -210,6 +211,7 @@ class MainWindow(QMainWindow):
         self.turn_serial = 0
         self.active_turn: int | None = None
         self.pending_message = ""
+        self.last_failed_message = ""
         self.conversation_busy = False
         self.tts_pending = False
         self.tts_chunks: list[str] = []
@@ -358,6 +360,10 @@ class MainWindow(QMainWindow):
         self.interrupt_button.setEnabled(False)
         self.interrupt_button.clicked.connect(self.interrupt_reply)
         layout.addWidget(self.interrupt_button)
+        self.retry_failed_button = QPushButton("重试上一条失败的语音文字")
+        self.retry_failed_button.setEnabled(False)
+        self.retry_failed_button.clicked.connect(self.retry_failed_turn)
+        layout.addWidget(self.retry_failed_button)
 
         self.state_label = QLabel("状态：Idle")
         layout.addWidget(self.state_label)
@@ -736,13 +742,19 @@ class MainWindow(QMainWindow):
             return
         settings = load_settings()
         key = load_key(settings.provider)
-        if settings.provider == "siliconflow" and not key:
-            self.status_label.setText("请先在“模型设置与文字测试”中保存 API Key")
+        try:
+            if not can_attempt_stage("reply", settings, key):
+                self.status_label.setText("回复阶段没有可用的 API 密钥或本地服务，请配置模型路由")
+                return
+        except (OSError, ValueError, TypeError) as error:
+            self.status_label.setText(f"模型路由配置有误：{error}")
             return
         self.turn_serial += 1
         turn = self.turn_serial
         self.active_turn = turn
         self.pending_message = message
+        self.last_failed_message = ""
+        self.retry_failed_button.setEnabled(False)
         self.speech_started_at = None
         self.set_interaction_state(InteractionState.THINKING)
         worker = ChatWorker(settings, key, list(self.chat_history), message, self,
@@ -971,9 +983,18 @@ class MainWindow(QMainWindow):
             self.custom_tts_buffer.deleteLater()
         self.custom_tts_buffer = None
 
+    @Slot()
+    def retry_failed_turn(self) -> None:
+        if (self.last_failed_message and self.continuous_worker is not None
+                and self.interaction_state == InteractionState.LISTENING):
+            self.begin_chat_turn(self.last_failed_message)
+
     def chat_failed(self, turn: int, error: str) -> None:
         if turn != self.active_turn:
             return
+        # Keep the ASR transcript so the user does not need to speak again.
+        self.last_failed_message = self.pending_message
+        self.retry_failed_button.setEnabled(bool(self.last_failed_message))
         self.active_turn = None
         self.chat_worker = None
         self.pending_message = ""
@@ -1192,6 +1213,8 @@ class MainWindow(QMainWindow):
         if self.conversation_busy:
             self.status_label.setText("请等当前回复结束后再清空对话")
             return
+        self.last_failed_message = ""
+        self.retry_failed_button.setEnabled(False)
         self.dialogue = DialogueContext()
         self.chat_history = self.dialogue.history
         self.emotion = self.dialogue.emotion

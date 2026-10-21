@@ -18,12 +18,16 @@ from activity_log import log_event
 from pathlib import Path
 from urllib.parse import urlparse
 
-from llm import ROOT, chat, load_key, load_settings
+from llm import ROOT, load_key, load_settings
+from model_routes import invoke_stage, can_attempt_stage, ModelRoutesFailed
 from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
 from fangyi_skill import guidance as fangyi_guidance
 from gpt_sovits import load_settings as load_speech_settings
+from qq_reply_formatter import format_qq_reply
+from emotion import EmotionState
+from llm import LlmSettings
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
@@ -56,6 +60,7 @@ class QqSettings:
     group_max_replies_per_hour: int = 8
     quiet_seconds: float = 1.2
     voice_private_ids: frozenset[int] = frozenset()
+    private_max_reply_parts: int = 3
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "QqSettings":
@@ -71,7 +76,8 @@ class QqSettings:
             raise ValueError("首版仅接受本机 ws:// OneBot 地址，且 URL 中不能包含 token")
         values = {key: raw.get(key, getattr(defaults, key)) for key in (
             "private_cooldown_seconds", "group_cooldown_seconds",
-            "private_max_replies_per_hour", "group_max_replies_per_hour", "quiet_seconds")}
+            "private_max_replies_per_hour", "group_max_replies_per_hour", "quiet_seconds",
+            "private_max_reply_parts")}
         for key in ("private_cooldown_seconds", "group_cooldown_seconds", "quiet_seconds"):
             values[key] = float(values[key])
             if not math.isfinite(values[key]) or not 0 <= values[key] <= 120:
@@ -80,6 +86,8 @@ class QqSettings:
             values[key] = int(values[key])
             if not 1 <= values[key] <= 120:
                 raise ValueError(f"{key} 必须在 1 到 120 之间")
+        if type(values["private_max_reply_parts"]) is not int or not 1 <= values["private_max_reply_parts"] <= 3:
+            raise ValueError("private_max_reply_parts 只能是 1–3")
         private_ids = _ids(raw.get("allowed_private_ids", []))
         voice_ids = _ids(raw.get("voice_private_ids", []))
         if not voice_ids.issubset(private_ids):
@@ -254,12 +262,34 @@ class ReplyLimiter:
 
 
 @dataclass
+class PartialReply:
+    """One model answer, possibly delivered as several QQ bubbles.
+
+    This does not persist across restarts. Retain only not-yet-confirmed parts
+    so /continue cannot inadvertently re-send acknowledged messages.
+    """
+    user_text: str
+    canonical_reply: str
+    parts: tuple[str, ...]
+    delivered: int
+    emotion: EmotionState
+    settings: LlmSettings
+    api_key: str
+    member_key: MemberKey | None
+    turn_id: str
+    uncertain: bool = False
+    voice: bool = False
+
+
+@dataclass
 class Conversation:
     incoming: Incoming
     pending: list[str] = field(default_factory=list)
     first_arrival: float = 0
     last_arrival: float = 0
     context: DialogueContext = field(default_factory=DialogueContext)
+    last_failed_generation: str = ""
+    partial_replies: deque[PartialReply] = field(default_factory=deque)
     task: asyncio.Task | None = None
 
 
@@ -367,7 +397,16 @@ class QqBridge:
                 if quiet <= 0 or now - state.first_arrival >= 4:
                     break
                 await asyncio.sleep(min(quiet, 4 - (now - state.first_arrival)))
-            wait, capped = self.limiter.check(state.incoming, time.monotonic())
+            command = state.pending[0].strip() if len(state.pending) == 1 else ""
+            # A continuation of an already accepted logical reply must not
+            # consume a NEW hourly quota slot. Erase/discard are never blocked
+            # by reply quota, though their confirmation can still be rate-limited.
+            continuing = (state.incoming.kind == "private" and command == "/continue"
+                          and state.partial_replies and state.partial_replies[0].delivered > 0)
+            administrative = (state.incoming.kind == "private"
+                              and command in {"/forget_me", "/删除我的记忆", "/discard"})
+            wait, capped = ((0.0, False) if continuing or administrative else
+                            self.limiter.check(state.incoming, time.monotonic()))
             if capped:
                 state.pending.clear()
                 print(f"跳过 {state.incoming.scope}：本小时回复已达上限")
@@ -380,6 +419,35 @@ class QqBridge:
             current = state.incoming
             log_event("QQ", "消息", f"{current.scope} · {message}")
             try:
+                if current.kind == "private" and message.strip() == "/continue":
+                    if not state.partial_replies:
+                        await self.send_reply(current, "系统提示：没有待补发的回复片段。")
+                        continue
+                    partial = state.partial_replies[0]
+                    sent, uncertain = await self._send_reply_parts(
+                        current, partial.parts[partial.delivered:],
+                        voice=partial.voice and partial.delivered == 0,
+                        continuation=partial.delivered > 0)
+                    partial.delivered += sent
+                    partial.uncertain = uncertain
+                    if partial.delivered == len(partial.parts):
+                        await self._finish_reply(state, current, partial)
+                    else:
+                        log_event("QQ", "补发未完成",
+                                  f"turn:{partial.turn_id} · 剩余 {len(partial.parts)-partial.delivered} 段")
+                    continue
+                if current.kind == "private" and message.strip() == "/discard":
+                    if state.partial_replies:
+                        discarded = state.partial_replies.popleft()
+                        log_event("QQ", "取消补发", f"turn:{discarded.turn_id} · 用户明确放弃")
+                    await self.send_reply(current, "系统提示：已放弃最早一条未完成回复的剩余片段。")
+                    continue
+                if message.strip() == "/retry":
+                    if not state.last_failed_generation:
+                        await self.send_reply(current, "系统提示：当前会话没有需要重新生成的失败消息。")
+                        continue
+                    message = state.last_failed_generation
+                    log_event("QQ", "手动重试", f"{current.scope} · 重新提交上次生成失败的文字")
                 if (current.kind == "private" and
                         message.strip() in {"/forget_me", "/删除我的记忆"}):
                     # Wait for pending background writes before erasing. Otherwise
@@ -395,15 +463,20 @@ class QqBridge:
                         self.context_store.delete(f"bot:{self.bot_id}:{current.scope}")
                         self.context_store.delete(current.scope)  # legacy pre-bot scope
                     state.context = DialogueContext()
+                    state.partial_replies.clear()
+                    state.last_failed_generation = ""
                     await self.send_reply(current, "已清除这个 QQ 账号在本机器人中的会话与成员记忆。")
                     continue
                 async with self.generation_lock:
                     settings = load_settings()
                     key = load_key(settings.provider)
-                    if not key and settings.provider != "custom":
-                        raise RuntimeError("对话模型 API Key 未配置")
+                    if not can_attempt_stage("reply", settings, key):
+                        raise RuntimeError("回复阶段没有可用的模型服务，请检查 API 候选及密钥")
                     settings = replace(settings, memory_enabled=False,
-                                       system_prompt=settings.system_prompt + "\n你现在通过 QQ 聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。")
+                                       system_prompt=settings.system_prompt + "\n你现在通过 QQ 聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。"
+                                       "\n只输出准备发送给对方的对白；不要用（语气……）、（轻声）、（动作……）或其他括号写表演、神情、心理和镜头旁白。"
+                                       "平常闲聊使用自然中文，不使用多余 Markdown 双空格、标题或加粗。"
+                                       "稍长的聊天可以自然分为两小段，以空行隔开；不要刻意拉长。代码、链接或步骤等技术内容可保留必要格式。")
                     candidate = state.context.observe(message)
                     plan = TurnPlan()
                     if self.planner_settings.enabled:
@@ -445,42 +518,135 @@ class QqBridge:
                         # LLMClient caps extra context; keep the member identity
                         # snapshot first rather than truncating it off the end.
                         notes = "\n".join([member_snapshot, notes])
+                    turn_id = uuid.uuid4().hex[:12]
+                    log_event("QQ", "生成开始", f"turn:{turn_id} · {current.scope}")
                     reply = await asyncio.to_thread(
-                        chat, settings, key, state.context.history, message,
-                        emotion_context=emotion_prompt, context_notes=notes)
-                if not reply.strip():
+                        invoke_stage, "reply", settings, key,
+                        state.context.history, message, emotion_context=emotion_prompt,
+                        context_notes=notes, trace_id=turn_id)
+                    log_event("QQ", "已生成", f"turn:{turn_id} · {current.scope}")
+                # Format only model output; system commands and status notices
+                # are never passed through role/stage-cue cleanup.
+                cleaned, parts = format_qq_reply(reply, private=current.kind == "private",
+                                                  max_parts=self.settings.private_max_reply_parts)
+                if not cleaned:
+                    state.last_failed_generation = message
+                    log_event("QQ", "格式问题",
+                              f"turn:{turn_id} · 模型只返回了旁白或空文本，已保留用户原文")
+                    if current.kind == "private":
+                        await self.send_reply(
+                            current, "系统提示：模型没有生成可以发送的对白。稍后发 /retry 再试。")
                     continue
-                # One outbound message per turn. Never retry an unknown delivery result.
-                reply = reply[:1200]
                 use_voice = (current.kind == "private" and
                              current.user_id in self.settings.voice_private_ids and
                              plan.delivery == "voice" and plan.confidence >= 0.5)
                 if use_voice:
-                    cleaned = spoken_reply(reply)
-                    if cleaned != reply and cleaned:
-                        log_event("QQ", "语音文本", f"{current.scope} · 已省略开头的动作描述")
-                        reply = cleaned
-                    use_voice = bool(cleaned) and len(reply) <= MAX_VOICE_CHARS
-                if await self.send_reply(current, reply, voice=use_voice):
-                    state.context.commit(message, reply, candidate)
-                    if (self.context_store and current.kind == "private"
-                            and current.user_id in self.planner_settings.persist_private_ids):
-                        try:
-                            self.context_store.save(f"bot:{self.bot_id}:{current.scope}", state.context)
-                        except Exception as error:
-                            print(f"QQ 会话上下文保存失败：{type(error).__name__}")
-                    if member_key is not None:
-                        try:
-                            count = await asyncio.to_thread(
-                                self.member_store.record_turn, member_key, message, reply)
-                            if count >= REFLECT_AFTER_TURNS:
-                                log_event("记忆", "排队", f"{current.scope} · 已完成 {count} 轮，准备后台反思")
-                                self.queue_member_reflection(member_key, settings, key)
-                        except Exception as error:
-                            print(f"QQ 用户记忆排队失败：{type(error).__name__}")
+                    spoken = spoken_reply(cleaned)
+                    if spoken != cleaned:
+                        if not spoken:
+                            state.last_failed_generation = message
+                            log_event("QQ", "格式问题", f"turn:{turn_id} · 语音旁白清理后无有效对白")
+                            await self.send_reply(
+                                current, "系统提示：没有生成有效语音对白，稍后发送 /retry 可重试。")
+                            continue
+                        log_event("QQ", "语音文本", f"{current.scope} · 省略开头的发送方式描述")
+                        cleaned = spoken
+                    use_voice = bool(cleaned) and len(cleaned) <= MAX_VOICE_CHARS
+                    if use_voice:
+                        parts = [cleaned]  # A spoken turn is one audio message.
+                if not use_voice:
+                    # For long voice-request replies, fall back to short text
+                    # bubbles as usual rather than synthesizing partial audio.
+                    cleaned, parts = format_qq_reply(cleaned, private=current.kind == "private",
+                                                  max_parts=self.settings.private_max_reply_parts)
+                delivery = PartialReply(
+                    user_text=message, canonical_reply=cleaned, parts=tuple(parts),
+                    delivered=0, emotion=candidate, settings=settings,
+                    api_key=key, member_key=member_key, turn_id=turn_id, voice=use_voice)
+                count, uncertain = await self._send_reply_parts(
+                    current, delivery.parts, voice=delivery.voice)
+                delivery.delivered = count
+                delivery.uncertain = uncertain
+                if delivery.delivered == len(delivery.parts):
+                    await self._finish_reply(state, current, delivery)
+                else:
+                    # The remaining parts are kept in memory: explicit
+                    # /continue never resends already acknowledged bubbles.
+                    if current.kind == "private":
+                        state.partial_replies.append(delivery)
+                    log_event("QQ", "未完全投递",
+                              f"turn:{turn_id} · {count}/{len(delivery.parts)} 段已确认"
+                              + (" · 某段的确认状态不明" if uncertain else " · 发送被限制"))
+            except ModelRoutesFailed as error:
+                state.last_failed_generation = message
+                log_event("QQ", "模型全部失败",
+                          f"{current.scope} · 已保留本轮文字，发送 /retry 可再试；{error}")
+                # A status notice is not an AI reply and must not enter
+                # dialogue history or memory. Never retry uncertain delivery.
+                if current.kind == "private":
+                    try:
+                        await self.send_reply(
+                            current, "系统提示：这句话暂时没能生成回复。稍后发送 /retry 可重试，无需重新输入。")
+                    except Exception as delivery_error:
+                        log_event("QQ", "错误通知投递失败",
+                                  f"{current.scope} · {type(delivery_error).__name__}")
             except Exception as error:
                 print(f"QQ 回复失败（{current.scope}）：{type(error).__name__}: {error}")
                 log_event("QQ", "失败", f"{current.scope} · {type(error).__name__}: {error}")
+
+    async def _send_reply_parts(self, incoming: Incoming, parts: tuple[str, ...],
+                                *, voice: bool = False, continuation: bool = False
+                                ) -> tuple[int, bool]:
+        """Number of confirmed sends and whether the failed action was uncertain."""
+        for index, part in enumerate(parts):
+            options = {}
+            if voice and index == 0:
+                options["voice"] = True
+            if continuation or index > 0:
+                options["continuation"] = True
+            try:
+                delivered = await self.send_reply(incoming, part, **options)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # OneBot may have received this physical message before its
+                # acknowledgement was lost: never automatically retry it.
+                log_event("QQ", "投递状态不明",
+                          f"{incoming.scope} · 第 {index + 1}/{len(parts)} 段 · {type(error).__name__}")
+                return index, True
+            if not delivered:
+                log_event("QQ", "投递受限",
+                          f"{incoming.scope} · 第 {index + 1}/{len(parts)} 段未被接受")
+                return index, False
+        return len(parts), False
+
+    async def _finish_reply(self, state: Conversation, current: Incoming,
+                            delivery: PartialReply) -> None:
+        """Commit exactly one dialogue turn after ALL physical parts have an ACK."""
+        if delivery in state.partial_replies:
+            state.partial_replies.remove(delivery)
+        state.last_failed_generation = ""
+        log_event("QQ", "已投递",
+                  f"turn:{delivery.turn_id} · {current.scope} · {len(delivery.parts)} 段")
+        state.context.commit(delivery.user_text, delivery.canonical_reply, delivery.emotion)
+        if (self.context_store and current.kind == "private"
+                and current.user_id in self.planner_settings.persist_private_ids):
+            try:
+                self.context_store.save(f"bot:{self.bot_id}:{current.scope}", state.context)
+            except Exception as error:
+                print(f"QQ 会话上下文保存失败：{type(error).__name__}")
+        if delivery.member_key is not None:
+            try:
+                count = await asyncio.to_thread(self.member_store.record_turn,
+                                                delivery.member_key,
+                                                delivery.user_text, delivery.canonical_reply)
+                if count >= REFLECT_AFTER_TURNS:
+                    log_event("记忆", "排队",
+                              f"{current.scope} · 已完成 {count} 轮，准备后台反思")
+                    self.queue_member_reflection(delivery.member_key,
+                                                 delivery.settings, delivery.api_key)
+            except Exception as error:
+                print(f"QQ 用户记忆排队失败：{type(error).__name__}")
 
     def queue_member_reflection(self, identity: MemberKey, settings, api_key: str) -> None:
         previous = self.reflection_tasks.get(identity)
@@ -504,7 +670,8 @@ class QqBridge:
             print(f"QQ 用户记忆反思失败，保留待处理消息：{type(error).__name__}")
             log_event("记忆", "失败", f"bot:{identity.bot_id}:private:{identity.sender_id} · 反思失败：{type(error).__name__}")
 
-    async def send_reply(self, incoming: Incoming, reply: str, *, voice: bool = False) -> bool:
+    async def send_reply(self, incoming: Incoming, reply: str, *, voice: bool = False,
+                         continuation: bool = False) -> bool:
         audio = None
         if voice and incoming.kind == "private" and incoming.user_id in self.settings.voice_private_ids:
             try:
@@ -515,11 +682,14 @@ class QqBridge:
         async with self.send_lock:
             now = time.monotonic()
             await asyncio.sleep(max(0.0, self.next_send_at - now))
-            wait, capped = self.limiter.check(incoming, time.monotonic())
-            if capped:
-                return False
-            if wait:
-                await asyncio.sleep(wait)
+            # A multi-bubble response is ONE logical turn for hourly/cooldown
+            # limits. Every physical action remains spaced by next_send_at.
+            if not continuation:
+                wait, capped = self.limiter.check(incoming, time.monotonic())
+                if capped:
+                    return False
+                if wait:
+                    await asyncio.sleep(wait)
             self.next_send_at = time.monotonic() + 1.2
             if incoming.kind == "private":
                 if audio is not None:
@@ -537,7 +707,8 @@ class QqBridge:
                 await self.action("send_group_msg", {"group_id": incoming.group_id,
                     "message": [{"type": "at", "data": {"qq": str(incoming.user_id)}},
                                 {"type": "text", "data": {"text": " " + reply}}]})
-            self.limiter.mark_sent(incoming, time.monotonic())
+            if not continuation:
+                self.limiter.mark_sent(incoming, time.monotonic())
             print(("已投递 QQ 私聊语音" if audio is not None else "已投递 QQ 私聊回复")
                   if incoming.kind == "private" else "已投递 QQ 群回复", flush=True)
             log_event("QQ", "语音回复" if audio is not None else "回复", f"{incoming.scope} · {reply}")

@@ -100,16 +100,37 @@ def parse_plan(text: str, *, direct_message: bool = True) -> TurnPlan:
         return TurnPlan()
 
 
+def _valid_planner_output(text: str) -> bool:
+    """Reject malformed responses so the next model may be tried."""
+    source = text.strip()
+    if source.startswith(chr(96) * 3):
+        source = source.split("\n", 1)[-1].rsplit(chr(96) * 3, 1)[0].strip()
+    try:
+        data = json.loads(source)
+        return (isinstance(data, dict) and type(data.get("should_reply")) is bool
+                and data.get("tone") in ALLOWED_TONES
+                and isinstance(data.get("attention"), str)
+                and type(data.get("confidence")) in (int, float)
+                and 0 <= data["confidence"] <= 1
+                and data.get("delivery", "text") in {"text", "voice"})
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def plan_turn(settings, api_key: str, history: list[dict[str, str]],
               user_text: str, config: PlannerSettings, *, direct_message: bool = True,
               allow_voice: bool = False) -> TurnPlan:
-    """Second model call is strictly opt-in; exceptions are for callers to catch."""
+    """Planner may fail or return invalid JSON; callers safely fall back."""
     if not config.enabled:
         return TurnPlan()
-    from dataclasses import replace
-    from llm import chat
+    from model_routes import invoke_stage
     prompt = PLANNER_PROMPT if allow_voice else PLANNER_PROMPT + "\n本轮只能回复文字，delivery 必须为 text。"
-    planner_settings = replace(settings, model=config.model or settings.model,
-                               system_prompt=prompt, memory_enabled=False)
-    reply = chat(planner_settings, api_key, history[-8:], user_text[:1500], timeout=15, stage="思考")
-    return parse_plan(reply, direct_message=direct_message)
+    reply = invoke_stage(
+        "planner", settings, api_key, history[-8:], user_text[:1500],
+        system_prompt=prompt, legacy_model=config.model,
+        response_validator=_valid_planner_output)
+    result = parse_plan(reply, direct_message=direct_message)
+    if not allow_voice and result.delivery == "voice":
+        from dataclasses import replace
+        result = replace(result, delivery="text")
+    return result
