@@ -381,7 +381,7 @@ class Dashboard(QMainWindow):
         self._provider_values = {saved.provider: (saved.base_url, saved.model)}
         self._model_choices = {}
         self._last_provider = saved.provider
-        card, layout = _card("对话接口", "支持硅基流动、DeepSeek、Kimi、哈基米 API 及兼容接口。保存设置不会发送模型请求。")
+        card, layout = _card("默认模型（兼容单 API 设置）", "只有对应阶段没有配置模型候选时才使用这里的供应商与模型。人格与记忆仍使用下方原有设置。")
         form = QFormLayout()
         form.setSpacing(12)
         self.provider = QComboBox()
