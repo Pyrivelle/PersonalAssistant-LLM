@@ -136,9 +136,10 @@ def split_private_reply(text: str, max_parts: int = MAX_PARTS) -> list[str]:
     return groups
 
 
-def format_qq_reply(reply: str, *, private: bool) -> tuple[str, list[str]]:
+def format_qq_reply(reply: str, *, private: bool,
+                    max_parts: int = MAX_PARTS) -> tuple[str, list[str]]:
     """One cleaned logical answer and 1-3 physical messages."""
     cleaned = clean_reply(reply[:MAX_QQ_CHARS])
     if not cleaned:
         return "", []
-    return cleaned, split_private_reply(cleaned) if private else [cleaned]
+    return cleaned, split_private_reply(cleaned, max_parts) if private else [cleaned]
