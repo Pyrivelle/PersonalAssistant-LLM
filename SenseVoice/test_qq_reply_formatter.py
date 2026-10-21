@@ -41,6 +41,13 @@ class QqReplyFormatterTests(unittest.TestCase):
         raw = "第一段。" * 30 + "\n\n" + "第二段。" * 30
         self.assertEqual(len(format_qq_reply(raw, private=False)[1]), 1)
 
+    def test_private_split_can_be_disabled_by_setting(self):
+        raw = ("事情需要慢慢推进，也可以先从一件小事开始。" * 4
+               + "\n\n" + "这是第二个自然段，你不必一次完成所有目标。" * 4)
+        logical, parts = format_qq_reply(raw, private=True, max_parts=1)
+        self.assertEqual(parts, [logical])
+        self.assertEqual(len(format_qq_reply(raw, private=True, max_parts=3)[1]), 2)
+
     def test_many_paragraphs_are_bounded(self):
         text = "\n\n".join(f"第{i}段：" + "这件事可以慢慢来。" * 12 for i in range(8))
         cleaned, parts = format_qq_reply(text, private=True)
