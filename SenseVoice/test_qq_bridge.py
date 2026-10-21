@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -154,7 +155,8 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(name, "send_private_msg")
             self.assertEqual(params["message"][0]["type"], "record")
             url = params["message"][0]["data"]["file"]
-            path = Path(unquote(urlparse(url).path.lstrip("/")))
+            uri_path = unquote(urlparse(url).path)
+            path = Path(uri_path.lstrip("/") if os.name == "nt" else uri_path)
             self.assertTrue(path.is_file())
             self.assertEqual(path.read_bytes(), b"RIFF1234WAVE")
             paths.append(path)
