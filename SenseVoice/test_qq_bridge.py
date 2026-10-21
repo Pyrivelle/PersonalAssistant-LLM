@@ -208,7 +208,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("GitHub", parts[1])
         self.assertEqual(len(state.context.history), 2)
         self.assertEqual(state.context.history[-1]["content"], "\n\n".join(parts))
-        self.assertEqual(len(bridge.limiter.sent_hours), 0)  # send_reply was mocked
+        self.assertFalse(bridge.limiter.sent_hours[incoming.scope])  # send_reply was mocked
 
     async def test_failed_second_bubble_is_saved_and_continue_skips_first(self):
         with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
@@ -218,7 +218,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         state = Conversation(incoming, pending=[incoming.text])
         bridge.send_reply = AsyncMock(side_effect=[True, False, True])
         response = ("写个人项目需要慢慢积累，能坚持写下来已经很不容易。" * 2 +
-                    "\n\n" + "找到兴趣相同的人，也可以从公开一些工具开始。" * 3)
+                    "\n\n" + "找到兴趣相同的人，也可以从公开一些工具开始。" * 4)
         with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
              patch.object(qq_bridge, "load_key", return_value="test-key"), \
              patch.object(qq_bridge, "invoke_stage", return_value=response) as model:
