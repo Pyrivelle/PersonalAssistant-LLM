@@ -72,6 +72,11 @@ class QqParsingTests(unittest.TestCase):
             path.write_text(json.dumps({"allowed_private_ids": [42], "voice_private_ids": [43]}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "私聊白名单"):
                 QqSettings.load(path)
+            path.write_text(json.dumps({"private_max_reply_parts": 4}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "private_max_reply_parts"):
+                QqSettings.load(path)
+            path.write_text(json.dumps({"private_max_reply_parts": 1}), encoding="utf-8")
+            self.assertEqual(QqSettings.load(path).private_max_reply_parts, 1)
 
     def test_explicit_private_context_opt_in_is_scoped(self):
         from dialogue_context import DialogueContext
