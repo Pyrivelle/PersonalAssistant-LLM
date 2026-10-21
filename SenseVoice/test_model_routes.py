@@ -42,7 +42,7 @@ class ModelRoutesTests(unittest.TestCase):
                 raise ModelRequestError("temporary", kind="http", status=503, retryable=True)
             return "备用服务回复成功"
         with patch.object(model_routes, "chat", side_effect=fake_chat), \
-             patch.object(model_routes, "load_route_key", side_effect=lambda id, _: "key-" + id):
+             patch.object(model_routes, "load_route_key", side_effect=lambda id, *_args: "key-" + id):
             result = invoke_stage("reply", LlmSettings(), "old-key", [], "你好", routes=routes)
         self.assertEqual(result, "备用服务回复成功")
         self.assertEqual([item[0] for item in attempts], ["server-a", "server-a", "server-b"])
@@ -134,11 +134,15 @@ class ModelRoutesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             keypath = Path(directory) / ".env.local"
             with patch.object(model_routes, "ENV_FILE", keypath):
-                model_routes.save_route_key("reply_1", "private-key-123")
-                model_routes.save_route_key("planner_1", "different-key-234")
+                model_routes.save_route_key("reply_1", "private-key-123", "custom", "http://127.0.0.1:11434/v1")
+                model_routes.save_route_key("planner_1", "different-key-234", "custom", "http://127.0.0.1:11434/v1")
                 self.assertIn("private-key-123", keypath.read_text(encoding="utf-8"))
-                self.assertEqual(model_routes.load_route_key("reply_1", "custom"), "private-key-123")
-                self.assertEqual(model_routes.load_route_key("planner_1", "custom"), "different-key-234")
+                self.assertEqual(model_routes.load_route_key("reply_1", "custom", "http://127.0.0.1:11434/v1"), "private-key-123")
+                self.assertEqual(model_routes.load_route_key("planner_1", "custom", "http://127.0.0.1:11434/v1"), "different-key-234")
+                self.assertEqual(model_routes.load_route_key(
+                    "reply_1", "custom", "https://different-provider.example/v1"), "")
+                self.assertEqual(model_routes.load_route_key(
+                    "reply_1", "siliconflow", "https://api.siliconflow.cn/v1"), "")
 
 
 if __name__ == "__main__":
