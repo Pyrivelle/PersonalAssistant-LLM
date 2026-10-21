@@ -144,6 +144,33 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bridge.send_reply.await_args.kwargs["voice"])
         self.assertEqual(state.context.history[-1]["content"], "好好休息，晚安。")
 
+    async def test_failed_generation_can_be_retried_without_reentering_text(self):
+        from model_routes import ModelRoutesFailed
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        incoming = Incoming("private", 42, None, "a1", "原始问题")
+        state = Conversation(incoming, pending=["原始问题"])
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "can_attempt_stage", return_value=True), \
+             patch.object(qq_bridge, "invoke_stage", side_effect=[
+                 ModelRoutesFailed("reply", [("reply_1", "网络错误")]), "备用模型恢复了",
+             ]) as model:
+            await bridge.process(state)
+            self.assertEqual(state.last_failed_generation, "原始问题")
+            self.assertFalse(state.context.history)
+            self.assertIn("/retry", bridge.send_reply.await_args.args[1])
+            state.incoming = Incoming("private", 42, None, "a2", "/retry")
+            state.pending = ["/retry"]
+            await bridge.process(state)
+            self.assertEqual(state.last_failed_generation, "")
+            self.assertEqual(state.context.history[-2]["content"], "原始问题")
+            self.assertEqual(state.context.history[-1]["content"], "备用模型恢复了")
+            self.assertEqual(model.call_count, 2)
+        self.assertEqual(bridge.send_reply.await_count, 2)
+
     async def test_voice_reply_uses_record_segment_once_and_cleans_temporary_wav(self):
         with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
             bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
