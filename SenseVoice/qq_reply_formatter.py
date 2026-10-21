@@ -136,10 +136,19 @@ def split_private_reply(text: str, max_parts: int = MAX_PARTS) -> list[str]:
     return groups
 
 
+def _compact_plain_bubble(text: str) -> str:
+    """Keep ordinary QQ prose readable without a blank row inside one bubble."""
+    if FENCE in text or "~~~" in text or any(_LIST.match(line) for line in text.split("\n")):
+        return text
+    return re.sub(r"\n{2,}", "\n", text)
+
+
 def format_qq_reply(reply: str, *, private: bool,
                     max_parts: int = MAX_PARTS) -> tuple[str, list[str]]:
     """One cleaned logical answer and 1-3 physical messages."""
     cleaned = clean_reply(reply[:MAX_QQ_CHARS])
     if not cleaned:
         return "", []
-    return cleaned, split_private_reply(cleaned, max_parts) if private else [cleaned]
+    parts = split_private_reply(cleaned, max_parts) if private else [cleaned]
+    parts = [_compact_plain_bubble(part) for part in parts]
+    return "\n\n".join(parts), parts

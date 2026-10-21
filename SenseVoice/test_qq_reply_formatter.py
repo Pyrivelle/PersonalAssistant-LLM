@@ -41,6 +41,15 @@ class QqReplyFormatterTests(unittest.TestCase):
         raw = "第一段。" * 30 + "\n\n" + "第二段。" * 30
         self.assertEqual(len(format_qq_reply(raw, private=False)[1]), 1)
 
+    def test_short_two_paragraph_reply_has_no_blank_row_in_one_bubble(self):
+        raw = ("可以。先别急着列功能，你告诉我现在最常卡在哪一类事上，或者哪个步骤最重复，"
+               "我帮你按优先级挑几个值得先做的。\n\n"
+               "如果暂时没具体痛点，我建议从用得最多的小工具入手：信息整理、格式转换、定时提醒这类。")
+        logical, parts = format_qq_reply(raw, private=True)
+        self.assertEqual(parts, [logical])
+        self.assertIn("。\n如果", logical)
+        self.assertNotIn("\n\n", logical)
+
     def test_private_split_can_be_disabled_by_setting(self):
         raw = ("事情需要慢慢推进，也可以先从一件小事开始。" * 4
                + "\n\n" + "这是第二个自然段，你不必一次完成所有目标。" * 4)

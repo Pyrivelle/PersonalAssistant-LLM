@@ -29,13 +29,29 @@ class RouteGuiTests(unittest.TestCase):
         panel.add_candidate()
         panel.add_candidate()
         self.assertEqual([row.route_id for row in panel.rows], ["reply_1", "reply_2"])
-        panel.rows[0].model.setText("primary-model")
-        panel.rows[1].model.setText("backup-model")
+        panel.rows[0].model.setCurrentText("primary-model")
+        panel.rows[1].model.setCurrentText("backup-model")
         panel.move_candidate(panel.rows[1], -1)
         self.assertEqual([item.model for item in panel.policy().candidates],
                          ["backup-model", "primary-model"])
         panel.remove_candidate(panel.rows[-1])
         self.assertEqual(len(panel.policy().candidates), 1)
+        dialog.reject()
+
+    def test_provider_model_choices_and_fetched_list(self):
+        with patch.object(model_routes_gui, "load_routes", return_value=ModelRoutes()), \
+             patch.object(model_routes_gui.PlannerSettings, "load", return_value=PlannerSettings()):
+            dialog = model_routes_gui.ModelRoutesDialog()
+        panel = dialog.editors["reply"]
+        panel.add_candidate()
+        row = panel.rows[0]
+        row.provider.setCurrentIndex(row.provider.findData("deepseek"))
+        self.assertIn("deepseek-flash", [row.model.itemText(i) for i in range(row.model.count())])
+        self.assertEqual(row.model.currentText(), "deepseek-flash")
+        row._models_loaded("deepseek", row.base_url.text(), ["deepseek-chat", "deepseek-reasoner"])
+        self.assertIn("deepseek-reasoner", [row.model.itemText(i) for i in range(row.model.count())])
+        row.model.setCurrentText("deepseek-reasoner")
+        self.assertEqual(panel.policy().candidates[0].model, "deepseek-reasoner")
         dialog.reject()
 
     def test_settings_save_preserves_old_cognition_options_and_secrets(self):

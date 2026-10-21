@@ -1,10 +1,9 @@
 # 第三方来源与发布边界
 
-本仓库只保存 ZhuangFY 原型源码与说明，不包含 Sakura 的完整源码或便携版，也不提交本地模型权重、词表和音频样本。
+本仓库保存 ZhuangFY 源码与说明，不提交本地模型权重、词表和音频样本。引用或参考的第三方资源如下；对应许可文本保留在 `SenseVoice/third_party/`。
 
 | 项目或资源 | 在本项目中的用途 | 来源和许可线索 |
 | --- | --- | --- |
-| Sakura 的 SenseVoice 插件 | `SenseVoice/recognize.py` 的 VAD / 解码流程参考 | [Sakura 仓库](https://github.com/Rvosy/Sakura)，MIT；保留许可文本于 `SenseVoice/third_party/Sakura-LICENSE.txt` |
 | MengPaul 的庄方宜 Skill | 第一套人格包的场景判断、语气与设定事实边界参考 | [zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill)，MIT；许可文本保留于 `SenseVoice/third_party/Zhuang-Fangyi-Skill-LICENSE.txt`。本项目重新编写日常助手提示词，未复制原仓库的剧情对白与 Wiki 整理。 |
 | sherpa-onnx | SenseVoice、Silero VAD 的本地推理运行时 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)，Apache-2.0 |
 | SenseVoiceSmall INT8 与 `tokens.txt` | 本地语音识别模型 | [固定版本的 ONNX 转换文件](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tree/2365baeacb507f821a0c8120fcee3d484dba7a07)；模型权重另受 [FunASR 模型许可](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE) 约束 |

@@ -174,6 +174,10 @@ class Dashboard(QMainWindow):
         self.snowluma.setStandardErrorFile(QProcess.nullDevice())
         self.bridge = QProcess(self)
         self.tts_server = QProcess(self)
+        # Keep the local speech service usable if the console crashes. A pipe
+        # owned by this window becomes invalid in an orphaned Python process.
+        self.tts_server.setStandardOutputFile(QProcess.nullDevice())
+        self.tts_server.setStandardErrorFile(QProcess.nullDevice())
         self._managed = {self.snowluma: "SnowLuma", self.bridge: "QQ 桥接",
                          self.tts_server: "GPT-SoVITS"}
         for process in self._managed:
@@ -215,10 +219,6 @@ class Dashboard(QMainWindow):
         side.addWidget(_button("长期记忆管理  ↗", self.open_memory))
         side.addWidget(_button("重启连接  ↻", self.restart_connections))
         side.addStretch()
-        note = QLabel("设置保存在本机；运行过程仅保留本次启动\n关闭窗口会驻留托盘；从托盘退出会停止服务")
-        note.setObjectName("sideNote")
-        note.setWordWrap(True)
-        side.addWidget(note)
         shell.addWidget(sidebar)
 
         self.pages = QStackedWidget()
@@ -285,6 +285,8 @@ class Dashboard(QMainWindow):
         self.close()
         for window in (self.voice_window, self.chat_window, self.memory_window):
             if window is not None:
+                if window is self.voice_window:
+                    window.hide_on_close = False
                 window.close()
         if self.tray is not None:
             self.tray.hide()
@@ -332,10 +334,11 @@ class Dashboard(QMainWindow):
         heading = QLabel(title)
         heading.setObjectName("pageTitle")
         column.addWidget(heading)
-        description = QLabel(subtitle)
-        description.setObjectName("muted")
-        description.setWordWrap(True)
-        column.addWidget(description)
+        if subtitle:
+            description = QLabel(subtitle)
+            description.setObjectName("muted")
+            description.setWordWrap(True)
+            column.addWidget(description)
         wrapper.setWidget(content)
         return wrapper, column
 
@@ -591,11 +594,8 @@ class Dashboard(QMainWindow):
         return page
 
     def _home_voice_page(self) -> QScrollArea:
-        page, column = self._page(
-            "语音交互",
-            "选择麦克风后开启持续监听；说“庄方宜”“庄天师”或“小庄”唤醒，接下来可以自然接话。识别在本机运行，模型回复和记忆反思使用当前 API。")
-        link_card, link_layout = _card("同一个人，同一份记忆",
-                                      "将本机语音明确关联到你的 QQ 私聊账号。只共享个人长期档案；两个入口的最近对话上下文仍分别保存。")
+        page, column = self._page("语音交互", "")
+        link_card, link_layout = _card("同一个人，同一份记忆")
         self.voice_link_state = QLabel()
         self.voice_link_state.setWordWrap(True)
         link_layout.addWidget(self.voice_link_state)
@@ -617,7 +617,7 @@ class Dashboard(QMainWindow):
         link_layout.addWidget(self.voice_link_feedback)
         column.addWidget(link_card)
 
-        control, layout = _card("语音对话", "开始后会持续监听，唤醒后自动将识别文字发给模型，并通过扬声器分段播报。")
+        control, layout = _card("语音对话")
         self.home_voice_state = QLabel("尚未启动")
         layout.addWidget(self.home_voice_state)
         form = QFormLayout()
@@ -656,9 +656,7 @@ class Dashboard(QMainWindow):
         column.addWidget(control)
 
         speech = load_speech_settings()
-        voice_card, voice_layout = _card(
-            "庄方宜的声音 · GPT-SoVITS v2Pro",
-            "训练权重决定音色；GPT-SoVITS 合成时仍需要参考片段。庄方宜模型会自动填入已匹配的录音和台词。")
+        voice_card, voice_layout = _card("GPT-SoVITS v2Pro")
         self.tts_service_state = QLabel()
         voice_layout.addWidget(self.tts_service_state)
         voice_form = QFormLayout()
@@ -842,6 +840,7 @@ class Dashboard(QMainWindow):
         if self.voice_window is None:
             from gui import MainWindow
             self.voice_window = MainWindow()
+            self.voice_window.hide_on_close = True
         return self.voice_window
 
     def refresh_home_devices(self) -> None:
@@ -935,7 +934,7 @@ class Dashboard(QMainWindow):
             return
         link = load_link()
         self.voice_link_state.setText(
-            f"已连接：QQ {link.qq_id} · 机器人 {link.bot_id} · 使用同一个个人记忆库" if link else
+            f"已连接：QQ{link.qq_id}" if link else
             "尚未建立有效关联。语音目前不会读取或写入 QQ 个人档案。")
         server_running = self.tts_server.state() != QProcess.ProcessState.NotRunning
         service_ready = _port_open("http://127.0.0.1:9880")
@@ -1343,6 +1342,8 @@ def main() -> None:
         QFontDatabase.addApplicationFont(str(font_file))
     window = Dashboard()
     window.show()
+    if "--arm-demo" in sys.argv:
+        window._ensure_voice().one_shot_enabled.setChecked(True)
     if "--start-services" in sys.argv:
         QTimer.singleShot(0, window.toggle_snowluma)
     if "--start-tts" in sys.argv or load_speech_settings().engine == "gpt_sovits":

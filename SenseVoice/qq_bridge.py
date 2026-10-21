@@ -476,7 +476,7 @@ class QqBridge:
                                        system_prompt=settings.system_prompt + "\n你现在通过 QQ 聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。"
                                        "\n只输出准备发送给对方的对白；不要用（语气……）、（轻声）、（动作……）或其他括号写表演、神情、心理和镜头旁白。"
                                        "平常闲聊使用自然中文，不使用多余 Markdown 双空格、标题或加粗。"
-                                       "稍长的聊天可以自然分为两小段，以空行隔开；不要刻意拉长。代码、链接或步骤等技术内容可保留必要格式。")
+                                       "回答长一些时可以自然分段，不必用空行制造视觉间距。代码、链接或步骤等技术内容可保留必要格式。")
                     candidate = state.context.observe(message)
                     plan = TurnPlan()
                     if self.planner_settings.enabled:

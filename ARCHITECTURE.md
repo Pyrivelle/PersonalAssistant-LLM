@@ -1,6 +1,6 @@
 # ZhuangFY 当前结构与模块分工
 
-实际启动入口是 `SenseVoice/启动界面.cmd`（统一控制台）；它可打开主语音窗口、文字测试、记忆管理以及配置/启动 QQ 连接。`SenseVoice/启动LLM测试.cmd` 仍是独立的文字对话调试窗口。Sakura 的参考源码和便携版放在本仓库之外，不参与 ZhuangFY 当前运行。
+实际启动入口是 `SenseVoice/启动界面.cmd`（统一控制台）；它可打开主语音窗口、文字测试、记忆管理以及配置/启动 QQ 连接。`SenseVoice/启动LLM测试.cmd` 仍是独立的文字对话调试窗口。
 
 ```text
 Shimano/
@@ -10,7 +10,7 @@ Shimano/
 ├─ SenseVoice/               ZhuangFY 当前可运行的独立原型
 │  ├─ assets/zhuangfy.png    桌面、窗口与托盘共用的角色图标
 │  ├─ branding.py            应用名称与图标路径
-│  ├─ gui.py                 主界面、录音线程、流程协调、系统 TTS
+│  ├─ gui.py                 语音窗口、录音线程、流程协调与语音播放
 │  ├─ dashboard.py           统一控制台、设置编辑、服务状态与启停
 │  ├─ activity_log.py        当前会话的内存事件流，接收 QQ 桥接事件
 │  ├─ continuous.py          流式 Silero VAD，分段与句尾检测
@@ -34,7 +34,7 @@ Shimano/
 │  ├─ .env.local             本机生成：API 密钥；绝不提交
 │  ├─ models/                下载获得：SenseVoice、词表和 VAD 模型
 │  ├─ samples/zh.wav         可选下载：识别测试音频
-│  ├─ third_party/           Sakura MIT 许可署名
+│  ├─ third_party/           第三方许可文本
 │  ├─ test_wake.py           唤醒状态测试
 │  ├─ test_llm.py            模型客户端测试
 │  ├─ test_memory.py         长期记忆命令、纠错与删除测试
@@ -45,7 +45,7 @@ Shimano/
 │  └─ README.md              操作说明、验证记录和来源
 ```
 
-`Sakura-source/` 和 `Sakura-app/` 已移到 `C:\CProj\Airi\`，位于本项目之外。`.venv/`、`python-runtime/`、`.uv-cache/`、`__pycache__/` 是本机环境或生成物。`models/` 的权重、词表和 `samples/` 的音频通过 `download_models.py` 获取，不纳入 Git；本地密钥和个人设置也被 `.gitignore` 排除。仓库中的 README 和 `THIRD_PARTY.md` 说明安装与来源。
+`.venv/`、`python-runtime/`、`.uv-cache/`、`__pycache__/` 是本机环境或生成物。`models/` 的权重、词表和 `samples/` 的音频通过 `download_models.py` 获取，不纳入 Git；本地密钥和个人设置也被 `.gitignore` 排除。仓库中的 README 和 `THIRD_PARTY.md` 说明安装与来源。
 
 `dashboard.py` 只协调已有模块：模型配置仍通过 `llm.py` 保存，`model_catalog.py` 在后台调用供应商的 `GET /models`；QQ 参数写入 `qq_settings.json` 并由 `qq_bridge.py` 在启动时读取；SnowLuma 的具体设置仍由其 WebUI 管理。控制台以本机端口检测服务可达性，用 `QProcess` 管理由它启动的 SnowLuma、QQ 桥接和 GPT-SoVITS。保存 GPT-SoVITS 为语音引擎后，下次打开控制台自动启动其本机服务；启动子进程时清除桌面 Python 的环境提示，避免污染引擎独立的虚拟环境。OneBot 端口就绪后可自动启动桥接；桥接进程内部负责断线重连。退出控制台时停止由它启动的进程。端口可达不能证明 QQ 已登录，也不表示某个在外部启动的服务受控制台管理。
 
@@ -55,7 +55,7 @@ Shimano/
 麦克风 → gui.py 的 ContinuousWorker → continuous.py 的 StreamingVad
        → recognize.py 的 SenseVoice 解码 → wake.py 的 ConversationGate
        → gui.py 判断自动回复 → chat_worker.py → llm.py 的模型接口
-       → gui.py 显示回复 → Qt TextToSpeech / 系统发音人 → 扬声器
+       → gui.py 显示回复 → Qt 系统语音或本机 GPT-SoVITS → 扬声器
 ```
 
 主界面用 `sounddevice` 以 16 kHz 单声道持续采集。`StreamingVad` 只判断语音片段的开始和结束，约 0.8 秒静音后输出一段语音，并保留约 0.25 秒句首声音；它不识别文字。`recognize.py` 使用本地 `sherpa-onnx`、SenseVoice ONNX 模型和 `tokens.txt` 解码，因此这一步不调用云端对话接口。

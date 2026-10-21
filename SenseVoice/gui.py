@@ -4,22 +4,28 @@ from __future__ import annotations
 
 import sys
 import threading
+import io
 import json
+import re
 import time
+import wave
+from bisect import bisect_right
+from pathlib import Path
 from queue import Empty, Full, Queue
 
 import numpy as np
 import sounddevice as sd
-from PySide6.QtCore import QByteArray, QBuffer, QElapsedTimer, QIODevice, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QByteArray, QElapsedTimer, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtCore import QLocale
 from PySide6.QtGui import QFont
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimedia import QAudioOutput
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtTextToSpeech import QTextToSpeech
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -28,6 +34,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -43,13 +50,17 @@ from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from llm import load_key, load_settings
-from gpt_sovits import load_settings as load_speech_settings
+from gpt_sovits import VOICE_DATA, load_settings as load_speech_settings
 from model_routes import can_attempt_stage
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
 from wake import ConversationGate, DEFAULT_ALIASES, DEFAULT_NAME, TRAILING, parse_aliases
 
 
 MAX_SECONDS = 60
+ONE_SHOT_WAIT_START_MS = 1200
+ONE_SHOT_REPLY_READY_MS = 9000
+ONE_SHOT_SPEECH_PREPARE_MS = 10500
+ONE_SHOT_PLAY_MS = 12500
 SAMPLE = ROOT / "samples" / "zh.wav"
 SETTINGS = ROOT / "settings.json"
 LANGUAGES = (
@@ -171,11 +182,14 @@ class ContinuousWorker(QThread):
 
 
 class MainWindow(QMainWindow):
+    custom_playback_finished = Signal(int)
+    custom_playback_failed = Signal(int, str)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} · SenseVoice")
         self.setWindowIcon(app_icon())
-        self.resize(670, 800)
+        self.resize(780, 800)
         self.setMinimumSize(550, 720)
         self.stream: sd.InputStream | None = None
         self.continuous_stream: sd.InputStream | None = None
@@ -229,20 +243,36 @@ class MainWindow(QMainWindow):
         self.custom_tts_active = False
         self.custom_tts_request = None
         self.custom_tts_request_text = ""
+        self.custom_tts_request_started_at = 0.0
+        self.custom_tts_wait_timer = QTimer(self)
+        self.custom_tts_wait_timer.setInterval(1000)
+        self.custom_tts_wait_timer.timeout.connect(self._update_custom_tts_wait_status)
         self.custom_tts_ready_audio: bytes | None = None
         self.custom_tts_ready_text = ""
         self.custom_tts_playing = False
         self.custom_tts_prefetch_failed = False
-        self.custom_tts_buffer = None
+        self.custom_playback_generation = 0
+        self.custom_playback_stop: threading.Event | None = None
+        self.custom_playback_finished.connect(self._custom_playback_finished)
+        self.custom_playback_failed.connect(self._custom_playback_failed)
+        self.one_shot_position_timer = QTimer(self)
+        self.one_shot_position_timer.setInterval(100)
+        self.one_shot_position_timer.timeout.connect(self._update_one_shot_position)
+        self.one_shot_playback_started_at = 0.0
         self.custom_tts_network = QNetworkAccessManager(self)
-        self.custom_tts_player = QMediaPlayer(self)
         self.custom_tts_audio = QAudioOutput(self)
-        self.custom_tts_player.setAudioOutput(self.custom_tts_audio)
-        self.custom_tts_player.mediaStatusChanged.connect(self.custom_tts_media_status)
+        self.one_shot_playing = False
+        self.one_shot_boundaries: list[int] = []
+        self.one_shot_segment = 0
+        self.hide_on_close = False
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.setCentralWidget(scroll)
         central = QWidget()
         central.setObjectName("root")
-        self.setCentralWidget(central)
+        scroll.setWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(24, 22, 24, 22)
         layout.setSpacing(16)
@@ -355,6 +385,31 @@ class MainWindow(QMainWindow):
         self.continuous_button.setObjectName("continuousButton")
         self.continuous_button.clicked.connect(self.toggle_continuous)
         layout.addWidget(self.continuous_button)
+
+        trial = QFrame()
+        trial.setObjectName("card")
+        trial_layout = QVBoxLayout(trial)
+        self.one_shot_enabled = QCheckBox("一次性固定语音 · 仅本次运行")
+        self.one_shot_enabled.toggled.connect(self._one_shot_toggled)
+        trial_layout.addWidget(self.one_shot_enabled)
+        trial_row = QHBoxLayout()
+        self.one_shot_trigger = QLineEdit("来到这里感觉如何")
+        self.one_shot_trigger.setPlaceholderText("说出唤醒名后使用的准确触发短语")
+        self.one_shot_trigger.setMaxLength(40)
+        trial_row.addWidget(self.one_shot_trigger, 1)
+        trial_row.addWidget(QPushButton("选择 WAV…", clicked=self.select_one_shot_audio))
+        trial_layout.addLayout(trial_row)
+        folder = VOICE_DATA.parent / "generated"
+        choices = list(folder.glob("zhuangfangyi_here_*.wav")) if folder.is_dir() else []
+        self.one_shot_audio_path = max(choices, key=lambda item: item.stat().st_mtime) if choices else None
+        self.one_shot_audio_label = QLabel()
+        self.one_shot_audio_label.setWordWrap(True)
+        self._update_one_shot_audio_label()
+        trial_layout.addWidget(self.one_shot_audio_label)
+        trial_hint = QLabel("只在语音窗口中启用一次：模拟思考与分段播报，最后使用选定音频；不调用模型或写入记忆。")
+        trial_hint.setWordWrap(True)
+        trial_layout.addWidget(trial_hint)
+        layout.addWidget(trial)
 
         self.interrupt_button = QPushButton("立即停止当前回复")
         self.interrupt_button.setEnabled(False)
@@ -732,10 +787,156 @@ class MainWindow(QMainWindow):
             return
         self.result_edit.appendPlainText(f"你：{result.text}")
         self.copy_button.setEnabled(True)
+        if self.one_shot_enabled.isChecked() and self._one_shot_matches(message):
+            self.play_one_shot_audio()
+            return
         if self.auto_reply.isChecked():
             self.begin_chat_turn(message)
         else:
             self.status_label.setText(f"对话中 · 已识别一句（{language or '语言未知'}）")
+
+    def _one_shot_matches(self, message: str) -> bool:
+        def normalized(value: str) -> str:
+            return re.sub(r"[\s，,。.!！?？：:、]+", "", value).casefold()
+        trigger = normalized(self.one_shot_trigger.text())
+        return bool(trigger) and normalized(message) == trigger
+
+    def _update_one_shot_audio_label(self) -> None:
+        path = self.one_shot_audio_path
+        self.one_shot_audio_label.setText(
+            f"预设语音：{path.name}" if path is not None else "尚未选择预设语音 WAV")
+        self.one_shot_audio_label.setToolTip(str(path) if path is not None else "")
+
+    def select_one_shot_audio(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self, "选择一次性固定语音", str(self.one_shot_audio_path or VOICE_DATA.parent),
+            "WAV 音频 (*.wav)")
+        if selected:
+            self.one_shot_audio_path = Path(selected)
+            self._update_one_shot_audio_label()
+            if self.one_shot_enabled.isChecked():
+                self._one_shot_toggled(True)
+
+    def _one_shot_audio_bytes(self) -> bytes:
+        path = self.one_shot_audio_path
+        if path is None or not path.is_file() or path.suffix.lower() != ".wav":
+            raise ValueError("请选择已有的 WAV 语音文件")
+        if path.stat().st_size > 20_000_000:
+            raise ValueError("预设语音文件不能超过 20 MB")
+        with wave.open(str(path), "rb") as source:
+            if source.getcomptype() != "NONE" or source.getnframes() <= 0:
+                raise ValueError("预设语音必须是有效的 PCM WAV")
+        return path.read_bytes()
+
+    def _one_shot_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            return
+        try:
+            if not self.one_shot_trigger.text().strip():
+                raise ValueError("请先填写触发短语")
+            self._one_shot_audio_bytes()
+        except (OSError, ValueError, wave.Error) as error:
+            self.one_shot_enabled.setChecked(False)
+            self.status_label.setText(f"无法启用一次性语音：{error}")
+            return
+
+    def play_one_shot_audio(self) -> None:
+        # Disarm before the staged demo. No model, history, or memory request.
+        self.one_shot_enabled.setChecked(False)
+        try:
+            audio = self._one_shot_audio_bytes()
+        except (OSError, ValueError, wave.Error) as error:
+            self.status_label.setText(f"一次性语音播放失败：{error}")
+            return
+        path = self.one_shot_audio_path
+        transcript_path = path.with_suffix(".txt")
+        try:
+            transcript = transcript_path.read_text(encoding="utf-8").strip()[:2000] if transcript_path.is_file() else ""
+        except OSError:
+            transcript = ""
+        self.turn_serial += 1
+        turn = self.turn_serial
+        self.active_turn = turn
+        self.pending_message = self.one_shot_trigger.text().strip()
+        self.last_failed_message = ""
+        self.retry_failed_button.setEnabled(False)
+        self.set_interaction_state(InteractionState.THINKING)
+        self.status_label.setText("正在理解你的问题…")
+        log_event("语音", "预设测试", f"已识别临时触发短语 · {path.name} · 模拟思考，不调用模型")
+        QTimer.singleShot(ONE_SHOT_WAIT_START_MS, lambda t=turn: self._one_shot_waiting(t))
+        QTimer.singleShot(ONE_SHOT_REPLY_READY_MS, lambda t=turn: self._one_shot_thinking(t))
+        QTimer.singleShot(ONE_SHOT_SPEECH_PREPARE_MS, lambda t=turn: self._one_shot_preparing(t))
+        QTimer.singleShot(ONE_SHOT_PLAY_MS, lambda t=turn, data=audio, words=transcript, file=path:
+                          self._one_shot_start_playback(t, data, words, file))
+
+    def _one_shot_waiting(self, turn: int) -> None:
+        if turn == self.active_turn and self.interaction_state == InteractionState.THINKING:
+            self.status_label.setText("正在等待模型回复…")
+
+    def _one_shot_thinking(self, turn: int) -> None:
+        if turn == self.active_turn and self.interaction_state == InteractionState.THINKING:
+            self.status_label.setText("正在组织回复…")
+
+    def _one_shot_preparing(self, turn: int) -> None:
+        if turn == self.active_turn and self.interaction_state == InteractionState.THINKING:
+            self.status_label.setText("正在生成专属语音…")
+
+    def _one_shot_segment_boundaries(self, path: Path) -> list[int]:
+        metadata = path.with_suffix(".segments.json")
+        try:
+            segments = json.loads(metadata.read_text(encoding="utf-8"))["segments"]
+            if not isinstance(segments, list) or not 1 <= len(segments) <= 50:
+                return []
+            elapsed = 0
+            boundaries = []
+            for segment in segments[:-1]:
+                duration = segment["duration_ms"]
+                pause = segment["pause_after_ms"]
+                if (type(duration) is not int or type(pause) is not int
+                        or not 100 <= duration <= 180_000 or not 0 <= pause <= 10_000):
+                    return []
+                elapsed += duration + pause
+                boundaries.append(elapsed)
+            return boundaries
+        except (OSError, ValueError, TypeError, KeyError):
+            return []
+
+    def _one_shot_start_playback(self, turn: int, audio: bytes,
+                                 transcript: str, path: Path) -> None:
+        if turn != self.active_turn or self.interaction_state != InteractionState.THINKING:
+            return
+        if self.speech_started_at is not None:
+            self.active_turn = None
+            self.pending_message = ""
+            self.set_interaction_state(InteractionState.LISTENING)
+            self.status_label.setText("你正在说话 · 已忽略刚收到的旧回复")
+            return
+        self.active_turn = None
+        self.pending_message = ""
+        self.spoken_answer = transcript
+        self.result_edit.appendPlainText(f"庄方宜：{transcript or path.name}\n")
+        self.one_shot_boundaries = self._one_shot_segment_boundaries(path)
+        log_event("语音", "预设播放", f"开始播放 {len(self.one_shot_boundaries) + 1} 段 · {path.name}")
+        self.one_shot_segment = 0
+        self.one_shot_playing = True
+        self.custom_tts_active = True
+        self.tts_pending = True
+        self.tts_chunks.clear()
+        self.set_interaction_state(InteractionState.SPEAKING)
+        self._play_custom_audio(audio)
+        self._one_shot_position_changed(0)
+
+    def _one_shot_position_changed(self, position: int) -> None:
+        if not self.one_shot_playing or self.interaction_state != InteractionState.SPEAKING:
+            return
+        segment = bisect_right(self.one_shot_boundaries, position) + 1
+        if segment != self.one_shot_segment:
+            self.one_shot_segment = segment
+            self.status_label.setText(
+                f"庄方宜正在播放第 {segment}/{len(self.one_shot_boundaries) + 1} 段语音")
+
+    def _update_one_shot_position(self) -> None:
+        self._one_shot_position_changed(int((time.monotonic() - self.one_shot_playback_started_at) * 1000))
 
     def begin_chat_turn(self, message: str) -> None:
         if self.continuous_worker is None or self.interaction_state != InteractionState.LISTENING:
@@ -864,11 +1065,21 @@ class MainWindow(QMainWindow):
         settings = load_speech_settings()
         request = QNetworkRequest(QUrl(settings.endpoint.rstrip("/") + "/tts"))
         request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
+        request.setTransferTimeout(25_000)
         reply = self.custom_tts_network.post(
             request, QByteArray(json.dumps(settings.payload(chunk), ensure_ascii=False).encode("utf-8")))
         self.custom_tts_request = reply
         self.custom_tts_request_text = chunk
+        self.custom_tts_request_started_at = time.monotonic()
+        self.custom_tts_wait_timer.start()
+        log_event("语音", "合成请求", f"{len(chunk)} 字")
         reply.finished.connect(lambda r=reply: self.custom_tts_received(r))
+
+    def _update_custom_tts_wait_status(self) -> None:
+        if (self.custom_tts_request is not None and not self.custom_tts_playing
+                and self.tts_pending and self.interaction_state == InteractionState.SPEAKING):
+            waited = int(time.monotonic() - self.custom_tts_request_started_at)
+            self.status_label.setText(f"正在等待专属语音 · {waited} 秒")
 
     def _prefetch_custom_tts(self) -> None:
         if not self.custom_tts_active or not self.tts_chunks or self.custom_tts_request is not None:
@@ -885,15 +1096,21 @@ class MainWindow(QMainWindow):
             reply.deleteLater()
             return
         self.custom_tts_request = None
+        self.custom_tts_wait_timer.stop()
         chunk = self.custom_tts_request_text
         self.custom_tts_request_text = ""
+        elapsed = time.monotonic() - self.custom_tts_request_started_at
+        self.custom_tts_request_started_at = 0.0
         status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
         data = bytes(reply.readAll())
         error = reply.error()
+        error_text = reply.errorString() if hasattr(reply, "errorString") else ""
         reply.deleteLater()
         if not self.tts_pending or self.interaction_state != InteractionState.SPEAKING:
             return
         if error != QNetworkReply.NetworkError.NoError or status != 200 or len(data) > 20_000_000 or not data.startswith(b"RIFF"):
+            detail = data[:300].decode("utf-8", errors="replace").strip() if status != 200 else error_text
+            log_event("语音", "合成失败", f"{elapsed:.1f} 秒 · HTTP {status or '无响应'} · {detail[:240]}")
             if self.custom_tts_playing:
                 self.tts_chunks.insert(0, chunk)
                 self.custom_tts_prefetch_failed = True
@@ -901,6 +1118,7 @@ class MainWindow(QMainWindow):
                 self.current_tts_chunk = chunk
                 self._custom_tts_fallback("专属语音服务暂不可用，已切换系统语音")
             return
+        log_event("语音", "合成完成", f"{len(chunk)} 字 · {elapsed:.1f} 秒")
         if self.custom_tts_playing:
             self.custom_tts_ready_audio = data
             self.custom_tts_ready_text = chunk
@@ -909,18 +1127,69 @@ class MainWindow(QMainWindow):
             self._play_custom_audio(data)
 
     def _play_custom_audio(self, data: bytes) -> None:
-        self.custom_tts_player.stop()
-        if self.custom_tts_buffer is not None:
-            self.custom_tts_buffer.close()
-            self.custom_tts_buffer.deleteLater()
-        self.custom_tts_buffer = QBuffer(self)
-        self.custom_tts_buffer.setData(QByteArray(data))
-        self.custom_tts_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
-        self.custom_tts_player.setSourceDevice(self.custom_tts_buffer)
+        self._play_custom_audio_portaudio(data)
+
+    def _play_custom_audio_portaudio(self, data: bytes) -> None:
+        self.custom_playback_generation += 1
+        generation = self.custom_playback_generation
+        stop = threading.Event()
+        self.custom_playback_stop = stop
+        volume = self.custom_tts_audio.volume()
         self.custom_tts_playing = True
-        self.custom_tts_player.play()
-        self.status_label.setText(f"庄方宜正在播报 · 剩余 {len(self.tts_chunks)} 段")
+        if self.one_shot_playing:
+            self.one_shot_playback_started_at = time.monotonic()
+            self.one_shot_position_timer.start()
+        else:
+            self.status_label.setText(f"庄方宜正在播报 · 剩余 {len(self.tts_chunks)} 段")
+
+        def play() -> None:
+            try:
+                with wave.open(io.BytesIO(data), "rb") as source:
+                    if (source.getcomptype() != "NONE" or source.getsampwidth() != 2
+                            or source.getnchannels() not in (1, 2)
+                            or not 8000 <= source.getframerate() <= 96000):
+                        raise ValueError("语音文件不是受支持的 PCM WAV")
+                    with sd.RawOutputStream(samplerate=source.getframerate(),
+                                            channels=source.getnchannels(), dtype="int16") as output:
+                        while not stop.is_set():
+                            block = source.readframes(4096)
+                            if not block:
+                                break
+                            if volume <= 0:
+                                block = bytes(len(block))
+                            elif volume < 1:
+                                samples = np.frombuffer(block, dtype="<i2").astype(np.float32)
+                                block = np.clip(samples * volume, -32768, 32767).astype("<i2").tobytes()
+                            output.write(block)
+                if not stop.is_set():
+                    self.custom_playback_finished.emit(generation)
+            except Exception as error:
+                if not stop.is_set():
+                    self.custom_playback_failed.emit(generation, str(error))
+
+        threading.Thread(target=play, name="zhuangfy-tts-playback", daemon=True).start()
         self._prefetch_custom_tts()
+
+    @Slot(int)
+    def _custom_playback_finished(self, generation: int) -> None:
+        if generation == self.custom_playback_generation and self.custom_tts_playing:
+            self.custom_playback_stop = None
+            if self.one_shot_playing:
+                self.one_shot_position_timer.stop()
+                log_event("语音", "预设完成", "一次性固定语音播放完成")
+            self._advance_custom_tts()
+
+    @Slot(int, str)
+    def _custom_playback_failed(self, generation: int, error: str) -> None:
+        if generation != self.custom_playback_generation or not self.custom_tts_playing:
+            return
+        log_event("语音", "播放失败", error)
+        if self.one_shot_playing:
+            self._stop_custom_audio()
+            self.result_edit.appendPlainText("系统：预设语音文件无法播放\n")
+            self.finish_chat_turn()
+        else:
+            self._custom_tts_fallback("专属语音播放失败，已切换系统语音")
 
     def _advance_custom_tts(self) -> None:
         self.custom_tts_playing = False
@@ -938,14 +1207,6 @@ class MainWindow(QMainWindow):
             self.speak_next_chunk()
         else:
             self.finish_chat_turn()
-
-    def custom_tts_media_status(self, status) -> None:
-        if not self.custom_tts_active or not self.tts_pending or self.interaction_state != InteractionState.SPEAKING:
-            return
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            self._advance_custom_tts()
-        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
-            self._custom_tts_fallback("专属语音文件无法播放，已切换系统语音")
 
     def _custom_tts_fallback(self, message: str, replay_current: bool = True) -> None:
         self.custom_tts_active = False
@@ -968,20 +1229,25 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(delay, self.speak_next_chunk)
 
     def _stop_custom_audio(self) -> None:
+        if self.custom_playback_stop is not None:
+            self.custom_playback_stop.set()
+            self.custom_playback_stop = None
+        self.custom_playback_generation += 1
+        self.one_shot_position_timer.stop()
+        self.one_shot_playing = False
+        self.one_shot_boundaries = []
+        self.one_shot_segment = 0
         reply = self.custom_tts_request
         self.custom_tts_request = None
+        self.custom_tts_wait_timer.stop()
         self.custom_tts_request_text = ""
+        self.custom_tts_request_started_at = 0.0
         self.custom_tts_ready_audio = None
         self.custom_tts_ready_text = ""
         self.custom_tts_playing = False
         self.custom_tts_prefetch_failed = False
         if reply is not None:
             reply.abort()
-        self.custom_tts_player.stop()
-        if self.custom_tts_buffer is not None:
-            self.custom_tts_buffer.close()
-            self.custom_tts_buffer.deleteLater()
-        self.custom_tts_buffer = None
 
     @Slot()
     def retry_failed_turn(self) -> None:
@@ -1065,6 +1331,9 @@ class MainWindow(QMainWindow):
     def finish_chat_turn(self) -> None:
         if self.interaction_state == InteractionState.SPEAKING:
             self.echo_guard_until = time.monotonic() + 0.8
+        self.one_shot_playing = False
+        self.one_shot_boundaries = []
+        self.one_shot_segment = 0
         self.tts_pending = False
         self.tts_advance_pending = False
         self.tts_chunks.clear()
@@ -1228,6 +1497,11 @@ class MainWindow(QMainWindow):
         self.status_label.setText("对话历史已清空")
 
     def closeEvent(self, event) -> None:
+        if self.hide_on_close:
+            event.ignore()
+            self.hide()
+            return
+        self.one_shot_enabled.setChecked(False)
         self.wake_timer.stop()
         self.active_turn = None
         self.tts_pending = False

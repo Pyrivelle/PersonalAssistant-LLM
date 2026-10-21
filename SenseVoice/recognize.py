@@ -1,4 +1,4 @@
-"""Standalone SenseVoice speech recognition exercise, adapted from Sakura."""
+"""Local SenseVoice speech recognition and audio decoding."""
 
 from __future__ import annotations
 

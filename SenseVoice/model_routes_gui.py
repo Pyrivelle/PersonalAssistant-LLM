@@ -16,8 +16,9 @@ from PySide6.QtWidgets import (
     QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from llm import (ROOT, PROVIDERS, PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS,
-                 load_settings)
+from llm import (ROOT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
+                 PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS, load_settings)
+from model_catalog import ModelCatalogWorker
 from model_routes import (
     MAX_ROUTES, ModelCandidate, ModelRoutes, StagePolicy, STAGES, STAGE_NAMES,
     load_route_key, load_routes, save_route_key, save_routes,
@@ -52,15 +53,28 @@ class CandidateEditor(QFrame):
             self.provider.addItem(label, name)
         self.provider.setCurrentIndex(self.provider.findData(candidate.provider))
         self.base_url = QLineEdit(candidate.base_url)
-        self.model = QLineEdit(candidate.model)
-        self.model.setPlaceholderText("模型 ID")
+        self.model = QComboBox()
+        self.model.setEditable(True)
+        self.model.setMaxVisibleItems(16)
+        self.model.lineEdit().setPlaceholderText("选择或输入模型 ID")
+        self._model_choices = {}
+        self._model_worker = None
+        self._set_model_choices(PROVIDER_SUGGESTED_MODELS[candidate.provider], candidate.model)
+        self.fetch_button = QPushButton("获取模型列表")
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.model, 1)
+        model_row.addWidget(self.fetch_button)
+        self.catalog_state = QLabel("可从候选列表选择；也可获取供应商的实时模型列表。")
+        self.catalog_state.setWordWrap(True)
         self.key_edit = QLineEdit()
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.key_edit.setPlaceholderText("留空沿用已保存的候选密钥或供应商密钥")
         self.provider.currentIndexChanged.connect(self._provider_changed)
+        self.fetch_button.clicked.connect(self.fetch_models)
         form.addRow("供应商", self.provider)
         form.addRow("API Base URL", self.base_url)
-        form.addRow("模型 ID", self.model)
+        form.addRow("模型 ID", model_row)
+        form.addRow("模型列表", self.catalog_state)
         form.addRow("专用 API Key", self.key_edit)
         outer.addLayout(form)
         self.base_url.setReadOnly(candidate.provider in PROVIDER_BASE_URLS)
@@ -83,13 +97,68 @@ class CandidateEditor(QFrame):
             self.base_url.setText(PROVIDER_BASE_URLS[provider])
         else:
             self.base_url.setText("http://127.0.0.1:11434/v1")
-        self.model.setText(PROVIDER_DEFAULT_MODELS.get(provider, ""))
+        self._set_model_choices(
+            self._model_choices.get((provider, self.base_url.text().rstrip("/")),
+                                    PROVIDER_SUGGESTED_MODELS[provider]),
+            PROVIDER_DEFAULT_MODELS.get(provider, ""),
+        )
+        self.catalog_state.setText("可从候选列表选择；也可获取供应商的实时模型列表。")
         self._update_secret_hint()
+
+    def _set_model_choices(self, choices: list[str], selected: str) -> None:
+        self.model.clear()
+        self.model.addItems(choices)
+        self.model.setCurrentText(selected)
+
+    def fetch_models(self) -> None:
+        if self._model_worker is not None:
+            return
+        try:
+            settings = LlmSettings(
+                self.provider.currentData(), self.base_url.text(),
+                self.model.currentText().strip() or "_",
+            ).validated()
+            key = self.key_edit.text().strip() or load_route_key(
+                self.route_id, settings.provider, settings.base_url)
+            worker = ModelCatalogWorker(settings, key)
+            self._model_worker = worker
+            self.fetch_button.setEnabled(False)
+            self.catalog_state.setText("正在从供应商获取模型列表…")
+            worker.loaded.connect(
+                lambda choices, p=settings.provider, u=settings.base_url:
+                self._models_loaded(p, u, choices))
+            worker.failed.connect(
+                lambda message, p=settings.provider, u=settings.base_url:
+                self._models_failed(p, u, message))
+            worker.finished.connect(self._models_finished)
+            worker.start()
+        except (OSError, ValueError) as error:
+            self.catalog_state.setText(str(error))
+
+    def _models_loaded(self, provider: str, url: str, choices: list[str]) -> None:
+        self._model_choices[(provider, url)] = choices
+        if self.provider.currentData() != provider or self.base_url.text().rstrip("/") != url:
+            return
+        selected = self.model.currentText()
+        self._set_model_choices(choices, selected)
+        self.catalog_state.setText(f"已获取 {len(choices)} 个模型；列表可能包含非对话模型。")
+        self.model.showPopup()
+
+    def _models_failed(self, provider: str, url: str, message: str) -> None:
+        if self.provider.currentData() == provider and self.base_url.text().rstrip("/") == url:
+            self.catalog_state.setText(message)
+
+    def _models_finished(self) -> None:
+        worker = self._model_worker
+        self._model_worker = None
+        self.fetch_button.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
 
     def candidate(self) -> ModelCandidate:
         return ModelCandidate(
             self.route_id, self.provider.currentData(),
-            self.base_url.text().strip(), self.model.text().strip(),
+            self.base_url.text().strip(), self.model.currentText().strip(),
             self.active.isChecked(),
         ).validated()
 

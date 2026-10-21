@@ -1,7 +1,9 @@
 import os
+import json
 import threading
 import tempfile
 import unittest
+import wave
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,7 +12,6 @@ import numpy as np
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtNetwork import QNetworkReply, QNetworkRequest
 from PySide6.QtTextToSpeech import QTextToSpeech
 from PySide6.QtWidgets import QApplication
@@ -109,12 +110,14 @@ class FakeSpeechReply(QObject):
     def __init__(self):
         super().__init__()
         self.aborted = False
+        self.status = 200
+        self.body = b"RIFFmock-audio"
 
     def attribute(self, _attribute):
-        return 200
+        return self.status
 
     def readAll(self):
-        return b"RIFFmock-audio"
+        return self.body
 
     def error(self):
         return QNetworkReply.NetworkError.NoError
@@ -126,10 +129,12 @@ class FakeSpeechReply(QObject):
 class FakeSpeechNetwork:
     def __init__(self):
         self.requests = []
+        self.transfer_timeouts = []
 
-    def post(self, _request, payload):
+    def post(self, request, payload):
         import json
         reply = FakeSpeechReply()
+        self.transfer_timeouts.append(request.transferTimeout())
         self.requests.append((json.loads(bytes(payload))["text"], reply))
         return reply
 
@@ -152,6 +157,95 @@ class VoiceLoopTests(unittest.TestCase):
         self.speech_patch.stop()
         self.owner_patch.stop()
         self.settings_patch.stop()
+
+    def test_one_shot_voice_skips_model_and_disarms_after_trigger(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(gui, "SETTINGS", Path(directory) / "settings.json"):
+            path = Path(directory) / "preview.wav"
+            with wave.open(str(path), "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(16000)
+                output.writeframes(b"\0" * 320)
+            path.with_suffix(".txt").write_text("固定台词", encoding="utf-8")
+            path.with_suffix(".segments.json").write_text(json.dumps({"segments": [
+                {"duration_ms": 1000, "pause_after_ms": 200},
+                {"duration_ms": 1000, "pause_after_ms": 0},
+            ]}), encoding="utf-8")
+            window = gui.MainWindow()
+            window.one_shot_audio_path = path
+            window._update_one_shot_audio_label()
+            window.one_shot_trigger.setText("今晚回家感觉如何")
+            initial_status = window.status_label.text()
+            window.one_shot_enabled.setChecked(True)
+            self.assertEqual(window.status_label.text(), initial_status)
+            window.hide_on_close = True
+            window.show()
+            window.close()
+            self.assertFalse(window.isVisible())
+            self.assertTrue(window.one_shot_enabled.isChecked())
+            window.gate = ConversationGate("庄方宜", (), 30)
+            window.continuous_worker = FakeCapture()
+            window.continuous_stream = FakeStream()
+            window.set_interaction_state(InteractionState.LISTENING)
+            try:
+                with patch.object(window, "begin_chat_turn") as chat, \
+                     patch.object(window, "_play_custom_audio") as play, \
+                     patch.object(gui.QTimer, "singleShot") as schedule:
+                    window.continuous_result("庄方宜，今晚回家感觉如何？", "zh")
+                    self.assertEqual(window.interaction_state, InteractionState.THINKING)
+                    self.assertEqual(play.call_count, 0)
+                    self.assertEqual([call.args[0] for call in schedule.call_args_list],
+                                     [1200, 9000, 10500, 12500])
+                    turn = window.active_turn
+                    window._one_shot_waiting(turn)
+                    self.assertIn("等待模型回复", window.status_label.text())
+                    window._one_shot_thinking(turn)
+                    self.assertIn("组织", window.status_label.text())
+                    window._one_shot_preparing(turn)
+                    self.assertIn("生成", window.status_label.text())
+                    window._one_shot_start_playback(turn, path.read_bytes(), "固定台词", path)
+                    self.assertIn("第 1/2 段", window.status_label.text())
+                    window._one_shot_position_changed(1300)
+                    self.assertIn("第 2/2 段", window.status_label.text())
+                chat.assert_not_called()
+                self.assertEqual(play.call_count, 1)
+                self.assertTrue(play.call_args.args[0].startswith(b"RIFF"))
+                self.assertFalse(window.one_shot_enabled.isChecked())
+                self.assertEqual(window.interaction_state, InteractionState.SPEAKING)
+                self.assertEqual(window.chat_history, [])
+                self.assertIn("固定台词", window.result_edit.toPlainText())
+            finally:
+                window.continuous_worker = None
+                window.continuous_stream = None
+                window.hide_on_close = False
+                window.close()
+
+    def test_interrupted_one_shot_thinking_never_starts_audio(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(gui, "SETTINGS", Path(directory) / "settings.json"):
+            path = Path(directory) / "preview.wav"
+            with wave.open(str(path), "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(16000)
+                output.writeframes(b"\0" * 320)
+            window = gui.MainWindow()
+            window.one_shot_audio_path = path
+            self.assertEqual(window.one_shot_trigger.text(), "来到这里感觉如何")
+            window.one_shot_enabled.setChecked(True)
+            window.gate = ConversationGate("庄方宜", (), 30)
+            window.continuous_worker = FakeCapture()
+            window.set_interaction_state(InteractionState.LISTENING)
+            try:
+                with patch.object(window, "_play_custom_audio") as play:
+                    window.continuous_result("庄方宜来到这里感觉如何？", "zh")
+                    turn = window.active_turn
+                    window.interrupt_reply()
+                    window._one_shot_start_playback(turn, path.read_bytes(), "", path)
+                play.assert_not_called()
+                self.assertEqual(window.interaction_state, InteractionState.LISTENING)
+            finally:
+                window.continuous_worker = None
+                window.close()
 
     def test_custom_speech_prefetches_while_playing_and_discards_on_interrupt(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -183,7 +277,7 @@ class VoiceLoopTests(unittest.TestCase):
                         self.assertEqual([item[0] for item in network.requests], ["第一段", "第二段"])
                         network.requests[1][1].finished.emit()
                         self.assertEqual(played, ["第一段"])
-                        window.custom_tts_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+                        window._custom_playback_finished(window.custom_playback_generation)
                         self.assertEqual(played, ["第一段", "第二段"])
                         self.assertEqual([item[0] for item in network.requests],
                                          ["第一段", "第二段", "第三段"])
@@ -221,13 +315,51 @@ class VoiceLoopTests(unittest.TestCase):
                         window.speak_next_chunk()
                         network.requests[0][1].finished.emit()
                         self.assertEqual(played, ["第一段"])
-                        window.custom_tts_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+                        window._custom_playback_finished(window.custom_playback_generation)
                         self.assertEqual(played, ["第一段"])
                         self.assertIn("等待下一段", window.status_label.text())
                         network.requests[1][1].finished.emit()
                         self.assertEqual(played, ["第一段", "第二段"])
-                        window.custom_tts_media_status(QMediaPlayer.MediaStatus.EndOfMedia)
+                        window._custom_playback_finished(window.custom_playback_generation)
                         self.assertFalse(window.tts_pending)
+                finally:
+                    window.close()
+
+    def test_failed_prefetch_falls_back_without_replaying_the_previous_chunk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.wav"
+            reference.write_bytes(b"RIFFmock-audio")
+            settings = SpeechSettings("gpt_sovits", reference_audio=str(reference), reference_text="你好")
+            with patch.object(gui, "SETTINGS", Path(directory) / "settings.json"), \
+                    patch.object(gui, "load_speech_settings", return_value=settings):
+                window = gui.MainWindow()
+                network = FakeSpeechNetwork()
+                window.custom_tts_network = network
+                fallback = FakeTts()
+                window.tts = fallback
+                try:
+                    def start_playback(_data):
+                        window.custom_tts_playing = True
+                        window._prefetch_custom_tts()
+
+                    with patch.object(window, "_play_custom_audio", side_effect=start_playback):
+                        window.custom_tts_active = True
+                        window.tts_pending = True
+                        window.tts_chunks = ["第一段", "第二段", "第三段"]
+                        window.set_interaction_state(InteractionState.SPEAKING)
+                        window.speak_next_chunk()
+                        self.assertEqual(network.transfer_timeouts, [25_000])
+                        self.assertEqual(network.requests[0][1].status, 200)
+                        network.requests[0][1].finished.emit()
+                        self.assertEqual([item[0] for item in network.requests], ["第一段", "第二段"])
+                        network.requests[1][1].status = 500
+                        network.requests[1][1].body = b'{"message":"temporary error"}'
+                        network.requests[1][1].finished.emit()
+                        self.assertEqual(fallback.spoken, [])
+                        window._custom_playback_finished(window.custom_playback_generation)
+                        self.assertFalse(window.custom_tts_active)
+                        self.assertEqual(fallback.spoken, ["第二段"])
+                        self.assertEqual(window.tts_chunks, ["第三段"])
                 finally:
                     window.close()
 
