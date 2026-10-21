@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -58,4 +59,4 @@ class SpeechSettingsTests(unittest.TestCase):
             result = config.read_text(encoding="utf-8")
             self.assertIn("zhuangfangyi_v2pro-e15.ckpt", result)
             self.assertIn("leave-alone", result)
-            self.assertIn("\\\\GPT_weights_v2Pro", result)
+            self.assertIn(json.dumps(str(gpt / "zhuangfangyi_v2pro-e15.ckpt")), result)
