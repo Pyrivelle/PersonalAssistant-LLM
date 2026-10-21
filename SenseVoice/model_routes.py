@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -165,27 +166,44 @@ def route_secret_name(route_id: str) -> str:
     return "ZHUANGFY_ROUTE_" + route_id.upper() + "_API_KEY"
 
 
-def load_route_key(route_id: str, provider: str) -> str:
+def _route_target(provider: str, base_url: str) -> str:
+    """Bind private overrides to a specific provider+endpoint, not only a slot."""
+    if not isinstance(provider, str) or not isinstance(base_url, str):
+        raise ValueError("API 供应商及地址必须是字符串")
+    address = base_url.strip().rstrip("/")
+    source = (provider + "\0" + address).encode("utf-8")
+    return hashlib.sha256(source).hexdigest()[:32]
+
+
+def load_route_key(route_id: str, provider: str, base_url: str) -> str:
     name = route_secret_name(route_id)
+    stored = {}
     try:
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
             key, sep, value = line.partition("=")
-            if sep and key.strip() == name:
-                return value.strip().strip('"').strip("'")
+            if sep:
+                stored[key.strip()] = value.strip().strip('"').strip("'")
     except OSError:
         pass
-    # Preserve existing per-provider secrets unless explicitly overridden.
-    return load_key(provider)
+    # The override is only valid for the provider/address it was saved for.
+    if stored.get(name + "_TARGET") == _route_target(provider, base_url):
+        return stored.get(name, "")
+    # Official providers have fixed validated URLs, so old provider secrets
+    # remain usable. Custom routes must explicitly save their own secrets
+    # (but can legitimately be keyless local services).
+    return "" if provider == "custom" else load_key(provider)
 
 
-def save_route_key(route_id: str, secret: str) -> None:
+def save_route_key(route_id: str, secret: str, provider: str, base_url: str) -> None:
     name = route_secret_name(route_id)
     value = secret.strip()
     if not value or "\r" in value or "\n" in value:
         raise ValueError("API Key 不能为空且不能包含换行")
+    target = _route_target(provider, base_url)
     lines = ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.exists() else []
-    lines = [line for line in lines if line.partition("=")[0].strip() != name]
-    lines.append(name + "=" + value)
+    lines = [line for line in lines
+             if line.partition("=")[0].strip() not in {name, name + "_TARGET"}]
+    lines.extend((name + "=" + value, name + "_TARGET=" + target))
     temporary = ENV_FILE.with_suffix(".tmp")
     try:
         temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -226,7 +244,7 @@ def can_attempt_stage(stage: str, settings: LlmSettings, legacy_key: str) -> boo
     active = [item for item in policy.candidates if item.enabled]
     if not active:
         return not policy.candidates and (bool(legacy_key) or settings.provider == "custom")
-    return any(item.provider == "custom" or bool(load_route_key(item.id, item.provider))
+    return any(item.provider == "custom" or bool(load_route_key(item.id, item.provider, item.base_url))
                for item in active)
 
 
@@ -269,7 +287,7 @@ def invoke_stage(
             settings, provider=item.provider, base_url=item.base_url,
             model=item.model, system_prompt=system_prompt if system_prompt is not None else settings.system_prompt,
         ).validated()
-        key = legacy_key if item.id.endswith("_legacy") else load_route_key(item.id, item.provider)
+        key = legacy_key if item.id.endswith("_legacy") else load_route_key(item.id, item.provider, item.base_url)
         for attempt in range(policy.retries + 1):
             remaining = deadline - time.monotonic()
             if remaining < 1:
