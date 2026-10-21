@@ -25,6 +25,9 @@ from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
 from fangyi_skill import guidance as fangyi_guidance
 from gpt_sovits import load_settings as load_speech_settings
+from qq_reply_formatter import format_qq_reply
+from emotion import EmotionState
+from llm import LlmSettings
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
@@ -255,6 +258,25 @@ class ReplyLimiter:
 
 
 @dataclass
+class PartialReply:
+    """One model answer, possibly delivered as several QQ bubbles.
+
+    This does not persist across restarts. Retain only not-yet-confirmed parts
+    so /continue cannot inadvertently re-send acknowledged messages.
+    """
+    user_text: str
+    canonical_reply: str
+    parts: tuple[str, ...]
+    delivered: int
+    emotion: EmotionState
+    settings: LlmSettings
+    api_key: str
+    member_key: MemberKey | None
+    turn_id: str
+    uncertain: bool = False
+
+
+@dataclass
 class Conversation:
     incoming: Incoming
     pending: list[str] = field(default_factory=list)
@@ -262,6 +284,7 @@ class Conversation:
     last_arrival: float = 0
     context: DialogueContext = field(default_factory=DialogueContext)
     last_failed_generation: str = ""
+    partial_reply: PartialReply | None = None
     task: asyncio.Task | None = None
 
 
@@ -411,7 +434,10 @@ class QqBridge:
                     if not can_attempt_stage("reply", settings, key):
                         raise RuntimeError("回复阶段没有可用的模型服务，请检查 API 候选及密钥")
                     settings = replace(settings, memory_enabled=False,
-                                       system_prompt=settings.system_prompt + "\n你现在通过 QQ 聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。")
+                                       system_prompt=settings.system_prompt + "\n你现在通过 QQ 聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。"
+                                       "\n只输出准备发送给对方的对白；不要用（语气……）、（轻声）、（动作……）或其他括号写表演、神情、心理和镜头旁白。"
+                                       "平常闲聊使用自然中文，不使用多余 Markdown 双空格、标题或加粗。"
+                                       "稍长的聊天可以自然分为两小段，以空行隔开；不要刻意拉长。代码、链接或步骤等技术内容可保留必要格式。")
                     candidate = state.context.observe(message)
                     plan = TurnPlan()
                     if self.planner_settings.enabled:
