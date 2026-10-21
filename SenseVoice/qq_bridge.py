@@ -60,6 +60,7 @@ class QqSettings:
     group_max_replies_per_hour: int = 8
     quiet_seconds: float = 1.2
     voice_private_ids: frozenset[int] = frozenset()
+    private_max_reply_parts: int = 3
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "QqSettings":
@@ -75,7 +76,8 @@ class QqSettings:
             raise ValueError("首版仅接受本机 ws:// OneBot 地址，且 URL 中不能包含 token")
         values = {key: raw.get(key, getattr(defaults, key)) for key in (
             "private_cooldown_seconds", "group_cooldown_seconds",
-            "private_max_replies_per_hour", "group_max_replies_per_hour", "quiet_seconds")}
+            "private_max_replies_per_hour", "group_max_replies_per_hour", "quiet_seconds",
+            "private_max_reply_parts")}
         for key in ("private_cooldown_seconds", "group_cooldown_seconds", "quiet_seconds"):
             values[key] = float(values[key])
             if not math.isfinite(values[key]) or not 0 <= values[key] <= 120:
@@ -84,6 +86,8 @@ class QqSettings:
             values[key] = int(values[key])
             if not 1 <= values[key] <= 120:
                 raise ValueError(f"{key} 必须在 1 到 120 之间")
+        if type(values["private_max_reply_parts"]) is not int or not 1 <= values["private_max_reply_parts"] <= 3:
+            raise ValueError("private_max_reply_parts 只能是 1–3")
         private_ids = _ids(raw.get("allowed_private_ids", []))
         voice_ids = _ids(raw.get("voice_private_ids", []))
         if not voice_ids.issubset(private_ids):
@@ -393,7 +397,15 @@ class QqBridge:
                 if quiet <= 0 or now - state.first_arrival >= 4:
                     break
                 await asyncio.sleep(min(quiet, 4 - (now - state.first_arrival)))
-            wait, capped = self.limiter.check(state.incoming, time.monotonic())
+            command = state.pending[0].strip() if len(state.pending) == 1 else ""
+            # A continuation of an already accepted logical reply must not
+            # consume a NEW hourly quota slot. Erase/discard are never blocked
+            # by reply quota, though their confirmation can still be rate-limited.
+            continuing = (command == "/continue" and state.partial_replies
+                          and state.partial_replies[0].delivered > 0)
+            administrative = command in {"/forget_me", "/删除我的记忆", "/discard"}
+            wait, capped = ((0.0, False) if continuing or administrative else
+                            self.limiter.check(state.incoming, time.monotonic()))
             if capped:
                 state.pending.clear()
                 print(f"跳过 {state.incoming.scope}：本小时回复已达上限")
@@ -514,7 +526,8 @@ class QqBridge:
                     log_event("QQ", "已生成", f"turn:{turn_id} · {current.scope}")
                 # Format only model output; system commands and status notices
                 # are never passed through role/stage-cue cleanup.
-                cleaned, parts = format_qq_reply(reply, private=current.kind == "private")
+                cleaned, parts = format_qq_reply(reply, private=current.kind == "private",
+                                                  max_parts=self.settings.private_max_reply_parts)
                 if not cleaned:
                     state.last_failed_generation = message
                     log_event("QQ", "格式问题",
@@ -528,7 +541,13 @@ class QqBridge:
                              plan.delivery == "voice" and plan.confidence >= 0.5)
                 if use_voice:
                     spoken = spoken_reply(cleaned)
-                    if spoken != cleaned and spoken:
+                    if spoken != cleaned:
+                        if not spoken:
+                            state.last_failed_generation = message
+                            log_event("QQ", "格式问题", f"turn:{turn_id} · 语音旁白清理后无有效对白")
+                            await self.send_reply(
+                                current, "系统提示：没有生成有效语音对白，稍后发送 /retry 可重试。")
+                            continue
                         log_event("QQ", "语音文本", f"{current.scope} · 省略开头的发送方式描述")
                         cleaned = spoken
                     use_voice = bool(cleaned) and len(cleaned) <= MAX_VOICE_CHARS
@@ -537,7 +556,8 @@ class QqBridge:
                 if not use_voice:
                     # For long voice-request replies, fall back to short text
                     # bubbles as usual rather than synthesizing partial audio.
-                    cleaned, parts = format_qq_reply(cleaned, private=current.kind == "private")
+                    cleaned, parts = format_qq_reply(cleaned, private=current.kind == "private",
+                                                  max_parts=self.settings.private_max_reply_parts)
                 delivery = PartialReply(
                     user_text=message, canonical_reply=cleaned, parts=tuple(parts),
                     delivered=0, emotion=candidate, settings=settings,
