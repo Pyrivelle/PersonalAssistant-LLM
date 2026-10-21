@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from llm import ROOT, load_key, load_settings
-from model_routes import invoke_stage
+from model_routes import invoke_stage, can_attempt_stage
 from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
@@ -401,8 +401,8 @@ class QqBridge:
                 async with self.generation_lock:
                     settings = load_settings()
                     key = load_key(settings.provider)
-                    if not key and settings.provider != "custom":
-                        raise RuntimeError("对话模型 API Key 未配置")
+                    if not can_attempt_stage("reply", settings, key):
+                        raise RuntimeError("回复阶段没有可用的模型服务，请检查 API 候选及密钥")
                     settings = replace(settings, memory_enabled=False,
                                        system_prompt=settings.system_prompt + "\n你现在通过 QQ 聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。")
                     candidate = state.context.observe(message)
