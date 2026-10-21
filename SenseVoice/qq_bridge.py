@@ -401,9 +401,10 @@ class QqBridge:
             # A continuation of an already accepted logical reply must not
             # consume a NEW hourly quota slot. Erase/discard are never blocked
             # by reply quota, though their confirmation can still be rate-limited.
-            continuing = (command == "/continue" and state.partial_replies
-                          and state.partial_replies[0].delivered > 0)
-            administrative = command in {"/forget_me", "/删除我的记忆", "/discard"}
+            continuing = (state.incoming.kind == "private" and command == "/continue"
+                          and state.partial_replies and state.partial_replies[0].delivered > 0)
+            administrative = (state.incoming.kind == "private"
+                              and command in {"/forget_me", "/删除我的记忆", "/discard"})
             wait, capped = ((0.0, False) if continuing or administrative else
                             self.limiter.check(state.incoming, time.monotonic()))
             if capped:
