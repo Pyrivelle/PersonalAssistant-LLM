@@ -57,7 +57,8 @@ class RouteGuiTests(unittest.TestCase):
             self.assertEqual(json.loads(file.read_text(encoding="utf-8")),
                              {"enabled": True, "memory_private_ids": [42]})
             self.assertTrue(store.called)
-            save_key.assert_called_once_with("reply_1", "new-secret")
+            save_key.assert_called_once_with("reply_1", "new-secret",
+                                             "siliconflow", "https://api.siliconflow.cn/v1")
 
 
 if __name__ == "__main__":
