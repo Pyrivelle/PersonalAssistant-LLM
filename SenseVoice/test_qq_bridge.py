@@ -136,7 +136,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
              patch.object(qq_bridge, "load_key", return_value="test-key"), \
              patch.object(qq_bridge, "plan_turn", return_value=TurnPlan(confidence=0.9, delivery="voice")), \
-             patch.object(qq_bridge, "chat", return_value="发语音了，轻声清楚的说，好好休息，晚安。"):
+             patch.object(qq_bridge, "invoke_stage", return_value="发语音了，轻声清楚的说，好好休息，晚安。"):
             await bridge.process(state)
         bridge.send_reply.assert_awaited_once()
         self.assertEqual(bridge.send_reply.await_args.args[1], "好好休息，晚安。")
@@ -221,7 +221,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
                     "profile_add": [{"text": "另一个机器人账号的秘密", "evidence": "我的秘密"}],
                 })
                 seen = {}
-                def fake_chat(_settings, _key, _history, _message, **kwargs):
+                def fake_chat(_stage, _settings, _key, _history, _message, **kwargs):
                     seen["notes"] = kwargs.get("context_notes", "")
                     return "我们继续聊吧"
                 incoming = Incoming("private", 42, None, "123", "你好")
@@ -229,7 +229,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
                 bridge.send_reply = AsyncMock(return_value=True)
                 with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
                      patch.object(qq_bridge, "load_key", return_value="test-key"), \
-                     patch.object(qq_bridge, "chat", side_effect=fake_chat):
+                     patch.object(qq_bridge, "invoke_stage", side_effect=fake_chat):
                     await bridge.process(state)
                 self.assertIn("用户在学习 C++", seen["notes"])
                 self.assertNotIn("另一个机器人账号的秘密", seen["notes"])
@@ -267,7 +267,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
                  patch.object(qq_bridge, "load_key", return_value="test-key"), \
                  patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()), \
-                 patch.object(qq_bridge, "chat", return_value="你好，我是庄方宜"), \
+                 patch.object(qq_bridge, "invoke_stage", return_value="你好，我是庄方宜"), \
                  patch.object(qq_bridge, "IDENTITY_FILE", Path(tempfile.gettempdir()) / "shimano-test-qq-identity.json"):
                 bridge = QqBridge(settings)
                 task = asyncio.create_task(bridge.run_forever())
