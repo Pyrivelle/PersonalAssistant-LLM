@@ -22,6 +22,7 @@ from llm import (ROOT, DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URL
                  PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
                  load_key, load_settings, save_key, save_settings)
 from model_catalog import ModelCatalogWorker
+from model_routes import can_attempt_stage
 from persona_packs import BUILTIN_PACKS, matching_pack
 
 
@@ -307,8 +308,12 @@ class ChatWindow(QMainWindow):
             return
         settings = self.current_settings()
         key = load_key(settings.provider)
-        if settings.provider != "custom" and not key:
-            self.status.setText(f"请先输入并保存{PROVIDERS[settings.provider]} API Key")
+        try:
+            if not can_attempt_stage("reply", settings, key):
+                self.status.setText("回复阶段没有可用的 API 密钥或本地服务，请先配置模型路由")
+                return
+        except (OSError, ValueError, TypeError) as error:
+            self.status.setText(f"模型路由配置有误：{error}")
             return
         self.worker = ChatWorker(settings, key, list(self.history), message, self,
                                  emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt(), source="文字")
