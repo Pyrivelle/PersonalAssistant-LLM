@@ -171,6 +171,86 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(model.call_count, 2)
         self.assertEqual(bridge.send_reply.await_count, 2)
 
+    async def test_stage_direction_is_removed_before_snowluma_and_memory(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        incoming = Incoming("private", 42, None, "m1", "你在做什么")
+        state = Conversation(incoming, pending=[incoming.text])
+        bridge.send_reply = AsyncMock(return_value=True)
+        original = "（语气平稳，带点询问）  \n你自己在写哪些方向的东西？"
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "invoke_stage", return_value=original):
+            await bridge.process(state)
+        self.assertEqual(bridge.send_reply.await_args.args[1], "你自己在写哪些方向的东西？")
+        self.assertEqual(state.context.history[-1]["content"], "你自己在写哪些方向的东西？")
+
+    async def test_two_private_bubbles_commit_once_and_stay_in_order(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        incoming = Incoming("private", 42, None, "m2", "最近如何")
+        state = Conversation(incoming, pending=[incoming.text])
+        bridge.send_reply = AsyncMock(return_value=True)
+        response = ("每天上班之后也要留一点时间给自己，备考和写程序都需要慢慢来。"
+                    "也不一定今天就能把所有事情解决。" * 2
+                    + "\n\n" + "把自己的工具放到 GitHub 上，让别人有机会看到你的想法。"
+                    "这样认识志同道合的人，或许会更自然。" * 2)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "invoke_stage", return_value=response) as model:
+            await bridge.process(state)
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(bridge.send_reply.await_count, 2)
+        parts = [call.args[1] for call in bridge.send_reply.await_args_list]
+        self.assertIn("上班", parts[0])
+        self.assertIn("GitHub", parts[1])
+        self.assertEqual(len(state.context.history), 2)
+        self.assertEqual(state.context.history[-1]["content"], "\n\n".join(parts))
+        self.assertEqual(len(bridge.limiter.sent_hours), 0)  # send_reply was mocked
+
+    async def test_failed_second_bubble_is_saved_and_continue_skips_first(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        incoming = Incoming("private", 42, None, "m3", "谈谈我的项目")
+        state = Conversation(incoming, pending=[incoming.text])
+        bridge.send_reply = AsyncMock(side_effect=[True, False, True])
+        response = ("写个人项目需要慢慢积累，能坚持写下来已经很不容易。" * 2 +
+                    "\n\n" + "找到兴趣相同的人，也可以从公开一些工具开始。" * 3)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "invoke_stage", return_value=response) as model:
+            await bridge.process(state)
+            self.assertEqual(len(state.partial_replies), 1)
+            self.assertEqual(state.partial_replies[0].delivered, 1)
+            self.assertFalse(state.context.history)
+            state.pending = ["/continue"]
+            state.incoming = Incoming("private", 42, None, "m4", "/continue")
+            await bridge.process(state)
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(bridge.send_reply.await_count, 3)
+        self.assertEqual(bridge.send_reply.await_args_list[1].args[1],
+                         bridge.send_reply.await_args_list[2].args[1])
+        self.assertNotEqual(bridge.send_reply.await_args_list[0].args[1],
+                            bridge.send_reply.await_args_list[2].args[1])
+        self.assertTrue(bridge.send_reply.await_args_list[2].kwargs["continuation"])
+        self.assertFalse(state.partial_replies)
+        self.assertEqual(len(state.context.history), 2)
+        self.assertEqual(state.context.history[0]["content"], incoming.text)
+
+    async def test_continuation_bubble_is_one_logical_rate_limit_slot(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        incoming = Incoming("private", 42, None, "m5", "你好")
+        bridge.action = AsyncMock(return_value={"message_id": 1})
+        sent, uncertain = await bridge._send_reply_parts(incoming, ("第一段。", "第二段。"))
+        self.assertEqual((sent, uncertain), (2, False))
+        self.assertEqual(bridge.action.await_count, 2)
+        self.assertEqual(len(bridge.limiter.sent_hours[incoming.scope]), 1)
+
     async def test_voice_reply_uses_record_segment_once_and_cleans_temporary_wav(self):
         with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
             bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
