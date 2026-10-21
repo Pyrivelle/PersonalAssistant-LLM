@@ -127,7 +127,10 @@ class ChatWindow(QMainWindow):
         self.clear_button.clicked.connect(self.clear_history)
         self.memory_button = QPushButton("查看与管理记忆…")
         self.memory_button.clicked.connect(self.open_memory_manager)
+        self.routes_button = QPushButton("配置分阶段 API…")
+        self.routes_button.clicked.connect(self.open_model_routes)
         buttons.addWidget(self.save_button)
+        buttons.addWidget(self.routes_button)
         buttons.addWidget(self.clear_button)
         buttons.addWidget(self.memory_button)
         buttons.addStretch()
@@ -277,6 +280,13 @@ class ChatWindow(QMainWindow):
         self.status.setText("当前对话已清空")
 
     @Slot()
+    def open_model_routes(self) -> None:
+        from model_routes_gui import ModelRoutesDialog
+        try:
+            ModelRoutesDialog(self).exec()
+        except (OSError, ValueError, TypeError) as error:
+            self.catalog_status.setText(f"API 路由配置无效：{error}")
+
     def open_memory_manager(self) -> None:
         from memory_gui import MemoryDialog
         if self.memory_window is None:
