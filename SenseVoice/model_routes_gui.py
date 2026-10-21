@@ -68,7 +68,7 @@ class CandidateEditor(QFrame):
 
     def _update_secret_hint(self):
         try:
-            has_key = bool(load_route_key(self.route_id, self.provider.currentData()))
+            has_key = bool(load_route_key(self.route_id, self.provider.currentData(), self.base_url.text()))
         except (OSError, KeyError, ValueError):
             has_key = False
         self.key_edit.setPlaceholderText(
@@ -244,7 +244,8 @@ class ModelRoutesDialog(QDialog):
             for panel in self.editors.values():
                 for row in panel.rows:
                     if row.key_edit.text().strip():
-                        save_route_key(row.route_id, row.key_edit.text())
+                        save_route_key(row.route_id, row.key_edit.text(),
+                                       row.provider.currentData(), row.base_url.text())
             save_routes(routes)
             # Preserve all older cognition flags and owner-memory permissions.
             filename = ROOT / "cognition_settings.json"
