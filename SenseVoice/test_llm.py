@@ -21,6 +21,28 @@ class FakeResponse:
 
 
 class LlmTests(unittest.TestCase):
+    def test_request_error_classifies_transient_http_and_auth(self):
+        for status, retryable in ((503, True), (429, True), (401, False), (403, False)):
+            with self.subTest(status=status):
+                error = llm.urllib.error.HTTPError(
+                    "https://api.siliconflow.cn/v1/chat/completions",
+                    status, "failure", {}, None)
+                with patch.object(llm.urllib.request, "urlopen", side_effect=error):
+                    with self.assertRaises(llm.ModelRequestError) as caught:
+                        llm.chat(llm.LlmSettings(), "test-key", [], "你好")
+                self.assertEqual(caught.exception.status, status)
+                self.assertEqual(caught.exception.retryable, retryable)
+
+    def test_empty_response_is_retryable_but_never_a_successful_reply(self):
+        class EmptyModel(FakeResponse):
+            def read(self, _limit):
+                return b'{"choices":[{"message":{"content":""}}]}'
+        with patch.object(llm.urllib.request, "urlopen", return_value=EmptyModel()):
+            with self.assertRaises(llm.ModelRequestError) as caught:
+                llm.chat(llm.LlmSettings(), "test-key", [], "你好")
+        self.assertTrue(caught.exception.retryable)
+        self.assertEqual(caught.exception.kind, "empty")
+
     def test_settings_and_key_are_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(llm, "ENV_FILE", Path(directory) / ".env.local"), patch.object(llm, "SETTINGS_FILE", Path(directory) / "settings.json"):
