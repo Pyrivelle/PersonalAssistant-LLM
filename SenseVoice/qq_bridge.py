@@ -274,6 +274,7 @@ class PartialReply:
     member_key: MemberKey | None
     turn_id: str
     uncertain: bool = False
+    voice: bool = False
 
 
 @dataclass
@@ -284,7 +285,7 @@ class Conversation:
     last_arrival: float = 0
     context: DialogueContext = field(default_factory=DialogueContext)
     last_failed_generation: str = ""
-    partial_reply: PartialReply | None = None
+    partial_replies: deque[PartialReply] = field(default_factory=deque)
     task: asyncio.Task | None = None
 
 
@@ -535,6 +536,60 @@ class QqBridge:
                 print(f"QQ 回复失败（{current.scope}）：{type(error).__name__}: {error}")
                 log_event("QQ", "失败", f"{current.scope} · {type(error).__name__}: {error}")
 
+    async def _send_reply_parts(self, incoming: Incoming, parts: tuple[str, ...],
+                                *, voice: bool = False, continuation: bool = False
+                                ) -> tuple[int, bool]:
+        """Number of confirmed sends and whether the failed action was uncertain."""
+        for index, part in enumerate(parts):
+            options = {}
+            if voice and index == 0:
+                options["voice"] = True
+            if continuation or index > 0:
+                options["continuation"] = True
+            try:
+                delivered = await self.send_reply(incoming, part, **options)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # OneBot may have received this physical message before its
+                # acknowledgement was lost: never automatically retry it.
+                log_event("QQ", "投递状态不明",
+                          f"{incoming.scope} · 第 {index + 1}/{len(parts)} 段 · {type(error).__name__}")
+                return index, True
+            if not delivered:
+                log_event("QQ", "投递受限",
+                          f"{incoming.scope} · 第 {index + 1}/{len(parts)} 段未被接受")
+                return index, False
+        return len(parts), False
+
+    async def _finish_reply(self, state: Conversation, current: Incoming,
+                            delivery: PartialReply) -> None:
+        """Commit exactly one dialogue turn after ALL physical parts have an ACK."""
+        if delivery in state.partial_replies:
+            state.partial_replies.remove(delivery)
+        state.last_failed_generation = ""
+        log_event("QQ", "已投递",
+                  f"turn:{delivery.turn_id} · {current.scope} · {len(delivery.parts)} 段")
+        state.context.commit(delivery.user_text, delivery.canonical_reply, delivery.emotion)
+        if (self.context_store and current.kind == "private"
+                and current.user_id in self.planner_settings.persist_private_ids):
+            try:
+                self.context_store.save(f"bot:{self.bot_id}:{current.scope}", state.context)
+            except Exception as error:
+                print(f"QQ 会话上下文保存失败：{type(error).__name__}")
+        if delivery.member_key is not None:
+            try:
+                count = await asyncio.to_thread(self.member_store.record_turn,
+                                                delivery.member_key,
+                                                delivery.user_text, delivery.canonical_reply)
+                if count >= REFLECT_AFTER_TURNS:
+                    log_event("记忆", "排队",
+                              f"{current.scope} · 已完成 {count} 轮，准备后台反思")
+                    self.queue_member_reflection(delivery.member_key,
+                                                 delivery.settings, delivery.api_key)
+            except Exception as error:
+                print(f"QQ 用户记忆排队失败：{type(error).__name__}")
+
     def queue_member_reflection(self, identity: MemberKey, settings, api_key: str) -> None:
         previous = self.reflection_tasks.get(identity)
         if previous is not None and not previous.done():
@@ -557,7 +612,8 @@ class QqBridge:
             print(f"QQ 用户记忆反思失败，保留待处理消息：{type(error).__name__}")
             log_event("记忆", "失败", f"bot:{identity.bot_id}:private:{identity.sender_id} · 反思失败：{type(error).__name__}")
 
-    async def send_reply(self, incoming: Incoming, reply: str, *, voice: bool = False) -> bool:
+    async def send_reply(self, incoming: Incoming, reply: str, *, voice: bool = False,
+                         continuation: bool = False) -> bool:
         audio = None
         if voice and incoming.kind == "private" and incoming.user_id in self.settings.voice_private_ids:
             try:
@@ -568,11 +624,14 @@ class QqBridge:
         async with self.send_lock:
             now = time.monotonic()
             await asyncio.sleep(max(0.0, self.next_send_at - now))
-            wait, capped = self.limiter.check(incoming, time.monotonic())
-            if capped:
-                return False
-            if wait:
-                await asyncio.sleep(wait)
+            # A multi-bubble response is ONE logical turn for hourly/cooldown
+            # limits. Every physical action remains spaced by next_send_at.
+            if not continuation:
+                wait, capped = self.limiter.check(incoming, time.monotonic())
+                if capped:
+                    return False
+                if wait:
+                    await asyncio.sleep(wait)
             self.next_send_at = time.monotonic() + 1.2
             if incoming.kind == "private":
                 if audio is not None:
@@ -590,7 +649,8 @@ class QqBridge:
                 await self.action("send_group_msg", {"group_id": incoming.group_id,
                     "message": [{"type": "at", "data": {"qq": str(incoming.user_id)}},
                                 {"type": "text", "data": {"text": " " + reply}}]})
-            self.limiter.mark_sent(incoming, time.monotonic())
+            if not continuation:
+                self.limiter.mark_sent(incoming, time.monotonic())
             print(("已投递 QQ 私聊语音" if audio is not None else "已投递 QQ 私聊回复")
                   if incoming.kind == "private" else "已投递 QQ 群回复", flush=True)
             log_event("QQ", "语音回复" if audio is not None else "回复", f"{incoming.scope} · {reply}")
