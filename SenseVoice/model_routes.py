@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable
 
 from llm import (
-    ROOT, ENV_FILE, LlmSettings, PROVIDER_BASE_URLS, chat, load_key,
+    ROOT, ENV_FILE, LlmSettings, ModelRequestError, chat, load_key,
 )
 from activity_log import log_event
 
@@ -228,6 +228,7 @@ def invoke_stage(
     context_notes: str = "",
     trace_id: str = "",
     on_attempt: Callable[[str, int, str], None] | None = None,
+    response_validator: Callable[[str], bool] | None = None,
 ) -> str:
     """Try the stage's ordered endpoints. Only retries generation, never delivery.
 
@@ -271,6 +272,9 @@ def invoke_stage(
                     selected_settings, key, history, user_text, memories=memories,
                     emotion_context=emotion_context, context_notes=context_notes,
                     timeout=timeout, stage=label)
+                if response_validator is not None and not response_validator(result):
+                    raise ModelRequestError(
+                        "模型输出格式不符合本阶段要求", kind="protocol", retryable=True)
                 log_event("模型路由", "成功", f"{trace_id} · {label} · {item.id}")
                 return result
             except Exception as error:
