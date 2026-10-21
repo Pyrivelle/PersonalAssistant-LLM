@@ -418,6 +418,14 @@ class Dashboard(QMainWindow):
         form.addRow("密钥状态", self.key_state)
         layout.addLayout(form)
         column.addWidget(card)
+        routes_card, routes_layout = _card(
+            "分阶段模型 API 与容灾",
+            "思考、回复、识图可分别配置多条 API；按优先级故障切换，支持单次超时和重试。"
+            "识图目前仅配置备用服务，尚未接入图片输入。")
+        routes_layout.addWidget(_button(
+            "配置各阶段的 API 候选、密钥及重试策略  →",
+            self.open_model_routes, primary=True))
+        column.addWidget(routes_card)
 
         persona, persona_layout = _card("人格与长期记忆", "可编辑庄方宜的角色提示词。长期记忆启用后，记忆提取与向量化会使用硅基流动 API。")
         pack_row = QHBoxLayout()
@@ -450,6 +458,13 @@ class Dashboard(QMainWindow):
         column.addStretch()
         self.provider_changed()
         return page
+
+    def open_model_routes(self) -> None:
+        from model_routes_gui import ModelRoutesDialog
+        try:
+            ModelRoutesDialog(self).exec()
+        except (OSError, ValueError, TypeError) as error:
+            QMessageBox.warning(self, "API 路由配置无效", str(error))
 
     def load_persona_pack(self) -> None:
         pack = self.persona_pack.currentData()
