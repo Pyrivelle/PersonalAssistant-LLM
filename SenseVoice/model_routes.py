@@ -217,6 +217,19 @@ def _retryable(error: Exception) -> bool:
     return bool(getattr(error, "retryable", False))
 
 
+def can_attempt_stage(stage: str, settings: LlmSettings, legacy_key: str) -> bool:
+    """Return true if any enabled route is callable with current credentials.
+
+    Local custom endpoints can legitimately be keyless.
+    """
+    policy = load_routes().for_stage(stage)
+    active = [item for item in policy.candidates if item.enabled]
+    if not active:
+        return not policy.candidates and (bool(legacy_key) or settings.provider == "custom")
+    return any(item.provider == "custom" or bool(load_route_key(item.id, item.provider))
+               for item in active)
+
+
 def invoke_stage(
     stage: str, settings: LlmSettings, legacy_key: str,
     history: list[dict[str, str]], user_text: str, *,
