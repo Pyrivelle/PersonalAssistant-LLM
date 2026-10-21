@@ -44,6 +44,7 @@ from turn_planner import PlannerSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from llm import load_key, load_settings
 from gpt_sovits import load_settings as load_speech_settings
+from model_routes import can_attempt_stage
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
 from wake import ConversationGate, DEFAULT_ALIASES, DEFAULT_NAME, TRAILING, parse_aliases
 
@@ -736,8 +737,12 @@ class MainWindow(QMainWindow):
             return
         settings = load_settings()
         key = load_key(settings.provider)
-        if settings.provider == "siliconflow" and not key:
-            self.status_label.setText("请先在“模型设置与文字测试”中保存 API Key")
+        try:
+            if not can_attempt_stage("reply", settings, key):
+                self.status_label.setText("回复阶段没有可用的 API 密钥或本地服务，请配置模型路由")
+                return
+        except (OSError, ValueError, TypeError) as error:
+            self.status_label.setText(f"模型路由配置有误：{error}")
             return
         self.turn_serial += 1
         turn = self.turn_serial
