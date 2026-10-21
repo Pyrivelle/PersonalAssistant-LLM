@@ -18,7 +18,8 @@ from activity_log import log_event
 from pathlib import Path
 from urllib.parse import urlparse
 
-from llm import ROOT, chat, load_key, load_settings
+from llm import ROOT, load_key, load_settings
+from model_routes import invoke_stage
 from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
@@ -445,9 +446,13 @@ class QqBridge:
                         # LLMClient caps extra context; keep the member identity
                         # snapshot first rather than truncating it off the end.
                         notes = "\n".join([member_snapshot, notes])
+                    turn_id = uuid.uuid4().hex[:12]
+                    log_event("QQ", "生成开始", f"turn:{turn_id} · {current.scope}")
                     reply = await asyncio.to_thread(
-                        chat, settings, key, state.context.history, message,
-                        emotion_context=emotion_prompt, context_notes=notes)
+                        invoke_stage, "reply", settings, key,
+                        state.context.history, message, emotion_context=emotion_prompt,
+                        context_notes=notes, trace_id=turn_id)
+                    log_event("QQ", "已生成", f"turn:{turn_id} · {current.scope}")
                 if not reply.strip():
                     continue
                 # One outbound message per turn. Never retry an unknown delivery result.
@@ -462,6 +467,7 @@ class QqBridge:
                         reply = cleaned
                     use_voice = bool(cleaned) and len(reply) <= MAX_VOICE_CHARS
                 if await self.send_reply(current, reply, voice=use_voice):
+                    log_event("QQ", "已投递", f"turn:{turn_id} · {current.scope}")
                     state.context.commit(message, reply, candidate)
                     if (self.context_store and current.kind == "private"
                             and current.user_id in self.planner_settings.persist_private_ids):
