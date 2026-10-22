@@ -270,7 +270,7 @@ class CuratorTests(unittest.TestCase):
         self.user("我的 API Key: sk-abcdefghij12345")
         job_id = self.schedule()
         model, outcome = self.invoke_curator(lambda data: response())
-        self.assertEqual(outcome.status, "done")
+        self.assertEqual(outcome.status, "done", self.curated.job_status(job_id))
         self.assertEqual(outcome.job_id, job_id)
         self.assertEqual(model.calls, 0)
         self.assertEqual(self.curated.current_memories(
