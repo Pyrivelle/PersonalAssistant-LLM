@@ -89,14 +89,18 @@ class MemoryCore:
         If the caller crashes after generating a draft, a later retry with the
         same reply_id can commit delivery without creating duplicate entries.
         """
+        ident = self._identity(identity)
         person_id = self._person(identity)
         self.identities.require_consent(person_id, "timeline")
         with self.database.connection() as db:
             conv = db.execute(
-                "SELECT person_id FROM private_conversations WHERE conversation_id=? AND agent_id=?",
+                """SELECT person_id, platform, channel_account_id
+                   FROM private_conversations WHERE conversation_id=? AND agent_id=?""",
                 (conversation_id, self.agent_id)).fetchone()
-            if not conv or conv["person_id"] != person_id:
-                raise PermissionError("Conversation belongs to another identity")
+            if (not conv or conv["person_id"] != person_id
+                    or conv["platform"] != ident.platform
+                    or conv["channel_account_id"] != ident.channel_account_id):
+                raise PermissionError("Conversation belongs to another channel identity")
         draft = self.timeline.generate_reply(
             conversation_id=conversation_id, in_reply_to=entry_id,
             source_message_id=reply_id, content=content)
@@ -114,12 +118,28 @@ class MemoryCore:
                 "reflection_job_id": job_id}
 
     def erase_self(self, *, identity: dict) -> dict:
+        """Erase a person's new-core history and disable future retention.
+
+        A unified Person can have several verified accounts: self-erasure
+        necessarily affects all of that person's linked channels. Re-enable
+        storage only after fresh, explicit administrator-reviewed consent.
+        """
         person_id = self._person(identity)
-        self.timeline.erase_private_history(person_id=person_id)
-        self.curated.erase_person(person_id)
         with self._index_lock:
+            with self.database.write() as db:
+                # Revoke both opt-ins in the SAME transaction as erasure. A
+                # following QQ message must not silently recreate the memory.
+                db.execute("""UPDATE memory_consents SET granted_at=NULL, revoked_at=strftime('%s','now')
+                    WHERE person_id=? AND purpose IN ('timeline','curation')""", (person_id,))
+                # FK cascade removes Timeline entries, reflection jobs,
+                # evidence, curated memories, edited versions and links.
+                db.execute("DELETE FROM private_conversations WHERE person_id=?", (person_id,))
+                # Also cover any old/orphan curated rows without conversations.
+                db.execute("DELETE FROM curated_memories WHERE person_id=?", (person_id,))
+                db.execute("DELETE FROM reflection_jobs WHERE person_id=?", (person_id,))
             status = self.projector.sync()
-        return {"erased": True, "index_repaired": status.failed == 0}
+        return {"erased": True, "retention_disabled": True,
+                "index_repaired": status.failed == 0}
 
     def project(self) -> dict:
         with self._index_lock:
