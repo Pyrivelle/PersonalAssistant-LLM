@@ -1,3 +1,5 @@
+> 新记忆架构：依次阅读 [M0 向量基础](memory-vector-mvp.md)、[M1 身份与 Timeline](memory-identity-timeline.md)、[M2 证据约束 Curator](memory-curator.md)。这些模块在独立分支研发中，未取代现有的 SenseVoice/QQ 记忆流程。
+
 > 新的长期记忆向量索引（M0）技术链及 Codex 后续开发目标请参阅 [Memory Vector MVP](memory-vector-mvp.md)。这是一套独立原型，尚未连接到现有 QQ / 语音处理流程。
 
 # ZhuangFY 当前结构与模块分工
