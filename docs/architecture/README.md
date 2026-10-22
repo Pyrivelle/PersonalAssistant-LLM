@@ -5,8 +5,6 @@
 ```text
 ZhuangFY/
 ├─ README.md                 项目入口与当前范围
-├─ ARCHITECTURE.md           本文件
-├─ THIRD_PARTY.md            第三方来源与许可线索
 ├─ pyproject.toml            可编辑安装与包入口
 ├─ src/zhuangfy/             正式 Python 包
 │  ├─ paths.py               资源、配置、模型、数据库与外部服务路径
@@ -20,7 +18,10 @@ ZhuangFY/
 ├─ config/examples/          路径配置示例
 ├─ tests/                    新包的单元与集成测试
 ├─ scripts/                  后续迁移的启动与训练脚本位置
-├─ docs/                     后续整理的架构、开发和使用文档
+├─ docs/                     架构、开发和使用文档
+│  ├─ architecture/README.md 本文件
+│  ├─ development/           人格包与第三方来源
+│  └─ user-guide/README.md   安装和使用说明
 ├─ data/                     后续运行数据位置（当前不迁移）
 ├─ third_party/licenses/     第三方许可文本
 ├─ SenseVoice/               ZhuangFY 当前可运行的独立原型
@@ -55,10 +56,10 @@ ZhuangFY/
 │  ├─ requirements.txt       Python 依赖版本
 │  ├─ 启动界面.cmd            统一控制台启动器
 │  ├─ 启动LLM测试.cmd         文字测试界面启动器
-│  └─ README.md              操作说明、验证记录和来源
+│  └─ requirements.txt       当前运行环境的依赖
 ```
 
-`.venv/`、`python-runtime/`、`.uv-cache/`、`__pycache__/` 是本机环境或生成物。`models/` 的权重、词表和 `samples/` 的音频通过 `download_models.py` 获取，不纳入 Git；本地密钥和个人设置也被 `.gitignore` 排除。仓库中的 README 和 `THIRD_PARTY.md` 说明安装与来源。
+`.venv/`、`python-runtime/`、`.uv-cache/`、`__pycache__/` 是本机环境或生成物。`models/` 的权重、词表和 `samples/` 的音频通过 `download_models.py` 获取，不纳入 Git；本地密钥和个人设置也被 `.gitignore` 排除。仓库首页与 `docs/user-guide/README.md` 说明安装，`docs/development/third-party.md` 记录第三方来源。
 
 `dashboard.py` 只协调已有模块：模型配置仍通过 `llm.py` 保存，`model_catalog.py` 在后台调用供应商的 `GET /models`；QQ 参数写入 `qq_settings.json` 并由 `qq_bridge.py` 在启动时读取；SnowLuma 的具体设置仍由其 WebUI 管理。控制台以本机端口检测服务可达性，用 `QProcess` 管理由它启动的 SnowLuma、QQ 桥接和 GPT-SoVITS。保存 GPT-SoVITS 为语音引擎后，下次打开控制台自动启动其本机服务；启动子进程时清除桌面 Python 的环境提示，避免污染引擎独立的虚拟环境。OneBot 端口就绪后可自动启动桥接；桥接进程内部负责断线重连。退出控制台时停止由它启动的进程。端口可达不能证明 QQ 已登录，也不表示某个在外部启动的服务受控制台管理。
 
@@ -105,4 +106,4 @@ QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot
 | 文字调试与配置编辑 | `SenseVoice/llm_gui.py` | 调用 `llm.py` 的配置和聊天接口；不使用主界面的历史 |
 | 角色形象或桌宠窗口 | 尚无独立模块 | 可以新增表现层，优先消费现有状态与回复，避免复制语音/LLM 逻辑 |
 
-`SenseVoice/README.md` 记录启动、配置和验证步骤。协作时不要提交或传送 `.env.local`；`llm_settings.json` 虽然不存密钥，但可能含个人角色提示词，也应由每位开发者自己配置。`models/` 和示例音频的来源与许可线索见 `SenseVoice/README.md`，依赖版本见 `requirements.txt`。
+`docs/user-guide/README.md` 记录启动、配置和验证步骤。协作时不要提交或传送 `.env.local`；`llm_settings.json` 虽然不存密钥，但可能含个人角色提示词，也应由每位开发者自己配置。`models/` 和示例音频的来源与许可线索见 `docs/development/third-party.md`，依赖版本见 `SenseVoice/requirements.txt`。

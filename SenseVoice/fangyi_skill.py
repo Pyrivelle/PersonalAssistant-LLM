@@ -4,7 +4,7 @@ Only fixed behavioral rules are injected. The original story is not a record
 of a real-world friendship and is never inserted into user-memory storage.
 Source: https://github.com/MengPaul07/zhuang-fangyi-skill
 References: SKILL.md, references/voice.md, references/epistemics.md,
-and scenes 02, 03, 05, 09, 11, 12, 14. See THIRD_PARTY.md.
+and scenes 02, 03, 05, 09, 11, 12, 14. See docs/development/third-party.md.
 """
 from __future__ import annotations
 

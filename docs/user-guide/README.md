@@ -1,10 +1,12 @@
-# ZhuangFY 语音对话原型
+# ZhuangFY 使用与配置指南
 
 ZhuangFY 在本机完成 VAD 与 SenseVoice 语音识别；开启自动回复后，只有唤醒后的识别文字会发给配置的模型服务，麦克风音频不会上传给该对话接口。
 
+下文的终端命令及未加前缀的运行文件名，除非另有说明，均以仓库的 `SenseVoice/` 目录为工作目录；这份说明集中放在 `docs/user-guide/`，不改变程序文件的位置。
+
 ## 从源码首次运行（Windows）
 
-建议安装 Python 3.12，进入本目录后运行：
+建议安装 Python 3.12，进入仓库的 `SenseVoice/` 目录后运行：
 
 ```powershell
 py -3.12 -m venv .venv
@@ -37,7 +39,7 @@ py -3.12 -m venv .venv
 
 ## 庄方宜的人格设定
 
-第一套正式人格包是 [`resources/personas/zhuang_fangyi_v1/prompt.md`](../resources/personas/zhuang_fangyi_v1/prompt.md)，参考 [MengPaul07/zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill) 的场景判断、语气和设定核验规则，改写为现实中的日常助手提示词。庄方宜也可以称作庄天师或小庄；她温和、理性、能处理复杂问题，也能自然地陪伴。用户不是默认的游戏角色，剧情里的共同经历不会冒充现实记忆。来源、适配边界和后续新增人格包的方法见 [`人格包说明`](../resources/personas/zhuang_fangyi_v1/README.md)。
+第一套正式人格包是 [`resources/personas/zhuang_fangyi_v1/prompt.md`](../../resources/personas/zhuang_fangyi_v1/prompt.md)，参考 [MengPaul07/zhuang-fangyi-skill](https://github.com/MengPaul07/zhuang-fangyi-skill) 的场景判断、语气和设定核验规则，改写为现实中的日常助手提示词。庄方宜也可以称作庄天师或小庄；她温和、理性、能处理复杂问题，也能自然地陪伴。用户不是默认的游戏角色，剧情里的共同经历不会冒充现实记忆。来源、适配边界和后续新增人格包的方法见[人格包说明](../development/persona-pack.md)。
 
 在控制台“模型与人格”或 `启动LLM测试.cmd` 中选择人格包，点击“载入人格包”会替换当前编辑框内容；再点击保存，语音窗口下一轮请求就会使用新设定，QQ 桥接重启后使用。直接编辑提示词也可以形成自定义版本。密钥输入框留空不会覆盖已保存密钥。旧版程序保存的内置默认词会自动升级为首套正式人格包；你自己写过的提示词保持原样。用户自定义内容只保存在本机 `llm_settings.json`，不纳入 Git。
 
@@ -109,7 +111,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 2. `speech_spans()`：Silero VAD 找出数组中有人说话的位置，去掉较长的静音。
 3. `recognize()`：SenseVoice 对每段语音解码，合并成文字。
 
-`recognize.py` 使用本地 SenseVoice 模型、词表与 Silero VAD；`download_models.py` 获取并校验这些资源。模型权重、sherpa-onnx、VAD 以及代码参考来源各有自己的许可，见项目根目录的 `THIRD_PARTY.md`。
+`recognize.py` 使用本地 SenseVoice 模型、词表与 Silero VAD；`download_models.py` 获取并校验这些资源。模型权重、sherpa-onnx、VAD 以及代码参考来源各有自己的许可，见[第三方来源](../development/third-party.md)。
 
 `samples/zh.wav` 来自 [sherpa-onnx 的 SenseVoice 示例资源](https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tree/2365baeacb507f821a0c8120fcee3d484dba7a07/test_wavs)。它用于本地验证；发布或分享样本时应先核对其授权。
 
@@ -228,7 +230,7 @@ $env:PYTHONIOENCODING = 'utf-8'
 - 日常与亲近对应场景 03/10/14 的生活气息和有分寸的关心；
 - 原作设定问答按 `references/epistemics.md` 的原则区分官设、推断与演绎。
 
-这些都是**现实场景的行为迁移**，不能据此宣称角色已经与现实用户共同经历过任何剧情。原仓库 MIT 署名见 `../third_party/licenses/Zhuang-Fangyi-Skill-LICENSE.txt`。
+这些都是**现实场景的行为迁移**，不能据此宣称角色已经与现实用户共同经历过任何剧情。原仓库 MIT 署名见[许可文本](../../third_party/licenses/Zhuang-Fangyi-Skill-LICENSE.txt)。
 
 ### 测试与限制
 
