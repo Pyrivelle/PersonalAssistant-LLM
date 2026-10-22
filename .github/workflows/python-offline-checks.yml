@@ -43,3 +43,21 @@ jobs:
       - name: Check API route settings GUI without opening a window
         working-directory: SenseVoice
         run: python -m unittest -v test_model_routes_gui
+
+  test-memory-vector:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Qdrant integration dependency
+        run: python -m pip install "qdrant-client==1.19.1"
+      - name: Compile Memory Core
+        run: python -m compileall -q src/zhuangfy/memory
+      - name: Offline memory tests and real Qdrant Local integration
+        env:
+          PYTHONPATH: src
+        run: python -m unittest -v tests.unit.test_memory_vector tests.integration.test_memory_qdrant

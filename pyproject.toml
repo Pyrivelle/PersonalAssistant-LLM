@@ -10,6 +10,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
 
+[project.optional-dependencies]
+# New memory-vector prototype. The existing Mem0 path remains unchanged.
+memory-vector = ["qdrant-client>=1.19.1,<2", "fastembed>=0.8,<1"]
+
 [project.scripts]
 zhuangfy = "zhuangfy.bootstrap:main"
 
