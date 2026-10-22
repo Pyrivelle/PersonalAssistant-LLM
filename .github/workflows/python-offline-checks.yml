@@ -61,3 +61,17 @@ jobs:
         env:
           PYTHONPATH: src
         run: python -m unittest -v tests.unit.test_memory_vector tests.integration.test_memory_qdrant
+
+  test-memory-identity-timeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: M1 compile and identity/Timeline tests (offline)
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m compileall -q src/zhuangfy/memory
+          python -m unittest -v tests.unit.test_memory_identity_timeline
