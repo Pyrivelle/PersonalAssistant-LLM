@@ -329,6 +329,28 @@ class CuratorStore:
                 lease_until=NULL, last_error_type=? WHERE job_id=?""",
                 (exception_type[:80], job.job_id))
 
+    def retry_failed_job(self, job_id: str) -> bool:
+        """Explicit trusted-operator retry after MAX_ATTEMPTS.
+
+        This is not exposed to chat users: a human or trusted service should
+        fix the model/validation error before resetting the backoff budget.
+        """
+        with self.db.write() as db:
+            row = db.execute("""SELECT person_id,status,lease_until FROM reflection_jobs
+                WHERE job_id=?""", (job_id,)).fetchone()
+            if row is None or row["status"] != "failed":
+                return False
+            for purpose in ("timeline", "curation"):
+                consent = db.execute("""SELECT 1 FROM memory_consents WHERE person_id=?
+                    AND purpose=? AND granted_at IS NOT NULL AND revoked_at IS NULL""",
+                    (row["person_id"], purpose)).fetchone()
+                if consent is None:
+                    raise PermissionError("Cannot retry a job without renewed consent")
+            db.execute("""UPDATE reflection_jobs SET status='pending', attempts=0,
+                lease_token=NULL, lease_until=NULL, last_error_type=NULL
+                WHERE job_id=?""", (job_id,))
+            return True
+
     def job_status(self, job_id: str) -> tuple[str, int, str | None] | None:
         with self.db.connection() as db:
             row = db.execute("SELECT status, attempts, last_error_type FROM reflection_jobs WHERE job_id=?",
