@@ -9,6 +9,8 @@ from .identity import ChannelIdentity, IdentityProof, IdentityRepository, Person
 from .timeline import PrivateConversation, TimelineEntry, TimelineRepository
 from .curator import CuratorModel, CuratorRunResult, MemoryCurator, parse_and_validate
 from .curator_store import CuratedMemory, CuratorOperation, CuratorStore, Evidence, ReflectionJob
+from .client import MemoryChannel, MemoryClient, MemoryClientError
+from .coordinator import MemoryCore
 from .projector import CuratedIndexProjector, SyncResult
 from .retrieval import HybridMemoryRetriever, MemoryHit
 from .context import assemble_memory_context
@@ -17,6 +19,7 @@ from .service import MemoryVectorService, RecallResult, RepairResult, StoreResul
 from .vector import EmbeddingProvider, FastEmbedProvider, QdrantLocalIndex, VectorHit, VectorIndex
 
 __all__ = [
+    "MemoryChannel", "MemoryClient", "MemoryClientError", "MemoryCore",
     "CuratedIndexProjector", "SyncResult", "HybridMemoryRetriever", "MemoryHit",
     "assemble_memory_context", "CuratorModel", "CuratorRunResult", "MemoryCurator", "CuratedMemory",
     "CuratorOperation", "CuratorStore", "Evidence", "ReflectionJob", "parse_and_validate",
