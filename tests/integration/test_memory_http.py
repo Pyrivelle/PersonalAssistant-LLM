@@ -124,6 +124,56 @@ class HttpMemoryTests(unittest.TestCase):
         job = self.core.curated.job_status(reply["reflection_job_id"])
         self.assertEqual(job[0], "pending")
 
+    def test_delivery_is_bound_to_original_channel_even_if_person_is_shared(self):
+        alice, qq = self._person("甲", "alice")
+        desktop = MemoryChannel("desktop", "local", "alice-primary-desktop")
+        self.admin.admin_link(alice, desktop, "verified-two-channel-test")
+        reference = self.client.receive(
+            qq, chat_id="private:alice", message_id="qq-message", content="讨论港口帧率")
+        with self.assertRaises(MemoryClientError) as failure:
+            self.client.complete_reply(
+                desktop, conversation_id=reference["conversation_id"],
+                entry_id=reference["entry_id"], reply_id="desktop-not-qq",
+                content="这个确认不属于 QQ 频道")
+        self.assertEqual(failure.exception.status, 403)
+        self.assertEqual(self.client.complete_reply(
+            qq, conversation_id=reference["conversation_id"],
+            entry_id=reference["entry_id"], reply_id="qq-actual-ack",
+            content="我们可以讨论剔除方案")["state"], "delivered")
+
+    def test_erasure_revokes_both_consents_and_does_not_silently_recapture(self):
+        alice, qq = self._person("甲", "alice")
+        desktop = MemoryChannel("desktop", "local", "alice-desktop")
+        self.admin.admin_link(alice, desktop, "verified-two-channel-test")
+        ref = self.client.receive(
+            qq, chat_id="private:alice", message_id="qq-1", content="应当遗忘的对话")
+        self.client.receive(
+            desktop, chat_id="desktop:voice", message_id="voice-1",
+            content="同一人物通过其他渠道说的话")
+        erased = self.client.erase_self(qq)
+        self.assertTrue(erased["erased"])
+        self.assertTrue(erased["retention_disabled"])
+        with self.core.database.connection() as db:
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM private_conversations WHERE person_id=?",
+                (alice,)).fetchone()[0], 0)
+        for channel, chat in ((qq, "private:alice"), (desktop, "desktop:voice")):
+            with self.assertRaises(MemoryClientError) as e:
+                self.client.receive(channel, chat_id=chat, message_id="new-message",
+                                    content="后续消息不应自动重新保存")
+            self.assertEqual(e.exception.status, 403)
+            with self.assertRaises(MemoryClientError) as e:
+                self.client.recall(channel, "之前的内容")
+            self.assertEqual(e.exception.status, 403)
+        for purpose in ("timeline", "curation"):
+            self.assertFalse(self.core.identities.has_consent(alice, purpose))
+        # Only a NEW explicit admin authorization may restore logging.
+        self.admin.admin_consent(alice, "timeline", True)
+        self.admin.admin_consent(alice, "curation", True)
+        self.assertEqual(self.client.receive(
+            qq, chat_id="private:alice", message_id="new-allowed",
+            content="经重新授权的新事件")["conversation_id"] is not None, True)
+
     def test_consent_is_enforced_and_self_erasure_is_scoped(self):
         a, aid = self._person("甲", "alice")
         b, bid = self._person("乙", "bob")
@@ -143,7 +193,11 @@ class HttpMemoryTests(unittest.TestCase):
             remaining = db.execute("SELECT COUNT(*) FROM private_conversations WHERE person_id=?",
                                    (b,)).fetchone()[0]
         self.assertEqual(remaining, 1)
-        self.assertEqual(self.client.recall(aid, "旧事"), {"memories": []})
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.recall(aid, "旧事")
+        self.assertEqual(e.exception.status, 403)
+        self.assertFalse(self.core.identities.has_consent(a, "timeline"))
+        self.assertFalse(self.core.identities.has_consent(a, "curation"))
 
 
 if __name__ == "__main__":

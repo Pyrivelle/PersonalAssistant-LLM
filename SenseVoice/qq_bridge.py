@@ -474,10 +474,13 @@ class QqBridge:
                         try:
                             claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
                             result = await asyncio.to_thread(self.memory_client.erase_self, claim)
+                            remote_notice = (
+                                " 新记忆库中与你确认关联的其他渠道的历史也已清除，"
+                                "并已关闭后续长期记录；重新启用需要再次明确授权。")
                             if not result.get("index_repaired"):
-                                remote_notice = " 新记忆索引尚待修复。"
+                                remote_notice += " 部分新记忆向量索引尚待修复。"
                         except Exception:
-                            remote_notice = " 新记忆库未能确认清除，请在管理界面检查。"
+                            remote_notice = " 新记忆库未能确认清除或关闭记录，请在管理界面检查。"
                     await self.send_reply(current, "已清除这个 QQ 账号在本机器人中的会话与成员记忆。" + remote_notice)
                     continue
                 memory_ref = None
