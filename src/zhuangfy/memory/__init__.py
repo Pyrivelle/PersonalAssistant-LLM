@@ -9,12 +9,16 @@ from .identity import ChannelIdentity, IdentityProof, IdentityRepository, Person
 from .timeline import PrivateConversation, TimelineEntry, TimelineRepository
 from .curator import CuratorModel, CuratorRunResult, MemoryCurator, parse_and_validate
 from .curator_store import CuratedMemory, CuratorOperation, CuratorStore, Evidence, ReflectionJob
+from .projector import CuratedIndexProjector, SyncResult
+from .retrieval import HybridMemoryRetriever, MemoryHit
+from .context import assemble_memory_context
 from .repository import MemoryEntry, SQLiteMemoryRepository
 from .service import MemoryVectorService, RecallResult, RepairResult, StoreResult
 from .vector import EmbeddingProvider, FastEmbedProvider, QdrantLocalIndex, VectorHit, VectorIndex
 
 __all__ = [
-    "CuratorModel", "CuratorRunResult", "MemoryCurator", "CuratedMemory",
+    "CuratedIndexProjector", "SyncResult", "HybridMemoryRetriever", "MemoryHit",
+    "assemble_memory_context", "CuratorModel", "CuratorRunResult", "MemoryCurator", "CuratedMemory",
     "CuratorOperation", "CuratorStore", "Evidence", "ReflectionJob", "parse_and_validate",
     "MemoryDatabase", "ChannelIdentity", "IdentityProof", "IdentityRepository",
     "Person", "PrivateConversation", "TimelineEntry", "TimelineRepository",
