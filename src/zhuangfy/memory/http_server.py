@@ -31,6 +31,9 @@ ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/create-person", "/v1/admin/link", "/v1/admin/consent",
     "/v1/admin/list-people", "/v1/admin/list-memories",
     "/v1/admin/sync-index", "/v1/admin/reflect-one",
+    "/v1/admin/evidence", "/v1/admin/correct", "/v1/admin/forget-memory",
+    "/v1/admin/forget-person", "/v1/admin/link-episodes",
+    "/v1/admin/list-jobs", "/v1/admin/retry-job",
 })
 
 
@@ -106,6 +109,20 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = {"memories": core.list_memories(**payload)}
                 elif path == "/v1/admin/sync-index":
                     result = core.project()
+                elif path == "/v1/admin/evidence":
+                    result = core.admin_evidence(**payload)
+                elif path == "/v1/admin/correct":
+                    result = core.admin_correct(**payload)
+                elif path == "/v1/admin/forget-memory":
+                    result = core.admin_forget_memory(**payload)
+                elif path == "/v1/admin/forget-person":
+                    result = core.admin_forget_person(**payload)
+                elif path == "/v1/admin/link-episodes":
+                    result = core.admin_link_episodes(**payload)
+                elif path == "/v1/admin/list-jobs":
+                    result = core.admin_list_jobs(**payload)
+                elif path == "/v1/admin/retry-job":
+                    result = core.admin_retry_job(**payload)
                 else:
                     result = core.reflect_one()
                 self._send(200, {"result": result})

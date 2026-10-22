@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .curator import MemoryCurator
+from .admin_store import MemoryAdminStore
 from .curator_store import CuratorStore
 from .database import MemoryDatabase
 from .identity import ChannelIdentity, IdentityProof, IdentityRepository
@@ -37,6 +38,7 @@ class MemoryCore:
                 self.root / "qdrant", model_id=embedding.model_id, dimension=embedding.dimension),
         )
         self.retriever = HybridMemoryRetriever(self.projector, self.curated, self.identities)
+        self.admin = MemoryAdminStore(self.database, self.identities, self.curated)
         self.curator = MemoryCurator(self.curated, curator_model) if curator_model else None
         self._index_lock = threading.RLock()
 
@@ -167,6 +169,45 @@ class MemoryCore:
             "source_entry_ids": list(m.source_entry_ids),
             "created_at": m.created_at, "supersedes_memory_id": m.supersedes_memory_id,
         } for m in self.curated.current_memories(agent_id=self.agent_id, person_id=person_id)]
+
+    def admin_evidence(self, *, person_id: str, memory_id: str) -> dict:
+        return self.admin.evidence(agent_id=self.agent_id, person_id=person_id, memory_id=memory_id)
+
+    def admin_correct(self, *, person_id: str, memory_id: str, new_content: str,
+                      reason: str) -> dict:
+        with self._index_lock:
+            result = self.admin.correct(
+                agent_id=self.agent_id, person_id=person_id, memory_id=memory_id,
+                new_content=new_content, reason=reason)
+            if result.get("changed"):
+                result["index"] = self.project()
+        return result
+
+    def admin_forget_memory(self, *, person_id: str, memory_id: str) -> dict:
+        with self._index_lock:
+            result = self.admin.forget_memory(agent_id=self.agent_id,
+                                             person_id=person_id, memory_id=memory_id)
+            result["index"] = self.project()
+        return result
+
+    def admin_forget_person(self, *, person_id: str) -> dict:
+        with self._index_lock:
+            result = self.admin.forget_person(person_id=person_id)
+            result["index"] = self.project()
+        return result
+
+    def admin_link_episodes(self, *, person_id: str, source_memory_id: str,
+                            target_memory_id: str, relation: str) -> dict:
+        return self.admin.link_episodes(
+            agent_id=self.agent_id, person_id=person_id,
+            source_memory_id=source_memory_id, target_memory_id=target_memory_id,
+            relation=relation)
+
+    def admin_list_jobs(self, *, person_id: str) -> dict:
+        return {"jobs": self.admin.list_jobs(person_id=person_id)}
+
+    def admin_retry_job(self, *, person_id: str, job_id: str) -> dict:
+        return self.admin.retry_job(person_id=person_id, job_id=job_id)
 
     def close(self) -> None:
         with self._index_lock:

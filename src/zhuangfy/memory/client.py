@@ -131,3 +131,35 @@ class MemoryClient:
 
     def reflect_one(self) -> dict:
         return self.request("/v1/admin/reflect-one", {})
+
+    def get_evidence(self, person_id: str, memory_id: str) -> dict:
+        return self.request("/v1/admin/evidence", {
+            "person_id": person_id, "memory_id": memory_id})
+
+    def correct_memory(self, person_id: str, memory_id: str,
+                       new_content: str, reason: str) -> dict:
+        return self.request("/v1/admin/correct", {
+            "person_id": person_id, "memory_id": memory_id,
+            "new_content": new_content, "reason": reason,
+        })
+
+    def forget_memory(self, person_id: str, memory_id: str) -> dict:
+        return self.request("/v1/admin/forget-memory", {
+            "person_id": person_id, "memory_id": memory_id})
+
+    def forget_person(self, person_id: str) -> dict:
+        return self.request("/v1/admin/forget-person", {"person_id": person_id})
+
+    def link_episodes(self, person_id: str, source_memory_id: str,
+                      target_memory_id: str, relation: str) -> dict:
+        return self.request("/v1/admin/link-episodes", {
+            "person_id": person_id, "source_memory_id": source_memory_id,
+            "target_memory_id": target_memory_id, "relation": relation,
+        })
+
+    def list_jobs(self, person_id: str) -> list[dict]:
+        return self.request("/v1/admin/list-jobs", {"person_id": person_id})["jobs"]
+
+    def retry_job(self, person_id: str, job_id: str) -> dict:
+        return self.request("/v1/admin/retry-job", {
+            "person_id": person_id, "job_id": job_id})
