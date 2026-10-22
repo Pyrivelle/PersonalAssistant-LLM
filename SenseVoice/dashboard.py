@@ -143,6 +143,15 @@ def _tts_process_environment(base_home: Path | None = None) -> QProcessEnvironme
     return environment
 
 
+def _drop_memory_admin_secrets(environment: QProcessEnvironment) -> QProcessEnvironment:
+    # Never leak manager-only tokens or curator model keys to QQ, SnowLuma or TTS.
+    for secret in ("ZHUANGFY_MEMORY_ADMIN_TOKEN",
+                   "ZHUANGFY_MEMORY_ADMIN_UI",
+                   "ZHUANGFY_MEMORY_LLM_API_KEY"):
+        environment.remove(secret)
+    return environment
+
+
 class Dashboard(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -152,6 +161,7 @@ class Dashboard(QMainWindow):
         self.voice_window = None
         self.chat_window = None
         self.memory_window = None
+        self.curated_memory_window = None
         self._model_worker = None
         self._tts_network = QNetworkAccessManager(self)
         self._tts_pending_settings = None
@@ -168,6 +178,8 @@ class Dashboard(QMainWindow):
         self._event_receiver.readyRead.connect(self._receive_child_events)
         self.setWindowIcon(app_icon())
         self.snowluma = QProcess(self)
+        self.snowluma.setProcessEnvironment(
+            _drop_memory_admin_secrets(QProcessEnvironment.systemEnvironment()))
         # SnowLuma forks another Node process. Its child must never inherit a
         # pipe owned by this window: after a UI restart that pipe becomes EPIPE
         # and SnowLuma can flood its own log instead of completing OneBot calls.
@@ -218,6 +230,7 @@ class Dashboard(QMainWindow):
         side.addWidget(_button("打开语音窗口  ↗", self.open_voice))
         side.addWidget(_button("文字对话测试  ↗", self.open_chat))
         side.addWidget(_button("长期记忆管理  ↗", self.open_memory))
+        side.addWidget(_button("新记忆管理  ↗", self.open_curated_memory))
         side.addWidget(_button("重启连接  ↻", self.restart_connections))
         side.addStretch()
         shell.addWidget(sidebar)
@@ -284,7 +297,7 @@ class Dashboard(QMainWindow):
     def quit_app(self) -> None:
         self._really_quit = True
         self.close()
-        for window in (self.voice_window, self.chat_window, self.memory_window):
+        for window in (self.voice_window, self.chat_window, self.memory_window, self.curated_memory_window):
             if window is not None:
                 if window is self.voice_window:
                     window.hide_on_close = False
@@ -829,7 +842,8 @@ class Dashboard(QMainWindow):
             self.tts_feedback.setText(f"GPT-SoVITS Python 启动失败：{error}")
             self._log(f"GPT-SoVITS Python 启动失败：{error}")
             return
-        self.tts_server.setProcessEnvironment(_tts_process_environment(base_home))
+        self.tts_server.setProcessEnvironment(
+            _drop_memory_admin_secrets(_tts_process_environment(base_home)))
         self.tts_server.setWorkingDirectory(str(ENGINE_ROOT))
         self.tts_server.start(str(interpreter), [str(ENGINE_ROOT / "api_v2.py"),
                                                   "-a", "127.0.0.1", "-p", "9880", "-c", str(config)])
@@ -1141,6 +1155,15 @@ class Dashboard(QMainWindow):
         self.chat_window.raise_()
         self.chat_window.activateWindow()
 
+    def open_curated_memory(self) -> None:
+        # New curated memory system is independent of the old Mem0 manager.
+        from zhuangfy.ui.memory_manager import CuratedMemoryDialog
+        if self.curated_memory_window is None:
+            self.curated_memory_window = CuratedMemoryDialog(self)
+        self.curated_memory_window.show()
+        self.curated_memory_window.raise_()
+        self.curated_memory_window.activateWindow()
+
     def open_memory(self) -> None:
         if self.memory_window is None:
             from memory_gui import MemoryDialog
@@ -1196,7 +1219,7 @@ class Dashboard(QMainWindow):
         if not settings.allowed_private_ids and not settings.allowed_group_ids:
             self.qq_feedback.setText("请先填写至少一个私聊 QQ 号或群号。")
             return
-        environment = QProcessEnvironment.systemEnvironment()
+        environment = _drop_memory_admin_secrets(QProcessEnvironment.systemEnvironment())
         environment.insert("PYTHONIOENCODING", "utf-8")
         environment.insert("PYTHONUNBUFFERED", "1")
         if self._event_receiver.localPort():
