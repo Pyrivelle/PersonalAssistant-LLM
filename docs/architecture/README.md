@@ -1,3 +1,5 @@
+> 新的长期记忆向量索引（M0）技术链及 Codex 后续开发目标请参阅 [Memory Vector MVP](memory-vector-mvp.md)。这是一套独立原型，尚未连接到现有 QQ / 语音处理流程。
+
 # ZhuangFY 当前结构与模块分工
 
 实际启动入口仍是 `SenseVoice/启动界面.cmd`（统一控制台）；可编辑安装后也可运行 `python -m zhuangfy`。控制台可打开主语音窗口、文字测试、记忆管理以及配置/启动 QQ 连接。`SenseVoice/启动LLM测试.cmd` 仍是独立的文字对话调试窗口。以下是迁移中的目录快照；大型界面与 QQ 流程尚未迁入新包。
