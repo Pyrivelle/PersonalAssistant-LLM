@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 
 from continuous import StreamingVad
 from branding import APP_NAME, app_icon
-from chat_worker import ChatWorker, MemoryWriteWorker, OwnerMemoryWriteWorker
+from chat_worker import ChatWorker, MemoryWriteWorker, OwnerMemoryWriteWorker, RemoteMemoryWriteWorker
 from owner_memory import load_link
 from activity_log import log_event
 from emotion import EmotionState
@@ -1003,6 +1003,18 @@ class MainWindow(QMainWindow):
         self.pending_message = ""
         self.result_edit.appendPlainText(f"庄方宜：{reply}\n")
         log_event("语音", "回复", reply)
+        # UI acceptance/display is the delivery evidence for desktop text.
+        # A discarded/stale LLM reply never reaches this write path.
+        if (worker is not None and not getattr(worker, "memory_command", False)
+                and worker.remote_memory_ref is not None and worker.remote_client is not None):
+            remote_writer = RemoteMemoryWriteWorker(
+                worker.remote_client, worker.remote_identity, worker.remote_memory_ref,
+                worker.turn_id, reply, self)
+            self.memory_workers.add(remote_writer)
+            remote_writer.failed.connect(
+                lambda warning: self.result_edit.appendPlainText(f"系统：{warning}\n"))
+            remote_writer.finished.connect(lambda w=remote_writer: self.memory_write_finished(w))
+            remote_writer.start()
         if memory_enabled and not getattr(worker, "memory_command", False):
             writer = MemoryWriteWorker(answered_message, reply, self)
             self.memory_workers.add(writer)

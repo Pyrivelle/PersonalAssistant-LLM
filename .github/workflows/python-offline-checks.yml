@@ -103,3 +103,19 @@ jobs:
         run: |
           python -m compileall -q src/zhuangfy/memory
           python -m unittest -v tests.unit.test_memory_hybrid_rag
+
+  test-memory-http:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile memory and legacy channel adapters
+        run: |
+          python -m compileall -q src/zhuangfy/memory
+          python -m compileall -q SenseVoice/qq_bridge.py SenseVoice/chat_worker.py SenseVoice/gui.py
+      - name: In-process authenticated HTTP + identity tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest -v tests.integration.test_memory_http
