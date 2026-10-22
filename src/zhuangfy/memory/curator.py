@@ -207,9 +207,13 @@ class MemoryCurator:
         if job is None:
             return None
         try:
-            sources = self.store.read_sources(job)
+            # Explicit consent does not justify forwarding passwords, tokens,
+            # or recovery codes to a remote LLM. Never send secret-looking
+            # Timeline entries or let the model cite them as evidence.
+            sources = [entry for entry in self.store.read_sources(job)
+                       if not SECRET.search(entry.content)]
             if not sources:
-                return CuratorRunResult(job.job_id, tuple(self.store.complete(job, [])), "done")
+                return CuratorRunResult(job.job, tuple(self.store.complete(job, [])), "done")
             sanitized = [
                 {
                     "entry_id": entry.entry_id,
