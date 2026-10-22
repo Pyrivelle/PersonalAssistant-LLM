@@ -266,6 +266,31 @@ class CuratorTests(unittest.TestCase):
         self.assertEqual(self.curated.current_memories(
             agent_id="zhuangfy-main", person_id=self.alice.person_id), [])
 
+    def test_secret_looking_timeline_entries_never_reach_extractor(self):
+        self.user("我的 API Key: sk-abcdefghij12345")
+        job_id = self.schedule()
+        model, outcome = self.invoke_curator(lambda data: response())
+        self.assertEqual(outcome.status, "done")
+        self.assertEqual(outcome.job_id, job_id)
+        self.assertEqual(model.calls, 0)
+        self.assertEqual(self.curated.current_memories(
+            agent_id="zhuangfy-main", person_id=self.alice.person_id), [])
+
+    def test_exhausted_failure_can_be_requeued_only_by_explicit_action(self):
+        u = self.user("我准备练习 PySide6 窗口设计")
+        job_id = self.schedule()
+        for _ in range(3):
+            self.invoke_curator(lambda data: "invalid json")
+        self.assertFalse(self.curated.retry_failed_job("nonexistent-id"))
+        self.assertTrue(self.curated.retry_failed_job(job_id))
+        self.assertEqual(self.curated.job_status(job_id)[:2], ("pending", 0))
+        _, outcome = self.invoke_curator(lambda data: response(candidate(
+            "semantic", "用户准备学习 PySide6 界面",
+            [u.entry_id], [(u.entry_id, "练习 PySide6 窗口设计")])))
+        self.assertEqual(outcome.status, "done")
+        self.assertEqual(len(outcome.created_memory_ids), 1)
+        self.assertFalse(self.curated.retry_failed_job(job_id))
+
     def test_revoked_consent_prevents_queued_job_processing(self):
         self.user("我正在开发一个私有项目")
         job_id = self.schedule()
