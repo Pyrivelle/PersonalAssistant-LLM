@@ -30,6 +30,7 @@ from qq_reply_formatter import format_qq_reply
 from emotion import EmotionState
 from llm import LlmSettings
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
+from zhuangfy.agent_v2 import MessageDebouncer, from_qq_incoming
 from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
 
@@ -76,6 +77,7 @@ class QqSettings:
     quiet_seconds: float = 1.2
     voice_private_ids: frozenset[int] = frozenset()
     private_max_reply_parts: int = 3
+    message_debounce_mode: str = "off"  # optional V2; preserve legacy by default
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "QqSettings":
@@ -103,12 +105,15 @@ class QqSettings:
                 raise ValueError(f"{key} 必须在 1 到 120 之间")
         if type(values["private_max_reply_parts"]) is not int or not 1 <= values["private_max_reply_parts"] <= 3:
             raise ValueError("private_max_reply_parts 只能是 1–3")
+        mode = raw.get("message_debounce_mode", "off")
+        if mode not in ("off", "fast", "natural", "steady"):
+            raise ValueError("message_debounce_mode 必须是 off/fast/natural/steady")
         private_ids = _ids(raw.get("allowed_private_ids", []))
         voice_ids = _ids(raw.get("voice_private_ids", []))
         if not voice_ids.issubset(private_ids):
             raise ValueError("QQ 语音回复账号必须包含在私聊白名单内")
         return cls(url, private_ids, _ids(raw.get("allowed_group_ids", [])),
-                   voice_private_ids=voice_ids, **values)
+                   voice_private_ids=voice_ids, message_debounce_mode=mode, **values)
 
 
 MAX_VOICE_CHARS = 160
@@ -324,6 +329,7 @@ class Conversation:
     pending_images: list[ImageReference] = field(default_factory=list)
     first_arrival: float = 0
     last_arrival: float = 0
+    debouncer: MessageDebouncer | None = None
     context: DialogueContext = field(default_factory=DialogueContext)
     last_failed_generation: str = ""
     last_failed_image: ImageReference | None = None
@@ -444,6 +450,15 @@ class QqBridge:
                   + (f" · {incoming.image_count} 张图片" if incoming.image else ""))
         state.pending = state.pending[-4:]
         state.last_arrival = now
+        if self.settings.message_debounce_mode != "off":
+            if state.debouncer is None:
+                state.debouncer = MessageDebouncer(self.settings.message_debounce_mode)
+            normalized = from_qq_incoming(incoming, bot_id=self.bot_id,
+                                          event=event, received_at=time.time())
+            state.debouncer.observe(author=normalized.sender_id, now=now,
+                                    is_bare_image=normalized.is_bare_image,
+                                    is_pure_emoji=normalized.is_pure_emoji,
+                                    mentioned=(incoming.kind == "group"))
         if state.task is None or state.task.done():
             state.task = asyncio.create_task(self.process(state))
         print("已接收白名单私聊" if incoming.kind == "private" else "已接收白名单群 @", flush=True)
@@ -453,10 +468,16 @@ class QqBridge:
         while state.pending:
             while True:
                 now = time.monotonic()
-                quiet = self.settings.quiet_seconds - (now - state.last_arrival)
-                if quiet <= 0 or now - state.first_arrival >= 4:
+                if state.debouncer is not None:
+                    quiet = state.debouncer.remaining(now)
+                else:
+                    quiet = min(self.settings.quiet_seconds - (now - state.last_arrival),
+                                4 - (now - state.first_arrival))
+                if quiet <= 0:
                     break
-                await asyncio.sleep(min(quiet, 4 - (now - state.first_arrival)))
+                await asyncio.sleep(min(quiet, 0.25))
+            if state.debouncer is not None:
+                state.debouncer.clear_batch()
             command = state.pending[0].strip() if len(state.pending) == 1 and not state.pending_images else ""
             # A continuation of an already accepted logical reply must not
             # consume a NEW hourly quota slot. Erase/discard are never blocked
