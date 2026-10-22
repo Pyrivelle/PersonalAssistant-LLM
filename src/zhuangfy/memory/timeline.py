@@ -88,6 +88,19 @@ class TimelineRepository:
     def _conversation(row: sqlite3.Row) -> PrivateConversation:
         return PrivateConversation(**dict(row))
 
+    @staticmethod
+    def _require_timeline_consent(db: sqlite3.Connection, person_id: str) -> None:
+        """Check consent in the SAME write transaction as the new Timeline entry.
+
+        A prior standalone check could race with /forget_me revocation and
+        recreate private records after the user had erased them.
+        """
+        permitted = db.execute("""SELECT 1 FROM memory_consents
+            WHERE person_id=? AND purpose='timeline' AND granted_at IS NOT NULL
+              AND revoked_at IS NULL""", (person_id,)).fetchone()
+        if permitted is None:
+            raise PermissionError("Timeline consent is not active")
+
     def open_private(self, *, agent_id: str, identity: ChannelIdentity,
                      external_conversation_id: str) -> PrivateConversation:
         """A trusted adapter supplies the verified channel identity and stable chat ID."""
@@ -96,8 +109,8 @@ class TimelineRepository:
         person_id = self.identities.resolve(identity)
         if person_id is None:
             raise PermissionError("Unknown/unverified channel identity")
-        self.identities.require_consent(person_id, "timeline")
         with self.database.write() as db:
+            self._require_timeline_consent(db, person_id)
             row = db.execute("""SELECT * FROM private_conversations
                 WHERE agent_id=? AND platform=? AND channel_account_id=?
                   AND external_conversation_id=?""",
@@ -163,8 +176,8 @@ class TimelineRepository:
         person_id = self.identities.resolve(identity)
         if person_id is None:
             raise PermissionError("Unknown channel identity")
-        self.identities.require_consent(person_id, "timeline")
         with self.database.write() as db:
+            self._require_timeline_consent(db, person_id)
             conversation = self._private(db, conversation_id, person_id)
             if (conversation.platform != identity.platform.strip()
                     or conversation.channel_account_id != identity.channel_account_id.strip()):
@@ -181,7 +194,7 @@ class TimelineRepository:
         message_id = _nonempty(source_message_id, "source_message_id")
         with self.database.write() as db:
             conversation = self._private(db, conversation_id)
-            self.identities.require_consent(conversation.person_id, "timeline")
+            self._require_timeline_consent(db, conversation.person_id)
             parent = db.execute("""SELECT * FROM timeline_entries WHERE entry_id=?
                 AND conversation_id=? AND speaker_role='user' AND state='received'""",
                 (in_reply_to, conversation_id)).fetchone()
@@ -204,7 +217,7 @@ class TimelineRepository:
                 raise ValueError("Unknown assistant entry")
             if row["state"] != "generated" and row["state"] != new_state:
                 raise ValueError("Cannot change a finalized reply to a contradictory status")
-            self.identities.require_consent(self._private(db, conversation_id).person_id, "timeline")
+            self._require_timeline_consent(db, self._private(db, conversation_id).person_id)
             db.execute("UPDATE timeline_entries SET state=? WHERE entry_id=?", (new_state, entry_id))
             return _entry(db.execute("SELECT * FROM timeline_entries WHERE entry_id=?", (entry_id,)).fetchone())
 
