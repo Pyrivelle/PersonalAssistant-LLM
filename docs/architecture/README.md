@@ -1,6 +1,8 @@
-> 新记忆架构：依次阅读 [M0 向量基础](memory-vector-mvp.md)、[M1 身份与 Timeline](memory-identity-timeline.md)、[M2 证据约束 Curator](memory-curator.md)。这些模块在独立分支研发中，未取代现有的 SenseVoice/QQ 记忆流程。
+> 新记忆架构：依次阅读 [M0 向量基础](memory-vector-mvp.md)、[M1 身份与 Timeline](memory-identity-timeline.md)、[M2 证据约束 Curator](memory-curator.md)。当前 QQ 与桌面长期记忆的运行路径由新服务接管；旧数据仍留在本机，尚未迁移。
 
-> 新的长期记忆向量索引（M0）技术链及 Codex 后续开发目标请参阅 [Memory Vector MVP](memory-vector-mvp.md)。这是一套独立原型，尚未连接到现有 QQ / 语音处理流程。
+> 新长期记忆服务的运行方式和边界见 [记忆服务](memory-service.md)；早期向量索引原型的设计见 [Memory Vector MVP](memory-vector-mvp.md)。
+
+> 联网搜索的触发边界、工具与技能分层见 [联网研究技能设计](web-research-skill.md)。这是设计约定，当前运行版尚未自动搜索。
 
 # ZhuangFY 当前结构与模块分工
 
@@ -13,7 +15,14 @@ ZhuangFY/
 ├─ src/zhuangfy/             正式 Python 包
 │  ├─ paths.py               资源、配置、模型、数据库与外部服务路径
 │  ├─ core/emotion.py        情绪状态
+│  ├─ llm/providers.py       供应商配置、密钥与模型请求
+│  ├─ llm/routes.py          分阶段模型路由与故障切换
+│  ├─ speech/sensevoice.py   本地识别与命令行实现
+│  ├─ speech/vad.py          流式语音活动检测
+│  ├─ speech/interaction.py  对话状态、分段与回声文本过滤
+│  ├─ speech/gpt_sovits.py   本地语音模型与合成请求配置
 │  ├─ speech/wake.py         唤醒校正与对话时间窗
+│  ├─ persona/defaults.py   默认提示词与旧版提示词迁移
 │  ├─ persona/packs.py       人格包登记与读取
 │  ├─ channels/qq/reply_formatter.py  QQ 回复格式化
 │  └─ observability/activity_log.py  当前会话事件流
@@ -28,18 +37,20 @@ ZhuangFY/
 │  └─ user-guide/README.md   安装和使用说明
 ├─ data/                     后续运行数据位置（当前不迁移）
 ├─ third_party/licenses/     第三方许可文本
-├─ SenseVoice/               ZhuangFY 当前可运行的独立原型
+├─ SenseVoice/               待拆分的界面、QQ 流程、本机数据与兼容入口
 │  ├─ branding.py            应用名称与图标路径
 │  ├─ gui.py                 语音窗口、录音线程、流程协调与语音播放
 │  ├─ dashboard.py           统一控制台、设置编辑、服务状态与启停
 │  ├─ activity_log.py        新包模块的兼容导入
-│  ├─ continuous.py          流式 Silero VAD，分段与句尾检测
-│  ├─ recognize.py           SenseVoice 本地识别及命令行入口
+│  ├─ continuous.py          新包流式 VAD 的兼容导入
+│  ├─ recognize.py           新包识别模块的兼容导入及命令行入口
 │  ├─ wake.py                新包模块的兼容导入
-│  ├─ interaction.py         交互状态、分段播报与回声文本过滤
-│  ├─ llm.py                 模型配置、密钥读取和 HTTP 请求
+│  ├─ interaction.py         新包交互辅助模块的兼容导入
+│  ├─ llm.py                 新包模型客户端的兼容导入
 │  ├─ model_catalog.py       后台获取供应商 /models 列表
-│  ├─ persona.py             默认人格包入口与旧版默认词迁移
+│  ├─ persona.py             新包默认人格模块的兼容导入
+│  ├─ model_routes.py        新包模型路由的兼容导入
+│  ├─ gpt_sovits.py          新包语音引擎配置的兼容导入
 │  ├─ persona_packs.py       新包模块的兼容导入
 │  ├─ memory.py              Mem0 本地向量库、检索、提取、纠错与删除
 │  ├─ memory_gui.py          长期记忆查看、手动更正与遗忘界面
@@ -102,9 +113,9 @@ QQ 接入是独立进程 `qq_bridge.py`：SnowLuma 把 QQ 事件转换成 OneBot
 | 实时状态、分段和疑似回声判断 | `SenseVoice/interaction.py`、`SenseVoice/gui.py` | 区分完整回复的分段播报与真正的流式模型输出；扬声器模式仍依赖唤醒称呼 |
 | 模型供应商与请求格式 | `SenseVoice/llm.py`、`SenseVoice/model_catalog.py`、`SenseVoice/chat_worker.py` | `chat()` 输入设置、密钥、历史、当前文字，返回回复文字；`list_models()` 返回模型 ID |
 | 默认人格与表达规则 | `SenseVoice/persona.py`、`SenseVoice/llm_gui.py` | 编辑默认提示词或本机自定义提示词；保留旧设置与对话历史边界 |
-| 长期记忆 | `SenseVoice/memory.py`、`SenseVoice/memory_gui.py` | Mem0、Qdrant 与远程 Embedding；启用开关、记忆纠错、遗忘与本地目录隔离 |
+| 长期记忆 | `src/zhuangfy/memory/`；旧档案在 `SenseVoice/memory.py` | 新服务统一管理跨渠道身份、对话、反思与检索；旧 Mem0 数据保留但接管后不再运行 |
 | QQ 消息桥接 | `SenseVoice/qq_bridge.py` | SnowLuma / OneBot 正向 WebSocket；白名单、@ 触发、去重、频率和独立历史 |
-| 跨端个人记忆 | `SenseVoice/owner_memory.py`、`SenseVoice/member_memory.py` | 本机显式关联机器人 QQ 与主人 QQ；语音和 QQ 共用该成员档案，短期上下文仍分开 |
+| 跨端个人记忆 | `src/zhuangfy/memory/identity.py`、`src/zhuangfy/memory/routing.py` | QQ 与桌面通过已验证身份关联同一人物；旧成员档案仅在新服务未接管时可用 |
 | 语音交互 | `SenseVoice/dashboard.py`、`SenseVoice/gui.py` | 设备选择、持续监听、单句识别与 TTS 测试；共用同一个语音窗口实例 |
 | 可选专属音色 | `SenseVoice/gpt_sovits.py`、`SenseVoice/gui.py`、`SenseVoice/dashboard.py` | 扫描成对 GPT/SoVITS 权重并在控制台切换本机模型；参考音频与台词独立配置。播放时预生成下一段，支持打断、清空预存音频与系统语音回退。引擎权重位于仓库外 |
 | 文字调试与配置编辑 | `SenseVoice/llm_gui.py` | 调用 `llm.py` 的配置和聊天接口；不使用主界面的历史 |

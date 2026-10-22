@@ -74,12 +74,70 @@ class LlmTests(unittest.TestCase):
         self.assertEqual(captured["body"]["messages"][0], {"role": "system", "content": DEFAULT_PROMPT})
         self.assertEqual(captured["headers"]["Authorization"], "Bearer test-key")
 
+    def test_chat_sends_image_as_multimodal_content(self):
+        captured = {}
+
+        def fake_open(request, timeout):
+            captured["messages"] = json.loads(request.data)["messages"]
+            return FakeResponse()
+
+        with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
+            llm.chat(llm.LlmSettings(), "test-key", [], "图里写了什么？",
+                     image_data_url="data:image/jpeg;base64,YWJj", stage="识图")
+        self.assertEqual(captured["messages"][-1]["content"], [
+            {"type": "image_url", "image_url": {
+                "url": "data:image/jpeg;base64,YWJj", "detail": "high"}},
+            {"type": "text", "text": "图里写了什么？"},
+        ])
+        with self.assertRaisesRegex(ValueError, "图片格式"):
+            llm.chat(llm.LlmSettings(), "test-key", [], "看看", image_data_url="file:///private.jpg")
+
+    def test_visual_observation_is_separate_from_persona_and_current_question(self):
+        captured = {}
+
+        def fake_open(request, timeout):
+            captured["messages"] = json.loads(request.data)["messages"]
+            return FakeResponse()
+
+        with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
+            llm.chat(llm.LlmSettings(), "test-key", [], "这是什么？",
+                     visual_context="可见一只蓝色杯子")
+        self.assertIn("蓝色杯子", captured["messages"][-2]["content"])
+        self.assertIn("不是用户输入的画面描述", captured["messages"][-3]["content"])
+        self.assertIn("不要说自己看不到图片", captured["messages"][-3]["content"])
+        self.assertIn("不把视觉观察逐条复述成识别清单", captured["messages"][-3]["content"])
+        self.assertEqual(captured["messages"][-1], {"role": "user", "content": "这是什么？"})
+        self.assertNotIn("蓝色杯子", captured["messages"][0]["content"])
+
     def test_planning_response_is_visible_in_current_session(self):
         with patch.object(llm.urllib.request, "urlopen", return_value=FakeResponse()), \
                 patch.object(llm, "log_event") as record:
             llm.chat(llm.LlmSettings(), "test-key", [], "你好", stage="思考")
-        self.assertIn(("模型", "思考内容", "Hello from the model"),
+        self.assertIn(("模型", "规划结果", "Hello from the model"),
                       [call.args for call in record.call_args_list])
+
+    def test_provider_reasoning_is_logged_separately_from_final_reply(self):
+        class ReasoningResponse(FakeResponse):
+            def read(self, _limit):
+                return json.dumps({"choices": [{"message": {
+                    "content": "最终回答", "reasoning_content": "模型返回的推理过程",
+                }}]}, ensure_ascii=False).encode("utf-8")
+
+        settings = llm.LlmSettings(provider="deepseek", base_url=llm.DEEPSEEK_URL,
+                                   model="deepseek-v4-pro")
+        with patch.object(llm.urllib.request, "urlopen", return_value=ReasoningResponse()), \
+                patch.object(llm, "log_event") as record:
+            reply = llm.chat(settings, "test-key", [], "你好", stage="回复")
+        events = [call.args for call in record.call_args_list]
+        self.assertEqual(reply, "最终回答")
+        self.assertIn(("模型", "推理内容", "回复 · 1/1\n模型返回的推理过程"), events)
+        self.assertNotIn(("模型", "规划结果", "模型返回的推理过程"), events)
+
+    def test_provider_without_reasoning_has_no_reasoning_event(self):
+        with patch.object(llm.urllib.request, "urlopen", return_value=FakeResponse()), \
+                patch.object(llm, "log_event") as record:
+            llm.chat(llm.LlmSettings(), "test-key", [], "你好")
+        self.assertFalse(any(call.args[1] == "推理内容" for call in record.call_args_list))
 
     def test_old_default_upgrades_without_changing_model_or_custom_prompt(self):
         with tempfile.TemporaryDirectory() as directory:

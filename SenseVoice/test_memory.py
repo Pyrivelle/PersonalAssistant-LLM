@@ -72,7 +72,7 @@ class MemoryTests(unittest.TestCase):
                             "记住我喜欢简短解释", None)
         worker.replied.connect(replies.append)
         with patch.object(memory, "get_memory", return_value=backend), \
-             patch("chat_worker.chat") as model_chat:
+             patch("chat_worker.invoke_stage") as model_chat:
             worker.run()
         backend.remember.assert_called_once_with("我喜欢简短解释")
         model_chat.assert_not_called()

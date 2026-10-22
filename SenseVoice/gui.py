@@ -44,6 +44,7 @@ from continuous import StreamingVad
 from branding import APP_NAME, app_icon
 from chat_worker import ChatWorker, MemoryWriteWorker, OwnerMemoryWriteWorker, RemoteMemoryWriteWorker
 from owner_memory import load_link
+from zhuangfy.memory.routing import legacy_memory_allowed
 from activity_log import log_event
 from emotion import EmotionState
 from dialogue_context import DialogueContext, DialogueStore
@@ -982,7 +983,8 @@ class MainWindow(QMainWindow):
             self.status_label.setText("你正在说话 · 已忽略刚收到的旧回复")
             return
         worker = self.chat_workers.get(turn)
-        memory_enabled = bool(worker and worker.settings.memory_enabled)
+        memory_enabled = bool(worker and worker.settings.memory_enabled
+                              and legacy_memory_allowed("desktop"))
         answered_message = self.pending_message
         if worker and not getattr(worker, "memory_command", False):
             self.dialogue.commit(self.pending_message, reply,
@@ -1002,11 +1004,13 @@ class MainWindow(QMainWindow):
         self.chat_worker = None
         self.pending_message = ""
         self.result_edit.appendPlainText(f"庄方宜：{reply}\n")
-        log_event("语音", "回复", reply)
+        log_event("语音", "回复", reply,
+                  turn_id=getattr(worker, "turn_id", ""), channel="语音")
         # UI acceptance/display is the delivery evidence for desktop text.
         # A discarded/stale LLM reply never reaches this write path.
         if (worker is not None and not getattr(worker, "memory_command", False)
-                and worker.remote_memory_ref is not None and worker.remote_client is not None):
+                and getattr(worker, "remote_memory_ref", None) is not None
+                and getattr(worker, "remote_client", None) is not None):
             remote_writer = RemoteMemoryWriteWorker(
                 worker.remote_client, worker.remote_identity, worker.remote_memory_ref,
                 worker.turn_id, reply, self)
@@ -1021,7 +1025,8 @@ class MainWindow(QMainWindow):
             writer.failed.connect(lambda warning: self.result_edit.appendPlainText(f"系统：{warning}\n"))
             writer.finished.connect(lambda w=writer: self.memory_write_finished(w))
             writer.start()
-        if worker and not getattr(worker, "memory_command", False):
+        if (worker and not getattr(worker, "memory_command", False)
+                and legacy_memory_allowed("desktop")):
             owner = load_link()
             if owner is not None:
                 writer = OwnerMemoryWriteWorker(owner, answered_message, reply,

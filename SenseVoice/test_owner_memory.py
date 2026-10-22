@@ -54,7 +54,7 @@ class OwnerMemoryTests(unittest.TestCase):
             with patch.object(owner_memory, "MEMORY_FILE", db_path), \
                  patch("owner_memory.load_link", return_value=link), \
                  patch("chat_worker.plan_turn", return_value=TurnPlan()), \
-                 patch("chat_worker.chat", side_effect=lambda *_args, **kwargs: captured.append(kwargs) or "好，我们继续。"):
+                 patch("chat_worker.invoke_stage", side_effect=lambda *_args, **kwargs: captured.append(kwargs) or "好，我们继续。"):
                 worker = ChatWorker(settings, "test-key", [], "我回家了", parent, source="语音")
                 worker.replied.connect(replies.append)
                 worker.run()

@@ -31,6 +31,21 @@ class ModelRoutesTests(unittest.TestCase):
         self.assertEqual(output, "已经回复")
         self.assertEqual(seen, [("existing-model", "old-key", "回复")])
 
+    def test_vision_requires_explicit_model_and_passes_image_to_it(self):
+        settings = LlmSettings()
+        with patch.object(model_routes, "load_routes", return_value=ModelRoutes()):
+            self.assertFalse(model_routes.can_attempt_stage("vision", settings, "old-key"))
+        with self.assertRaises(ModelRoutesFailed):
+            invoke_stage("vision", settings, "old-key", [], "看图", routes=ModelRoutes(),
+                         image_data_url="data:image/jpeg;base64,YWJj")
+        routes = ModelRoutes(vision=StagePolicy((candidate("vision_1", "vision-model"),), retries=0))
+        with patch.object(model_routes, "chat", return_value="图片里有一只猫") as request, \
+             patch.object(model_routes, "load_route_key", return_value="vision-key"):
+            result = invoke_stage("vision", settings, "old-key", [], "看图", routes=routes,
+                                  image_data_url="data:image/jpeg;base64,YWJj")
+        self.assertEqual(result, "图片里有一只猫")
+        self.assertEqual(request.call_args.kwargs["image_data_url"], "data:image/jpeg;base64,YWJj")
+
     def test_transient_failure_retries_then_switches_api(self):
         routes = ModelRoutes(reply=StagePolicy(
             (candidate("reply_1", "server-a"), candidate("reply_2", "server-b")),
@@ -133,7 +148,8 @@ class ModelRoutesTests(unittest.TestCase):
     def test_per_candidate_api_key_is_not_saved_in_json(self):
         with tempfile.TemporaryDirectory() as directory:
             keypath = Path(directory) / ".env.local"
-            with patch.object(model_routes, "ENV_FILE", keypath):
+            with patch.object(model_routes, "ENV_FILE", keypath), \
+                 patch.object(model_routes, "load_key", return_value=""):
                 model_routes.save_route_key("reply_1", "private-key-123", "custom", "http://127.0.0.1:11434/v1")
                 model_routes.save_route_key("planner_1", "different-key-234", "custom", "http://127.0.0.1:11434/v1")
                 self.assertIn("private-key-123", keypath.read_text(encoding="utf-8"))

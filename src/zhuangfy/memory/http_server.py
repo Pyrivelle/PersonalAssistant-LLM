@@ -164,6 +164,7 @@ def main() -> None:
         while not stop_worker.wait(8):
             try:
                 if core.curator is not None:
+                    core.schedule_due_reflections()
                     core.reflect_one()
                 else:
                     core.project()

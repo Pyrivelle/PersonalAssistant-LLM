@@ -20,6 +20,10 @@ from .timeline import TimelineEntry, TimelineRepository
 MAX_ATTEMPTS = 3
 DEFAULT_LEASE_SECONDS = 600
 MAX_JOB_ENTRIES = 60
+AUTO_BATCH_MESSAGES = 36
+AUTO_BATCH_TOKENS = 8_000
+AUTO_BATCH_MAX_AGE_SECONDS = 24 * 60 * 60
+MAX_SOURCE_TEXT_CHARS = 1600
 MEMORY_KINDS = frozenset({"semantic", "episodic", "procedural"})
 EVENT_STATES = frozenset({"unspecified", "ongoing", "completed", "outdated"})
 
@@ -160,6 +164,96 @@ class CuratorStore:
                 FROM private_conversations WHERE conversation_id=? AND person_id=?""",
                 (job_id, after, through, int(time.time()), conversation_id, person_id))
             return job_id
+
+    @staticmethod
+    def _source_token_bound(row: sqlite3.Row) -> int:
+        """Conservative byte-based bound for the serialized source sent to the model.
+
+        Provider tokenizers vary. UTF-8 bytes overestimate ordinary BPE token
+        counts and avoid adding a provider-specific tokenizer dependency here.
+        The curator sends at most MAX_SOURCE_TEXT_CHARS per message.
+        """
+        source = {
+            "entry_id": row["entry_id"], "role": row["speaker_role"],
+            "state": row["state"], "text": row["content"][:MAX_SOURCE_TEXT_CHARS],
+            "in_reply_to": row["in_reply_to"], "at": row["recorded_at"],
+        }
+        return len(json.dumps(source, ensure_ascii=False).encode("utf-8"))
+
+    def schedule_if_ready(self, *, conversation_id: str, person_id: str,
+                          now: int | None = None) -> str | None:
+        """Queue a bounded batch at 36 messages, at 8k tokens, or after a day."""
+        self.identities.require_consent(person_id, "timeline")
+        self.identities.require_consent(person_id, "curation")
+        now = int(time.time()) if now is None else now
+        with self.db.write() as db:
+            self.timeline._private(db, conversation_id, person_id)
+            existing = db.execute("""SELECT job_id FROM reflection_jobs WHERE conversation_id=?
+                AND person_id=? AND status IN ('pending','running','failed')
+                ORDER BY created_at DESC LIMIT 1""", (conversation_id, person_id)).fetchone()
+            if existing:
+                return str(existing["job_id"])
+            completed = db.execute("""SELECT MAX(through_sequence) AS seq
+                FROM reflection_jobs WHERE conversation_id=? AND person_id=? AND status='done'""",
+                (conversation_id, person_id)).fetchone()
+            after = int(completed["seq"] or 0)
+            rows = db.execute("""SELECT sequence,entry_id,speaker_role,state,content,
+                       in_reply_to,recorded_at FROM timeline_entries
+                WHERE conversation_id=? AND sequence>?
+                  AND ((speaker_role='user' AND state='received')
+                    OR (speaker_role='assistant' AND state='delivered'))
+                ORDER BY sequence LIMIT ?""",
+                (conversation_id, after, AUTO_BATCH_MESSAGES + 1)).fetchall()
+            if not rows:
+                return None
+            count = 0
+            tokens = 0
+            through = after
+            overflow = False
+            for row in rows:
+                size = self._source_token_bound(row)
+                if count and tokens + size > AUTO_BATCH_TOKENS:
+                    overflow = True
+                    break
+                tokens += size
+                count += 1
+                through = row["sequence"]
+                if count == AUTO_BATCH_MESSAGES:
+                    break
+            due = (count >= AUTO_BATCH_MESSAGES or overflow
+                   or tokens >= AUTO_BATCH_TOKENS
+                   or rows[0]["recorded_at"] <= now - AUTO_BATCH_MAX_AGE_SECONDS)
+            if not due:
+                return None
+            job_id = str(uuid4())
+            db.execute("""INSERT INTO reflection_jobs
+                (job_id,conversation_id,agent_id,person_id,after_sequence,
+                 through_sequence,status,created_at)
+                SELECT ?,conversation_id,agent_id,person_id,?,?,'pending',?
+                FROM private_conversations WHERE conversation_id=? AND person_id=?""",
+                (job_id, after, through, now, conversation_id, person_id))
+            return job_id
+
+    def schedule_due(self, *, now: int | None = None) -> int:
+        """Recheck idle conversations so the daily fallback works without traffic."""
+        with self.db.connection() as db:
+            conversations = db.execute("""SELECT c.conversation_id,c.person_id
+                FROM private_conversations AS c
+                WHERE NOT EXISTS (SELECT 1 FROM reflection_jobs AS j
+                    WHERE j.conversation_id=c.conversation_id
+                      AND j.person_id=c.person_id
+                      AND j.status IN ('pending','running','failed'))""").fetchall()
+        scheduled = 0
+        for conversation in conversations:
+            try:
+                job_id = self.schedule_if_ready(
+                    conversation_id=conversation["conversation_id"],
+                    person_id=conversation["person_id"], now=now)
+            except (PermissionError, ValueError):
+                continue
+            if job_id is not None:
+                scheduled += 1
+        return scheduled
 
     def claim_next(self, *, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> ReflectionJob | None:
         if not 30 <= lease_seconds <= 3600:

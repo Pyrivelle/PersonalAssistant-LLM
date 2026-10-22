@@ -102,6 +102,60 @@ class CuratorTests(unittest.TestCase):
         outcome = MemoryCurator(self.curated, model).process_next()
         return model, outcome
 
+    def test_automatic_reflection_waits_for_36_messages(self):
+        for number in range(17):
+            user = self.user(f"第 {number} 条用户消息")
+            self.reply(user, "收到")
+            self.assertIsNone(self.curated.schedule_if_ready(
+                conversation_id=self.chat.conversation_id,
+                person_id=self.alice.person_id))
+        user = self.user("第 18 条用户消息")
+        self.reply(user, "收到")
+        job_id = self.curated.schedule_if_ready(
+            conversation_id=self.chat.conversation_id,
+            person_id=self.alice.person_id)
+        self.assertIsNotNone(job_id)
+        self.assertEqual(job_id, self.curated.schedule_if_ready(
+            conversation_id=self.chat.conversation_id,
+            person_id=self.alice.person_id))
+        with self.db.connection() as db:
+            row = db.execute("SELECT through_sequence FROM reflection_jobs WHERE job_id=?",
+                             (job_id,)).fetchone()
+        self.assertEqual(row[0], self.timeline.curated_source_entries(
+            conversation_id=self.chat.conversation_id,
+            person_id=self.alice.person_id, limit=36)[-1].sequence)
+
+    def test_automatic_reflection_caps_batch_before_token_overflow(self):
+        first = self.user("甲" * 1500)
+        first_reply = self.reply(first, "收到")
+        self.assertIsNone(self.curated.schedule_if_ready(
+            conversation_id=self.chat.conversation_id,
+            person_id=self.alice.person_id))
+        second = self.user("乙" * 1500)
+        self.reply(second, "收到")
+        job_id = self.curated.schedule_if_ready(
+            conversation_id=self.chat.conversation_id,
+            person_id=self.alice.person_id)
+        self.assertIsNotNone(job_id)
+        with self.db.connection() as db:
+            row = db.execute("SELECT through_sequence FROM reflection_jobs WHERE job_id=?",
+                             (job_id,)).fetchone()
+        self.assertEqual(row[0], first_reply.sequence)
+        _, outcome = self.invoke_curator(lambda _: response())
+        self.assertEqual(outcome.status, "done")
+        self.assertIsNone(self.curated.schedule_if_ready(
+            conversation_id=self.chat.conversation_id,
+            person_id=self.alice.person_id))
+
+    def test_daily_fallback_schedules_without_new_messages(self):
+        self.user("今天只有这一条消息")
+        self.assertEqual(self.curated.schedule_due(now=int(time.time()) + 60), 0)
+        self.assertEqual(self.curated.schedule_due(now=int(time.time()) + 86401), 1)
+        self.assertEqual(self.curated.schedule_due(now=int(time.time()) + 86401), 0)
+        self.assertIsNone(self.curated.schedule_if_ready(
+            conversation_id=self.other_chat.conversation_id,
+            person_id=self.bob.person_id, now=int(time.time()) + 86401))
+
     def test_semantic_curator_writes_verbatim_supported_memory(self):
         u = self.user("我现在正在优化 OSG 港口场景")
         job_id = self.schedule()

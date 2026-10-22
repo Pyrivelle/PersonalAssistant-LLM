@@ -11,6 +11,8 @@ import shutil
 
 from llm import DEFAULT_MODEL, LlmSettings, ROOT, SILICONFLOW_URL, chat, load_key
 from zhuangfy.paths import Paths
+from zhuangfy.memory.routing import legacy_memory_allowed
+from memory_commands import memory_command
 
 
 DATA_DIR = Paths.current().memory_root
@@ -33,17 +35,6 @@ def _items(result: object) -> list[dict]:
     if isinstance(result, dict):
         result = result.get("results", [])
     return [item for item in result if isinstance(item, dict)] if isinstance(result, list) else []
-
-
-def memory_command(text: str) -> tuple[str, str] | None:
-    value = text.strip().rstrip("。！？!?")
-    for prefix in ("请记住", "记住"):
-        if value.startswith(prefix) and len(value) > len(prefix):
-            return "remember", value[len(prefix):].strip("，, ：:")
-    for prefix in ("请忘记我", "忘记我", "请忘记关于我", "忘记关于我"):
-        if value.startswith(prefix) and len(value) > len(prefix):
-            return "forget", "我" + value[len(prefix):].strip("，, ：:")
-    return None
 
 
 class MemoryService:
@@ -193,4 +184,6 @@ atexit.register(_service.close)
 
 
 def get_memory() -> MemoryService:
+    if not legacy_memory_allowed("desktop"):
+        raise RuntimeError("新记忆服务已接管桌面入口，旧版 Mem0 不再运行")
     return _service

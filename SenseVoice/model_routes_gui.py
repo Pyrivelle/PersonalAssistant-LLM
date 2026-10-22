@@ -172,7 +172,7 @@ class StageEditor(QWidget):
         note = QLabel(
             "上方候选优先；遇到可恢复故障先重试，仍失败再切换下一服务。"
             if stage != "vision" else
-            "识图 API 候选预留配置：本版本尚未接入图片消息识别。"
+            "桌面聊天附图会先调用这里的视觉模型，再由回复模型结合识图结果回答。请选择支持图片输入的模型。"
         )
         note.setWordWrap(True)
         outer.addWidget(note)

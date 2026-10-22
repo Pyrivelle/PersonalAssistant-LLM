@@ -11,7 +11,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
-from chat_worker import ChatWorker, MemoryWriteWorker
+from chat_worker import ChatWorker, MemoryWriteWorker, RemoteMemoryWriteWorker
+from zhuangfy.memory.routing import legacy_memory_allowed
 from branding import APP_NAME, app_icon
 from activity_log import log_event
 from emotion import EmotionState
@@ -118,6 +119,10 @@ class ChatWindow(QMainWindow):
         self.update_persona_state()
         self.memory_enabled = QCheckBox("启用长期记忆：对话文字会发送给硅基流动做记忆提取和 Embedding")
         self.memory_enabled.setChecked(saved.memory_enabled)
+        if not legacy_memory_allowed("desktop"):
+            self.memory_enabled.setChecked(False)
+            self.memory_enabled.setEnabled(False)
+            self.memory_enabled.setToolTip("新记忆服务已接管桌面对话；旧版记忆不会参与读取或写入。")
         form.addRow("长期记忆", self.memory_enabled)
         layout.addLayout(form)
 
@@ -244,7 +249,7 @@ class ChatWindow(QMainWindow):
         return LlmSettings(
             provider=self.provider.currentData(), base_url=self.url.text(),
             model=self.model.currentText(), system_prompt=self.prompt.toPlainText(),
-            memory_enabled=self.memory_enabled.isChecked(),
+            memory_enabled=self.memory_enabled.isChecked() and legacy_memory_allowed("desktop"),
         ).validated()
 
     @Slot()
@@ -349,7 +354,17 @@ class ChatWindow(QMainWindow):
         log_event("文字", "回复", reply)
         self.input.clear()
         self.status.setText("回复完成")
-        if self.worker.settings.memory_enabled and not self.worker.memory_command:
+        if (not self.worker.memory_command and self.worker.remote_memory_ref is not None
+                and self.worker.remote_client is not None):
+            remote_writer = RemoteMemoryWriteWorker(
+                self.worker.remote_client, self.worker.remote_identity,
+                self.worker.remote_memory_ref, self.worker.turn_id, reply, self)
+            self.memory_workers.add(remote_writer)
+            remote_writer.failed.connect(self.show_memory_warning)
+            remote_writer.finished.connect(lambda w=remote_writer: self.memory_write_finished(w))
+            remote_writer.start()
+        if (self.worker.settings.memory_enabled and not self.worker.memory_command
+                and legacy_memory_allowed("desktop")):
             writer = MemoryWriteWorker(message, reply, self)
             self.memory_workers.add(writer)
             writer.failed.connect(self.show_memory_warning)

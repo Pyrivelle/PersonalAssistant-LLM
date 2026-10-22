@@ -20,13 +20,13 @@ from typing import Protocol
 
 from .curator_store import (
     CuratedMemory, CuratorOperation, CuratorStore, Evidence, EVENT_STATES, MEMORY_KINDS,
-    ReflectionJob,
+    ReflectionJob, MAX_SOURCE_TEXT_CHARS,
 )
 from .timeline import TimelineEntry
 
 MAX_OUTPUT_CHARS = 16000
 MAX_OPERATIONS = 10
-MAX_MESSAGE_CHARS = 1600
+MAX_MESSAGE_CHARS = MAX_SOURCE_TEXT_CHARS
 MAX_CONTEXT_CHARS = 14000
 SECRET = re.compile(
     r"(?i)(api[_ -]?key|password|密码|密钥|验证码|access[_ -]?token|sk-[a-z0-9_-]{8,})"

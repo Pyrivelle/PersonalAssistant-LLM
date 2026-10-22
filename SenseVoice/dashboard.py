@@ -9,7 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from activity_log import format_event, log_event, receive_event, session_snapshot
 from branding import APP_NAME, app_icon
 from zhuangfy.paths import Paths
+from zhuangfy.memory.routing import legacy_memory_allowed, new_memory_selected
 from llm import (
     DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
     PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
@@ -37,11 +38,15 @@ from owner_memory import current_bot_id, load_link, save_link
 from gpt_sovits import (ENGINE_ROOT, SpeechSettings, available_models, save_model_config,
                         load_settings as load_speech_settings, save_settings as save_speech_settings)
 from qq_bridge import QqSettings, SETTINGS_FILE as QQ_SETTINGS_FILE, load_snowluma_token
+from chat_page import ChatPage
+from chat_stream import ChatStreamPage
 
 
 ROOT = Path(__file__).resolve().parent
 SNOWLUMA_WEBUI = QUrl("http://127.0.0.1:5099/")
 SNOWLUMA_DIR = Paths.current().snowluma_root
+MEMORY_RUNTIME_FILE = Paths.current().project_root / "data" / "memory_runtime.json"
+PAGE_HOME, PAGE_CHAT, PAGE_STREAM, PAGE_MEMORY, PAGE_PERSONA, PAGE_MODEL, PAGE_PLATFORM, PAGE_PLUGINS, PAGE_MONITOR, PAGE_SYSTEM, PAGE_VOICE = range(11)
 
 
 def _button(label: str, callback, *, primary: bool = False) -> QPushButton:
@@ -147,8 +152,21 @@ def _drop_memory_admin_secrets(environment: QProcessEnvironment) -> QProcessEnvi
     # Never leak manager-only tokens or curator model keys to QQ, SnowLuma or TTS.
     for secret in ("ZHUANGFY_MEMORY_ADMIN_TOKEN",
                    "ZHUANGFY_MEMORY_ADMIN_UI",
-                   "ZHUANGFY_MEMORY_LLM_API_KEY"):
+                   "ZHUANGFY_MEMORY_LLM_API_KEY",
+                   "ZHUANGFY_MEMORY_LLM_BASE_URL",
+                   "ZHUANGFY_MEMORY_LLM_MODEL",
+                   "ZHUANGFY_MEMORY_ALLOW_REMOTE",
+                   "ZHUANGFY_MEMORY_REFLECT",
+                   "ZHUANGFY_MEMORY_DESKTOP",
+                   "ZHUANGFY_MEMORY_DESKTOP_USER_ID"):
         environment.remove(secret)
+    return environment
+
+
+def _drop_memory_non_bridge_secrets(environment: QProcessEnvironment) -> QProcessEnvironment:
+    environment = _drop_memory_admin_secrets(environment)
+    environment.remove("ZHUANGFY_MEMORY_TOKEN")
+    environment.remove("ZHUANGFY_MEMORY_QQ")
     return environment
 
 
@@ -157,12 +175,13 @@ class Dashboard(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} · 控制台")
         self.resize(1120, 760)
-        self.setMinimumSize(840, 590)
+        self.setMinimumSize(940, 620)
         self.voice_window = None
         self.chat_window = None
         self.memory_window = None
         self.curated_memory_window = None
         self._model_worker = None
+        self._memory_catalog_worker = None
         self._tts_network = QNetworkAccessManager(self)
         self._tts_pending_settings = None
         self._tts_pending_model = None
@@ -179,7 +198,7 @@ class Dashboard(QMainWindow):
         self.setWindowIcon(app_icon())
         self.snowluma = QProcess(self)
         self.snowluma.setProcessEnvironment(
-            _drop_memory_admin_secrets(QProcessEnvironment.systemEnvironment()))
+            _drop_memory_non_bridge_secrets(QProcessEnvironment.systemEnvironment()))
         # SnowLuma forks another Node process. Its child must never inherit a
         # pipe owned by this window: after a UI restart that pipe becomes EPIPE
         # and SnowLuma can flood its own log instead of completing OneBot calls.
@@ -210,40 +229,62 @@ class Dashboard(QMainWindow):
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(222)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(18, 28, 18, 22)
-        side.setSpacing(9)
+        side.setContentsMargins(16, 25, 16, 20)
+        side.setSpacing(4)
         brand = QLabel("庄方宜")
         brand.setObjectName("brand")
         side.addWidget(brand)
-        subbrand = QLabel("ZhuangFY  /  CONTROL")
+        subbrand = QLabel("ZHUANGFY  /  DESKTOP")
         subbrand.setObjectName("subbrand")
         side.addWidget(subbrand)
-        side.addSpacing(36)
+        side.addSpacing(25)
         self.nav = []
-        for name in ("总览", "模型与人格", "QQ · SnowLuma", "运行过程", "语音交互"):
-            button = _button(name, lambda _checked=False, i=len(self.nav): self.switch_page(i))
-            button.setObjectName("nav")
-            side.addWidget(button)
-            self.nav.append(button)
-        side.addSpacing(12)
-        side.addWidget(QLabel("快捷入口"))
-        side.addWidget(_button("打开语音窗口  ↗", self.open_voice))
-        side.addWidget(_button("文字对话测试  ↗", self.open_chat))
-        side.addWidget(_button("长期记忆管理  ↗", self.open_memory))
-        side.addWidget(_button("新记忆管理  ↗", self.open_curated_memory))
-        side.addWidget(_button("重启连接  ↻", self.restart_connections))
+        for section, names in (("", ("首页", "聊天", "聊天流")),
+                               ("工作空间", ("记忆中心", "角色设置", "模型设置")),
+                               ("服务管理", ("平台连接", "插件管理", "运行监控")),
+                               ("高级", ("系统设置",))):
+            if section:
+                side.addSpacing(18)
+                caption = QLabel(section.upper())
+                caption.setObjectName("navGroup")
+                side.addWidget(caption)
+                side.addSpacing(4)
+            for name in names:
+                button = _button(name, lambda _checked=False, i=len(self.nav): self.switch_page(i))
+                button.setObjectName("nav")
+                side.addWidget(button)
+                self.nav.append(button)
         side.addStretch()
+        status_row = QHBoxLayout()
+        self.service_dot = QLabel("●")
+        self.service_dot.setObjectName("serviceDot")
+        self.sidebar_service = QLabel("检查服务中")
+        self.sidebar_service.setObjectName("sidebarService")
+        status_row.addWidget(self.service_dot)
+        status_row.addWidget(self.sidebar_service)
+        status_row.addStretch()
+        side.addLayout(status_row)
         shell.addWidget(sidebar)
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("pages")
         shell.addWidget(self.pages, 1)
         self.pages.addWidget(self._overview())
+        self.chat_page = ChatPage(self)
+        self.chat_page.open_models.connect(lambda: self.switch_page(PAGE_MODEL))
+        self.chat_page.open_voice.connect(self.open_voice)
+        self.pages.addWidget(self.chat_page)
+        self.chat_stream = ChatStreamPage(self)
+        self.pages.addWidget(self.chat_stream)
+        self.pages.addWidget(self._memory_page())
+        self.pages.addWidget(self._persona_page())
         self.pages.addWidget(self._model_page())
         self.pages.addWidget(self._qq_page())
+        self.pages.addWidget(self._plugins_page())
         self.pages.addWidget(self._logs_page())
+        self.pages.addWidget(self._system_page())
         self.pages.addWidget(self._home_voice_page())
-        self.switch_page(0)
+        self.switch_page(PAGE_HOME)
         self.setStyleSheet(STYLE)
         self.statusBar().showMessage("控制台就绪")
 
@@ -252,6 +293,7 @@ class Dashboard(QMainWindow):
         self.timer.start(3000)
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self.refresh_logs)
+        self.log_timer.timeout.connect(self.chat_stream.refresh)
         self.log_timer.start(1500)
         self._setup_tray()
         self.refresh_status()
@@ -270,8 +312,8 @@ class Dashboard(QMainWindow):
             menu = QMenu(self)
         for label, callback in (("打开控制台", self.show_console),
                                 ("打开语音窗口", self.open_voice),
-                                ("语音交互", lambda: self.show_console(4)),
-                                ("查看运行过程", lambda: self.show_console(3)),
+                                ("语音交互", lambda: self.show_console(PAGE_VOICE)),
+                                ("查看运行监控", lambda: self.show_console(PAGE_MONITOR)),
                                 ("重启连接", self.restart_connections)):
             action = QAction(label, self)
             action.triggered.connect(callback)
@@ -333,8 +375,11 @@ class Dashboard(QMainWindow):
             datagram = self._event_receiver.receiveDatagram(20_000)
             if datagram.senderAddress().isLoopback():
                 received = receive_event(bytes(datagram.data()), self._event_token) or received
-        if received and self.pages.currentIndex() == 3:
-            self.refresh_logs()
+        if received:
+            if self.pages.currentIndex() == PAGE_MONITOR:
+                self.refresh_logs()
+            elif self.pages.currentIndex() == PAGE_STREAM:
+                self.chat_stream.refresh()
 
     def _page(self, title: str, subtitle: str) -> tuple[QScrollArea, QVBoxLayout]:
         wrapper = QScrollArea()
@@ -357,48 +402,110 @@ class Dashboard(QMainWindow):
         return wrapper, column
 
     def _overview(self) -> QScrollArea:
-        page, column = self._page("今天，和小庄聊聊。", "从这里查看各模块状态，进入语音对话，或者配置消息连接。")
-        hero, layout = _card("语音对话", "本机 SenseVoice 识别 + 唤醒监听 + 模型回复 + 分段语音播报。")
+        page, column = self._page("欢迎回来", "从这里开始对话，或查看庄方宜正在使用的服务。")
+        hero, layout = _card("今天想聊些什么？", "文字与语音入口都在这里；对话使用当前角色、模型与已启用的记忆服务。")
+        hero.setObjectName("heroCard")
         actions = QHBoxLayout()
-        actions.addWidget(_button("打开语音窗口", self.open_voice, primary=True))
-        actions.addWidget(_button("语音交互", lambda: self.switch_page(4)))
-        actions.addWidget(_button("文字测试", self.open_chat))
+        actions.addWidget(_button("开始聊天  →", lambda: self.switch_page(PAGE_CHAT), primary=True))
+        actions.addWidget(_button("语音交互", lambda: self.switch_page(PAGE_VOICE)))
+        actions.addWidget(_button("打开完整语音窗口  ↗", self.open_voice))
         actions.addStretch()
         layout.addLayout(actions)
         column.addWidget(hero)
 
         row = QHBoxLayout()
-        model_card, model_layout = _card("模型与记忆")
+        model_card, model_layout = _card("对话能力")
         self.model_state = QLabel()
         model_layout.addWidget(self.model_state)
         self.api_state = QLabel()
         model_layout.addWidget(self.api_state)
         self.memory_state = QLabel()
         model_layout.addWidget(self.memory_state)
-        model_layout.addWidget(_button("配置模型与人格  →", lambda: self.switch_page(1)))
+        self.memory_core_state = QLabel()
+        model_layout.addWidget(self.memory_core_state)
+        model_layout.addWidget(_button("查看模型设置  →", lambda: self.switch_page(PAGE_MODEL)))
         row.addWidget(model_card)
-        qq_card, qq_layout = _card("QQ 连接")
+        qq_card, qq_layout = _card("平台与声音")
         self.snow_state = QLabel()
         qq_layout.addWidget(self.snow_state)
         self.onebot_state = QLabel()
         qq_layout.addWidget(self.onebot_state)
         self.bridge_state = QLabel()
         qq_layout.addWidget(self.bridge_state)
-        qq_layout.addWidget(_button("配置 SnowLuma  →", lambda: self.switch_page(2)))
+        self.tts_home_state = QLabel()
+        qq_layout.addWidget(self.tts_home_state)
+        qq_layout.addWidget(_button("查看平台连接  →", lambda: self.switch_page(PAGE_PLATFORM)))
         row.addWidget(qq_card)
         column.addLayout(row)
-        tip, tip_layout = _card("当前工作方式", "语音窗口负责麦克风与 TTS；QQ 桥接只响应白名单中的文字消息。SnowLuma 保持独立安装，配置页面由它自己的 WebUI 提供。")
-        column.addWidget(tip)
+        activity, activity_layout = _card("最近运行")
+        self.recent_overview = QLabel("本次启动尚无记录")
+        self.recent_overview.setObjectName("muted")
+        self.recent_overview.setWordWrap(True)
+        activity_layout.addWidget(self.recent_overview)
+        activity_layout.addWidget(_button("打开运行监控  →", lambda: self.switch_page(PAGE_MONITOR)))
+        column.addWidget(activity)
+        column.addStretch()
+        return page
+
+    def _memory_page(self) -> QScrollArea:
+        page, column = self._page("记忆中心", "查看新记忆服务与本机旧版记忆的状态，并管理已经保存的内容。")
+        current, layout = _card("新记忆服务", "QQ 与桌面入口通过已核验的身份共用人物记忆；具体内容和授权可在管理窗口查看。")
+        self.memory_service_state = QLabel()
+        layout.addWidget(self.memory_service_state)
+        layout.addWidget(_button("打开新记忆管理  ↗", self.open_curated_memory, primary=True))
+        column.addWidget(current)
+        legacy, legacy_layout = _card("旧版记忆档案", "旧数据保留供查看和后续迁移；新服务接管时不再读取或写入旧库。")
+        self.memory_enabled = QCheckBox("在对话中使用旧版长期记忆")
+        self.memory_enabled.setChecked(load_settings().memory_enabled and legacy_memory_allowed("desktop"))
+        self.memory_enabled.setEnabled(legacy_memory_allowed("desktop"))
+        legacy_layout.addWidget(self.memory_enabled)
+        actions = QHBoxLayout()
+        legacy_save = _button("保存旧版记忆开关", self.save_memory_setting)
+        legacy_save.setEnabled(legacy_memory_allowed("desktop"))
+        actions.addWidget(legacy_save)
+        legacy_manager = _button("管理旧版记忆  ↗", self.open_memory)
+        legacy_manager.setEnabled(legacy_memory_allowed("desktop"))
+        actions.addWidget(legacy_manager)
+        actions.addStretch()
+        legacy_layout.addLayout(actions)
+        self.memory_feedback = QLabel("新记忆服务已接管桌面入口。" if new_memory_selected("desktop") else
+                                      "旧版记忆仅在新服务未接管时可用。")
+        self.memory_feedback.setObjectName("muted")
+        legacy_layout.addWidget(self.memory_feedback)
+        column.addWidget(legacy)
+        column.addStretch()
+        return page
+
+    def _persona_page(self) -> QScrollArea:
+        page, column = self._page("角色设置", "选择人格包或直接调整庄方宜的行为提示词；保存后供下一轮对话使用。")
+        persona, layout = _card("庄方宜的人格")
+        row = QHBoxLayout()
+        self.persona_pack = QComboBox()
+        for pack in BUILTIN_PACKS:
+            self.persona_pack.addItem(pack.name, pack)
+        row.addWidget(self.persona_pack, 1)
+        row.addWidget(_button("载入人格包", self.load_persona_pack))
+        layout.addLayout(row)
+        self.prompt = QPlainTextEdit(load_settings().system_prompt or DEFAULT_PROMPT)
+        self.prompt.setMinimumHeight(330)
+        layout.addWidget(self.prompt)
+        self.persona_state = QLabel()
+        self.persona_state.setObjectName("muted")
+        self.prompt.textChanged.connect(self.update_persona_state)
+        layout.addWidget(self.persona_state)
+        layout.addWidget(_button("保存角色设置", self.save_persona, primary=True))
+        self.update_persona_state()
+        column.addWidget(persona)
         column.addStretch()
         return page
 
     def _model_page(self) -> QScrollArea:
-        page, column = self._page("模型与人格", "这里的设置会被语音窗口、文字测试窗口和 QQ 桥接在下一次使用时读取。运行中的 QQ 桥接需要重启才会切换配置。")
+        page, column = self._page("模型设置", "配置默认对话 API 与各阶段的模型候选；语音和 QQ 桥接将在下一轮或重启连接后读取设置。")
         saved = load_settings()
         self._provider_values = {saved.provider: (saved.base_url, saved.model)}
         self._model_choices = {}
         self._last_provider = saved.provider
-        card, layout = _card("默认模型（兼容单 API 设置）", "只有对应阶段没有配置模型候选时才使用这里的供应商与模型。人格与记忆仍使用下方原有设置。")
+        card, layout = _card("默认对话模型", "当对应阶段没有配置模型候选时，使用这里的供应商和模型。")
         form = QFormLayout()
         form.setSpacing(12)
         self.provider = QComboBox()
@@ -434,47 +541,110 @@ class Dashboard(QMainWindow):
         self.key_state.setObjectName("muted")
         form.addRow("密钥状态", self.key_state)
         layout.addLayout(form)
+        layout.addWidget(_button("保存模型设置", self.save_model, primary=True))
+        self.model_feedback = QLabel("密钥只存于本机 .env.local，不会在界面回显。")
+        self.model_feedback.setObjectName("muted")
+        layout.addWidget(self.model_feedback)
         column.addWidget(card)
         routes_card, routes_layout = _card(
             "分阶段模型 API 与容灾",
             "思考、回复、识图可分别配置多条 API；按优先级故障切换，支持单次超时和重试。"
-            "识图目前仅配置备用服务，尚未接入图片输入。")
+            "桌面聊天已支持图片输入；识图结果会交给回复模型生成回答。")
         routes_layout.addWidget(_button(
             "配置各阶段的 API 候选、密钥及重试策略  →",
             self.open_model_routes, primary=True))
         column.addWidget(routes_card)
 
-        persona, persona_layout = _card("人格与长期记忆", "可编辑庄方宜的角色提示词。长期记忆启用后，记忆提取与向量化会使用硅基流动 API。")
-        pack_row = QHBoxLayout()
-        self.persona_pack = QComboBox()
-        for pack in BUILTIN_PACKS:
-            self.persona_pack.addItem(pack.name, pack)
-        pack_row.addWidget(self.persona_pack, 1)
-        pack_row.addWidget(_button("载入人格包", self.load_persona_pack))
-        persona_layout.addLayout(pack_row)
-        self.prompt = QPlainTextEdit(saved.system_prompt or DEFAULT_PROMPT)
-        self.prompt.setMinimumHeight(175)
-        persona_layout.addWidget(self.prompt)
-        self.persona_state = QLabel()
-        self.persona_state.setObjectName("muted")
-        self.prompt.textChanged.connect(self.update_persona_state)
-        persona_layout.addWidget(self.persona_state)
-        self.update_persona_state()
-        self.memory_enabled = QCheckBox("启用长期记忆")
-        self.memory_enabled.setChecked(saved.memory_enabled)
-        persona_layout.addWidget(self.memory_enabled)
-        buttons = QHBoxLayout()
-        buttons.addWidget(_button("保存模型设置", self.save_model, primary=True))
-        buttons.addWidget(_button("管理记忆  ↗", self.open_memory))
-        buttons.addStretch()
-        persona_layout.addLayout(buttons)
-        self.model_feedback = QLabel("密钥只存于本机 .env.local，不会在界面回显。")
-        self.model_feedback.setObjectName("muted")
-        persona_layout.addWidget(self.model_feedback)
-        column.addWidget(persona)
+        memory_api, memory_api_layout = _card("记忆整理 API", "新记忆服务使用独立的整理模型，复用本机保存的硅基流动密钥。")
+        runtime = self._memory_runtime_settings()
+        self.memory_model_id = QComboBox()
+        self.memory_model_id.setEditable(True)
+        self.memory_model_id.addItems(PROVIDER_SUGGESTED_MODELS["siliconflow"])
+        self.memory_model_id.setCurrentText(str(runtime.get("model", "deepseek-ai/DeepSeek-V4-Flash")))
+        self.memory_model_id.setEnabled(bool(runtime))
+        memory_form = QFormLayout()
+        memory_form.addRow("供应商", QLabel("硅基流动"))
+        memory_row = QHBoxLayout()
+        memory_row.addWidget(self.memory_model_id, 1)
+        self.memory_model_fetch = _button("获取模型列表", self.fetch_memory_models)
+        self.memory_model_fetch.setEnabled(bool(runtime))
+        memory_row.addWidget(self.memory_model_fetch)
+        memory_form.addRow("整理模型", memory_row)
+        memory_api_layout.addLayout(memory_form)
+        self.memory_api_feedback = QLabel("本机记忆服务尚未配置。" if not runtime else
+                                          "保存后将在下次启动新记忆服务时生效；运行中的服务不会立即切换。")
+        self.memory_api_feedback.setObjectName("muted")
+        memory_api_layout.addWidget(self.memory_api_feedback)
+        save_memory_model = _button("保存记忆模型", self.save_memory_model)
+        save_memory_model.setEnabled(bool(runtime))
+        memory_api_layout.addWidget(save_memory_model)
+        column.addWidget(memory_api)
+
         column.addStretch()
         self.provider_changed()
         return page
+
+    @staticmethod
+    def _memory_runtime_settings() -> dict:
+        try:
+            data = json.loads(MEMORY_RUNTIME_FILE.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) and data.get("enabled") is True else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def fetch_memory_models(self) -> None:
+        if self._memory_catalog_worker is not None:
+            return
+        key = load_key("siliconflow")
+        if not key:
+            self.memory_api_feedback.setText("请先在默认模型设置中保存硅基流动 API Key。")
+            return
+        model = self.memory_model_id.currentText().strip() or "deepseek-ai/DeepSeek-V4-Flash"
+        worker = ModelCatalogWorker(
+            LlmSettings("siliconflow", PROVIDER_BASE_URLS["siliconflow"], model), key)
+        self._memory_catalog_worker = worker
+        self.memory_model_fetch.setEnabled(False)
+        self.memory_api_feedback.setText("正在获取硅基流动模型列表…")
+        worker.loaded.connect(self._memory_models_loaded)
+        worker.failed.connect(self.memory_api_feedback.setText)
+        worker.finished.connect(self._memory_models_finished)
+        worker.start()
+
+    def _memory_models_loaded(self, choices: list[str]) -> None:
+        selected = self.memory_model_id.currentText()
+        self.memory_model_id.clear()
+        self.memory_model_id.addItems(choices)
+        self.memory_model_id.setCurrentText(selected)
+        self.memory_api_feedback.setText(f"已获取 {len(choices)} 个模型；请选择支持对话与结构化输出的模型。")
+
+    def _memory_models_finished(self) -> None:
+        worker = self._memory_catalog_worker
+        self._memory_catalog_worker = None
+        self.memory_model_fetch.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
+
+    def save_memory_model(self) -> bool:
+        temporary = MEMORY_RUNTIME_FILE.with_suffix(".tmp")
+        try:
+            runtime = self._memory_runtime_settings()
+            if not runtime:
+                raise ValueError("本机记忆服务尚未启用")
+            model = self.memory_model_id.currentText().strip()
+            LlmSettings("siliconflow", PROVIDER_BASE_URLS["siliconflow"], model).validated()
+            if not load_key("siliconflow"):
+                raise ValueError("未找到硅基流动 API Key")
+            runtime["model"] = model
+            runtime["base_url"] = PROVIDER_BASE_URLS["siliconflow"]
+            temporary.write_text(json.dumps(runtime, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, MEMORY_RUNTIME_FILE)
+            self.memory_api_feedback.setText("记忆整理模型已保存；下次启动新记忆服务后生效。")
+            return True
+        except (OSError, ValueError) as error:
+            self.memory_api_feedback.setText(f"保存失败：{error}")
+            return False
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def open_model_routes(self) -> None:
         from model_routes_gui import ModelRoutesDialog
@@ -495,8 +665,33 @@ class Dashboard(QMainWindow):
             "当前：自定义提示词。选择人格包不会覆盖；点击“载入人格包”才会替换编辑框。"
         )
 
+    def save_persona(self) -> bool:
+        try:
+            save_settings(replace(load_settings(), system_prompt=self.prompt.toPlainText()))
+            self.update_persona_state()
+            self.statusBar().showMessage("角色设置已保存", 5000)
+            return True
+        except (OSError, ValueError) as error:
+            self.persona_state.setText(f"保存失败：{error}")
+            return False
+
+    def save_memory_setting(self) -> bool:
+        try:
+            if not legacy_memory_allowed("desktop"):
+                raise ValueError("新记忆服务已接管桌面入口，不能同时启用旧版记忆")
+            enabled = self.memory_enabled.isChecked()
+            if enabled and not load_key("siliconflow"):
+                raise ValueError("启用旧版长期记忆前，需要保存硅基流动 API Key")
+            save_settings(replace(load_settings(), memory_enabled=enabled))
+            self.memory_feedback.setText("旧版长期记忆设置已保存。")
+            self.refresh_status()
+            return True
+        except (OSError, ValueError) as error:
+            self.memory_feedback.setText(f"保存失败：{error}")
+            return False
+
     def _qq_page(self) -> QScrollArea:
-        page, column = self._page("QQ · SnowLuma", "WebUI 用于登录与配置；OneBot WebSocket 用于 QQ 消息收发。启动 SnowLuma 后，控制台可以自动等待 OneBot 就绪并连接桥接。")
+        page, column = self._page("平台连接", "在这里连接 QQ 与 SnowLuma。WebUI 用于登录和配置，OneBot WebSocket 用于消息收发。")
         service, layout = _card("服务控制", "首次使用仍须在 SnowLuma WebUI 登录机器人 QQ，并开启 OneBot WebSocket 服务端。")
         self.service_state = QLabel()
         layout.addWidget(self.service_state)
@@ -574,9 +769,49 @@ class Dashboard(QMainWindow):
         column.addStretch()
         return page
 
+    def _plugins_page(self) -> QScrollArea:
+        page, column = self._page("插件管理", "查看本机接入组件的可用状态，并进入各自的控制页面。")
+        self.plugin_states = {}
+        for key, title, detail, label, callback in (
+            ("snowluma", "SnowLuma", "QQ 登录、OneBot 消息通道", "打开平台连接", lambda: self.switch_page(PAGE_PLATFORM)),
+            ("qq_bridge", "QQ 桥接", "私聊与群聊消息收发、频率控制", "打开平台连接", lambda: self.switch_page(PAGE_PLATFORM)),
+            ("sensevoice", "SenseVoice", "本地语音识别与持续监听", "打开语音交互", lambda: self.switch_page(PAGE_VOICE)),
+            ("gpt_sovits", "GPT-SoVITS", "本地角色语音生成服务", "打开语音设置", lambda: self.switch_page(PAGE_VOICE)),
+            ("memory", "新记忆服务", "人物身份、时间线、整理与检索", "打开记忆中心", lambda: self.switch_page(PAGE_MEMORY)),
+        ):
+            card, layout = _card(title, detail)
+            status = QLabel("正在检查连接…")
+            status.setObjectName("pluginStatus")
+            layout.addWidget(status)
+            layout.addWidget(_button(label + "  →", callback))
+            self.plugin_states[key] = status
+            column.addWidget(card)
+        column.addStretch()
+        return page
+
+    def _system_page(self) -> QScrollArea:
+        page, column = self._page("系统设置", "管理桌面程序的运行方式；更多系统选项会在这里逐步加入。")
+        runtime, layout = _card("运行与窗口")
+        layout.addWidget(QLabel("关闭主窗口时会收起到系统托盘；从托盘菜单可重新打开或完全退出。"))
+        row = QHBoxLayout()
+        row.addWidget(_button("重启 QQ 与语音连接", self.restart_connections, primary=True))
+        row.addWidget(_button("打开语音窗口  ↗", self.open_voice))
+        row.addStretch()
+        layout.addLayout(row)
+        column.addWidget(runtime)
+        storage, storage_layout = _card("本机数据")
+        local_path = QLabel(str(Paths.current().conversation_root))
+        local_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        local_path.setWordWrap(True)
+        storage_layout.addWidget(QLabel("对话与旧版记忆数据目录"))
+        storage_layout.addWidget(local_path)
+        column.addWidget(storage)
+        column.addStretch()
+        return page
+
     def _logs_page(self) -> QScrollArea:
         page, column = self._page(
-            "运行过程", "查看本次启动的语音、文字、QQ 与模型调用。这里的“思考”是规划器返回的表达策略，不是模型内部推理。")
+            "运行监控", "查看本次启动的语音、文字、QQ 与模型调用。这里的“思考”是规划器返回的表达策略，不是模型内部推理。")
         card, layout = _card("本次启动的对话与调用", "内容只保存在当前程序内存中，退出后清空；新运行不写入日志文件。")
         controls = QHBoxLayout()
         self.log_filter = QComboBox()
@@ -613,22 +848,23 @@ class Dashboard(QMainWindow):
         self.voice_link_state = QLabel()
         self.voice_link_state.setWordWrap(True)
         link_layout.addWidget(self.voice_link_state)
-        link_row = QHBoxLayout()
-        self.voice_owner_qq = _line("关联的个人 QQ 号", "")
-        self.voice_owner_qq.setPlaceholderText("填写已加入私聊白名单的 QQ 号")
-        self.voice_owner_qq.setMaximumWidth(190)
-        linked = load_link(validate=False)
-        if linked is not None:
-            self.voice_owner_qq.setText(str(linked.qq_id))
-        link_row.addWidget(QLabel("你的 QQ 号"))
-        link_row.addWidget(self.voice_owner_qq)
-        link_row.addWidget(_button("关联到当前机器人", self.link_voice_owner))
-        link_row.addStretch()
-        link_layout.addLayout(link_row)
-        self.voice_link_feedback = QLabel("仅白名单中已开启个人记忆的 QQ 账号可以关联。")
-        self.voice_link_feedback.setObjectName("muted")
-        self.voice_link_feedback.setWordWrap(True)
-        link_layout.addWidget(self.voice_link_feedback)
+        if legacy_memory_allowed("desktop"):
+            link_row = QHBoxLayout()
+            self.voice_owner_qq = _line("关联的个人 QQ 号", "")
+            self.voice_owner_qq.setPlaceholderText("填写已加入私聊白名单的 QQ 号")
+            self.voice_owner_qq.setMaximumWidth(190)
+            linked = load_link(validate=False)
+            if linked is not None:
+                self.voice_owner_qq.setText(str(linked.qq_id))
+            link_row.addWidget(QLabel("你的 QQ 号"))
+            link_row.addWidget(self.voice_owner_qq)
+            link_row.addWidget(_button("关联到当前机器人", self.link_voice_owner))
+            link_row.addStretch()
+            link_layout.addLayout(link_row)
+            self.voice_link_feedback = QLabel("仅白名单中已开启个人记忆的 QQ 账号可以关联。")
+            self.voice_link_feedback.setObjectName("muted")
+            self.voice_link_feedback.setWordWrap(True)
+            link_layout.addWidget(self.voice_link_feedback)
         column.addWidget(link_card)
 
         control, layout = _card("语音对话")
@@ -843,7 +1079,7 @@ class Dashboard(QMainWindow):
             self._log(f"GPT-SoVITS Python 启动失败：{error}")
             return
         self.tts_server.setProcessEnvironment(
-            _drop_memory_admin_secrets(_tts_process_environment(base_home)))
+            _drop_memory_non_bridge_secrets(_tts_process_environment(base_home)))
         self.tts_server.setWorkingDirectory(str(ENGINE_ROOT))
         self.tts_server.start(str(interpreter), [str(ENGINE_ROOT / "api_v2.py"),
                                                   "-a", "127.0.0.1", "-p", "9880", "-c", str(config)])
@@ -886,6 +1122,8 @@ class Dashboard(QMainWindow):
             self.voice_window.voice_combo.setCurrentIndex(self.home_voice.currentIndex())
 
     def link_voice_owner(self) -> None:
+        if new_memory_selected("desktop"):
+            return
         try:
             raw = self.voice_owner_qq.text().strip()
             if not raw.isdecimal() or int(raw) <= 0:
@@ -947,10 +1185,13 @@ class Dashboard(QMainWindow):
     def refresh_home_voice_status(self) -> None:
         if not hasattr(self, "voice_link_state"):
             return
-        link = load_link()
-        self.voice_link_state.setText(
-            f"已连接：QQ{link.qq_id}" if link else
-            "尚未建立有效关联。语音目前不会读取或写入 QQ 个人档案。")
+        if new_memory_selected("desktop"):
+            self.voice_link_state.setText("新记忆服务已接管语音；QQ 与桌面身份关联在记忆中心管理。")
+        else:
+            link = load_link()
+            self.voice_link_state.setText(
+                f"已连接：QQ{link.qq_id}" if link else
+                "尚未建立有效关联。语音目前不会读取或写入 QQ 个人档案。")
         server_running = self.tts_server.state() != QProcess.ProcessState.NotRunning
         service_ready = _port_open("http://127.0.0.1:9880")
         self.tts_service_state.setText("本地服务：已就绪" if service_ready else
@@ -1013,7 +1254,9 @@ class Dashboard(QMainWindow):
 
     def switch_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
-        if index == 4 and self.home_mic.count() == 0:
+        if index == PAGE_STREAM:
+            self.chat_stream.refresh(force=True)
+        if index == PAGE_VOICE and self.home_mic.count() == 0:
             self.refresh_home_devices()
         for i, button in enumerate(self.nav):
             button.setProperty("selected", i == index)
@@ -1048,7 +1291,7 @@ class Dashboard(QMainWindow):
             settings = LlmSettings(
                 self.provider.currentData(), self.api_url.text(),
                 self.model_id.currentText().strip() or "_",
-                self.prompt.toPlainText(), self.memory_enabled.isChecked(),
+                load_settings().system_prompt, load_settings().memory_enabled,
             ).validated()
             key = self.api_key.text().strip() or load_key(settings.provider)
             if settings.provider not in {"custom", "hachimi"} and not key:
@@ -1085,13 +1328,9 @@ class Dashboard(QMainWindow):
 
     def save_model(self) -> bool:
         try:
-            settings = LlmSettings(
-                self.provider.currentData(), self.api_url.text(), self.model_id.currentText(),
-                self.prompt.toPlainText(), self.memory_enabled.isChecked(),
-            ).validated()
-            if settings.memory_enabled and not (load_key("siliconflow") or
-                                                (settings.provider == "siliconflow" and self.api_key.text().strip())):
-                raise ValueError("启用长期记忆前，请先保存硅基流动 API Key")
+            settings = replace(
+                load_settings(), provider=self.provider.currentData(),
+                base_url=self.api_url.text(), model=self.model_id.currentText()).validated()
             if self.api_key.text().strip():
                 save_key(settings.provider, self.api_key.text())
                 self.api_key.clear()
@@ -1148,12 +1387,7 @@ class Dashboard(QMainWindow):
         self.refresh_home_devices()
 
     def open_chat(self) -> None:
-        if self.chat_window is None:
-            from llm_gui import ChatWindow
-            self.chat_window = ChatWindow()
-        self.chat_window.show()
-        self.chat_window.raise_()
-        self.chat_window.activateWindow()
+        self.show_console(PAGE_CHAT)
 
     def open_curated_memory(self) -> None:
         # New curated memory system is independent of the old Mem0 manager.
@@ -1165,6 +1399,9 @@ class Dashboard(QMainWindow):
         self.curated_memory_window.activateWindow()
 
     def open_memory(self) -> None:
+        if not legacy_memory_allowed("desktop"):
+            self.statusBar().showMessage("新记忆服务已接管；旧版记忆档案暂不开放编辑", 6000)
+            return
         if self.memory_window is None:
             from memory_gui import MemoryDialog
             self.memory_window = MemoryDialog(self)
@@ -1294,7 +1531,14 @@ class Dashboard(QMainWindow):
         settings = load_settings()
         self.model_state.setText(f"模型：{settings.model}")
         self.api_state.setText("API Key：已保存" if load_key(settings.provider) else "API Key：未保存")
-        self.memory_state.setText("长期记忆：已开启" if settings.memory_enabled else "长期记忆：已关闭")
+        self.memory_state.setText(
+            "旧版长期记忆：已停用（新服务接管）" if new_memory_selected("desktop") else
+            "旧版长期记忆：已开启" if settings.memory_enabled else "旧版长期记忆：已关闭")
+        memory_online = _port_open("http://127.0.0.1:8769")
+        tts_online = _port_open("http://127.0.0.1:9880")
+        self.memory_core_state.setText("新记忆服务：可连接" if memory_online else "新记忆服务：未连接")
+        self.memory_service_state.setText("服务状态：可连接" if memory_online else "服务状态：未连接")
+        self.tts_home_state.setText("GPT-SoVITS：可连接" if tts_online else "GPT-SoVITS：未连接")
         snow_online = _port_open(SNOWLUMA_WEBUI.toString())
         onebot_online = _port_open(self.ws_url.text() if hasattr(self, "ws_url") else QqSettings().ws_url)
         bridge_managed = self.bridge.state() != QProcess.ProcessState.NotRunning
@@ -1310,6 +1554,26 @@ class Dashboard(QMainWindow):
         self.service_state.setText(f"WebUI {'可连接' if snow_online else '未连接'}   ·   OneBot 端口 {'可连接' if onebot_online else '未连接'}{progress}")
         self.snow_button.setText("停止 SnowLuma" if self.snowluma.state() != QProcess.ProcessState.NotRunning else "启动 SnowLuma")
         self.bridge_button.setText("停止 QQ 桥接" if bridge_managed else "启动 QQ 桥接")
+        plugin_status = {
+            "snowluma": "已连接 · OneBot 可用" if snow_online and onebot_online else
+                         ("WebUI 可连接 · OneBot 未就绪" if snow_online else "未连接"),
+            "qq_bridge": "已连接" if self._bridge_connected else
+                         ("运行中 · 等待连接" if bridge_managed else "未运行"),
+            "sensevoice": "模型目录已就绪 · 随语音窗口运行" if Paths.current().models_root.is_dir() else "模型目录未找到",
+            "gpt_sovits": "本地服务运行中" if tts_online else "本地服务未连接",
+            "memory": "本机服务运行中" if memory_online else "本机服务未连接",
+        }
+        for name, label in self.plugin_states.items():
+            label.setText(plugin_status[name])
+        running = any((snow_online, onebot_online, bridge_managed, tts_online, memory_online))
+        self.sidebar_service.setText("服务运行中" if running else "服务未连接")
+        if self.service_dot.property("online") != running:
+            self.service_dot.setProperty("online", running)
+            self.service_dot.style().unpolish(self.service_dot)
+            self.service_dot.style().polish(self.service_dot)
+        _, events = session_snapshot()
+        self.recent_overview.setText("\n".join(format_event(entry)[:145] for entry in events[-3:])
+                                     if events else "本次启动尚无记录")
 
     def closeEvent(self, event) -> None:
         if not self._really_quit and self.tray is not None and self.tray.isVisible():
@@ -1320,6 +1584,10 @@ class Dashboard(QMainWindow):
                 self._tray_hint_shown = True
             return
         self._closing = True
+        self.chat_page.shutdown()
+        for worker in (self._model_worker, self._memory_catalog_worker):
+            if worker is not None and worker.isRunning():
+                worker.wait()
         self.timer.stop()
         self.log_timer.stop()
         for process in (self.bridge, self.snowluma, self.tts_server):
@@ -1331,12 +1599,16 @@ class Dashboard(QMainWindow):
 
 STYLE = """
 QWidget#root, QWidget#content, QScrollArea, QStackedWidget#pages { background: #f4f6fa; color: #263247; }
+QWidget#streamPage, QWidget#streamContent, QScrollArea#streamScroll { background: #f4f6fa; color: #263247; }
 QWidget { font-family: 'Microsoft YaHei UI'; font-size: 13px; }
 QFrame#sidebar { background: #192338; color: #eef2fa; }
 QFrame#sidebar QLabel { color: #c4cede; background: transparent; }
 QFrame#sidebar QLabel#brand { color: white; font-size: 25px; font-weight: 700; }
 QFrame#sidebar QLabel#subbrand { color: #8197b8; font-size: 10px; letter-spacing: 1px; }
-QFrame#sidebar QLabel#sideNote { color: #8197b8; font-size: 11px; }
+QFrame#sidebar QLabel#navGroup { color: #8799b7; font-size: 10px; font-weight: 700; padding-left: 12px; }
+QFrame#sidebar QLabel#sidebarService { color: #cbd7e9; font-size: 12px; }
+QFrame#sidebar QLabel#serviceDot { color: #70819e; font-size: 16px; }
+QFrame#sidebar QLabel#serviceDot[online="true"] { color: #56d79b; }
 QFrame#sidebar QPushButton { background: transparent; color: #d3dbea; border: 0; border-radius: 9px; text-align: left; padding: 11px 13px; }
 QFrame#sidebar QPushButton:hover, QFrame#sidebar QPushButton[selected="true"] { background: #2d3d5b; color: white; }
 QLabel#pageTitle { font-size: 26px; font-weight: 700; color: #1e2a40; }
@@ -1344,6 +1616,36 @@ QLabel#cardTitle { font-size: 17px; font-weight: 700; color: #243149; }
 QLabel#muted { color: #66758b; }
 QFrame#card { background: white; border: 1px solid #e1e7f0; border-radius: 14px; }
 QFrame#card QLabel, QFrame#card QCheckBox { background: transparent; }
+QFrame#streamCard { background: white; border: 1px solid #e1e7f0; border-radius: 13px; }
+QFrame#streamCard QLabel, QFrame#streamThinking QLabel { background: transparent; }
+QLabel#streamMeta { color: #66758b; font-size: 11px; font-weight: 700; }
+QLabel#streamIncoming { color: #253650; font-size: 14px; }
+QLabel#streamSection { color: #365d88; font-size: 12px; font-weight: 700; }
+QLabel#streamReply { color: #263247; font-size: 14px; }
+QLabel#streamPending, QLabel#streamEmpty { color: #8491a5; }
+QFrame#streamThinking { background: #f2f6fb; border: 1px solid #e0e9f5; border-radius: 9px; }
+QLabel#streamPreview { color: #5d6e83; }
+QPushButton#streamToggle { border: 0; background: transparent; color: #4f68b9; padding: 2px 4px; }
+QPlainTextEdit#streamFull { background: #fbfcff; border: 1px solid #dce5f0; }
+QFrame#heroCard { background: #e9eefb; border: 1px solid #d5dff4; border-radius: 16px; }
+QFrame#heroCard QLabel { background: transparent; }
+QLabel#pluginStatus { color: #4c617b; font-weight: 600; }
+QWidget#chatPage, QWidget#chatContent { background: #f8fafd; }
+QFrame#chatRail { background: #eef2f8; border-right: 1px solid #dce4ef; }
+QLabel#chatRailTitle { font-size: 21px; font-weight: 700; color: #213149; }
+QListWidget#chatList { background: transparent; border: 0; outline: 0; color: #31415b; }
+QListWidget#chatList::item { padding: 12px 10px; border-radius: 8px; margin-bottom: 3px; }
+QListWidget#chatList::item:hover { background: #e2e9f6; }
+QListWidget#chatList::item:selected { background: #d4dff6; color: #23375b; }
+QScrollArea#chatScroll, QWidget#chatMessages { background: #f8fafd; }
+QFrame#chatRow { background: transparent; border: 0; }
+QFrame#chatBubble { background: white; border: 1px solid #e2e8f1; border-radius: 13px; }
+QFrame#chatBubble[speaker="user"] { background: #e3eafa; border-color: #d3def4; }
+QFrame#chatBubble QLabel { background: transparent; color: #263247; }
+QLabel#bubbleName { color: #64758e; font-size: 11px; font-weight: 700; }
+QLabel#chatWelcome { color: #8795aa; font-size: 17px; }
+QFrame#composerBox { background: white; border: 1px solid #dbe3ee; border-radius: 13px; }
+QFrame#composerBox QPlainTextEdit { border: 0; background: transparent; }
 QLineEdit, QComboBox, QPlainTextEdit, QSpinBox { background: #fbfcfe; color: #243149; border: 1px solid #cdd7e5; border-radius: 7px; padding: 7px; selection-background-color: #7386db; }
 QLineEdit:focus, QPlainTextEdit:focus { border-color: #6274cb; }
 QPushButton { background: #edf1f8; color: #30405d; border: 1px solid #dce4ef; border-radius: 8px; padding: 9px 15px; font-weight: 600; }

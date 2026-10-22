@@ -115,6 +115,8 @@ class AdminManagementTests(unittest.TestCase):
             self.user.complete_reply(identity,conversation_id=ref["conversation_id"],
                                      entry_id=ref["entry_id"],reply_id=f"reply-{self.counter}",
                                      content="我会和你继续讨论技术方案。")
+        self.core.curated.schedule(
+            conversation_id=ref["conversation_id"], person_id=person_id)
         result = self.admin.reflect_one()
         self.assertEqual(result["status"],"done", result)
         new_ids = {m["memory_id"] for m in self.admin.list_memories(person_id)} - previous

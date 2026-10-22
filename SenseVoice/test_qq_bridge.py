@@ -16,6 +16,7 @@ import qq_bridge
 from llm import LlmSettings
 from qq_bridge import Conversation, Incoming, QqBridge, QqSettings, ReplyLimiter, parse_message, spoken_reply
 from turn_planner import PlannerSettings, TurnPlan
+from zhuangfy.channels.qq.images import ImageReference, _allowed_url, _encode_jpeg
 
 
 class QqParsingTests(unittest.TestCase):
@@ -59,6 +60,44 @@ class QqParsingTests(unittest.TestCase):
         self.assertEqual(limiter.check(owner, 3701), (0, False))
         limiter.mark_sent(group_a, 100)
         self.assertEqual(limiter.check(group_b, 120), (0, True))
+
+    def test_private_and_mentioned_group_images_enter_vision_flow(self):
+        picture = {"type": "image", "data": {"file": "cache-key", "url": "https://gchat.qpic.cn/picture"}}
+        event = {"post_type": "message", "message_type": "private", "user_id": 42,
+                 "message_id": 5, "message": [picture]}
+        incoming = parse_message(event, 88, self.settings)
+        self.assertEqual(incoming.text, qq_bridge.IMAGE_ONLY_PROMPT)
+        self.assertEqual(incoming.image, ImageReference("cache-key", "https://gchat.qpic.cn/picture"))
+        self.assertEqual(incoming.image_count, 1)
+        group = {**event, "message_type": "group", "group_id": 9,
+                 "message": [{"type": "at", "data": {"qq": "88"}}, picture]}
+        self.assertIsNotNone(parse_message(group, 88, self.settings))
+        self.assertIsNone(parse_message({**group, "message": [picture]}, 88, self.settings))
+        self.assertIsNone(parse_message({**event, "user_id": 43}, 88, self.settings))
+        cq = {**event, "message": "看看这个[CQ:image,file=cache-key,url=https://gchat.qpic.cn/picture]"}
+        self.assertEqual(parse_message(cq, 88, self.settings).image.file, "cache-key")
+        self.assertEqual(parse_message({**event, "message": [picture, picture]}, 88, self.settings).image_count, 2)
+
+    def test_qq_image_download_host_is_restricted(self):
+        self.assertTrue(_allowed_url("https://multimedia.nt.qq.com.cn/image"))
+        self.assertTrue(_allowed_url("http://gchat.qpic.cn/gchatpic_new/image"))
+        self.assertFalse(_allowed_url("http://127.0.0.1/admin"))
+        self.assertFalse(_allowed_url("https://qpic.cn.evil.example/image"))
+        self.assertFalse(_allowed_url("file:///C:/secret"))
+
+    def test_png_is_converted_to_bounded_jpeg_for_vision(self):
+        from PySide6.QtCore import QBuffer, QIODevice
+        from PySide6.QtGui import QImage
+        picture = QImage(32, 24, QImage.Format.Format_ARGB32)
+        picture.fill(0x00FFFFFF)
+        source = QBuffer()
+        source.open(QIODevice.OpenModeFlag.WriteOnly)
+        self.assertTrue(picture.save(source, "PNG"))
+        encoded = _encode_jpeg(bytes(source.data()))
+        self.assertTrue(encoded.startswith(b"\xff\xd8"))
+        self.assertLess(len(encoded), 2_500_000)
+        with self.assertRaisesRegex(ValueError, "尺寸无效"):
+            _encode_jpeg(b"not an image")
 
     def test_settings_reject_remote_endpoint_and_non_finite_limits(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -132,6 +171,94 @@ class QqParsingTests(unittest.TestCase):
 
 
 class QqSocketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_snowluma_image_action_refreshes_download_url(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+        bridge.action = AsyncMock(return_value={"url": "https://gchat.qpic.cn/new-picture"})
+        with patch.object(qq_bridge, "image_data_url", return_value="data:image/jpeg;base64,dGVzdA==") as fetch:
+            result = await bridge._image_data_url(ImageReference("cache-key", "https://gchat.qpic.cn/old"))
+        self.assertEqual(result, "data:image/jpeg;base64,dGVzdA==")
+        bridge.action.assert_awaited_once_with("get_image", {"file": "cache-key"})
+        fetch.assert_called_once_with("https://gchat.qpic.cn/new-picture")
+
+    async def test_image_runs_vision_then_reply_with_visual_context(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        image = ImageReference("cache-key", "https://gchat.qpic.cn/picture")
+        incoming = Incoming("private", 42, None, "image-1", "这是什么？", image, 1)
+        state = Conversation(incoming, pending=[incoming.text], pending_images=[image])
+        bridge.send_reply = AsyncMock(return_value=True)
+        bridge._image_data_url = AsyncMock(return_value="data:image/jpeg;base64,dGVzdA==")
+        calls = []
+
+        def fake_stage(stage, _settings, _key, _history, _text, **kwargs):
+            calls.append((stage, kwargs))
+            return "图中是一只猫" if stage == "vision" else "这是一只猫。"
+
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "can_attempt_stage", return_value=True), \
+             patch.object(qq_bridge, "invoke_stage", side_effect=fake_stage):
+            await bridge.process(state)
+        self.assertEqual([item[0] for item in calls], ["vision", "reply"])
+        self.assertIn("data:image/jpeg", calls[0][1]["image_data_url"])
+        self.assertEqual(calls[1][1]["visual_context"], "图中是一只猫")
+        self.assertEqual(bridge.send_reply.await_args.args[1], "这是一只猫。")
+        self.assertEqual(state.context.history[-1]["content"], "这是一只猫。")
+
+    async def test_image_only_is_treated_as_a_shared_picture(self):
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        image = ImageReference("cache-key", "https://gchat.qpic.cn/picture")
+        incoming = Incoming("private", 42, None, "image-2", qq_bridge.IMAGE_ONLY_PROMPT, image, 1)
+        state = Conversation(incoming, pending=[incoming.text], pending_images=[image])
+        bridge.send_reply = AsyncMock(return_value=True)
+        bridge._image_data_url = AsyncMock(return_value="data:image/jpeg;base64,dGVzdA==")
+        calls = []
+
+        def fake_stage(stage, _settings, _key, _history, user_text, **kwargs):
+            calls.append((stage, user_text, kwargs))
+            return "粉色背景、玫瑰和爱心营造出轻快的亲近感" if stage == "vision" else "这朵玫瑰像是特意留给人的。"
+
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "can_attempt_stage", return_value=True), \
+             patch.object(qq_bridge, "invoke_stage", side_effect=fake_stage):
+            await bridge.process(state)
+        self.assertEqual(calls[0][1], "给你看看这张图。")
+        self.assertIn("画面的主体", calls[0][2]["system_prompt"])
+        self.assertIn("像回应朋友分享", calls[1][2]["emotion_context"])
+        self.assertEqual(bridge.send_reply.await_args.args[1], "这朵玫瑰像是特意留给人的。")
+
+    async def test_image_failure_retries_same_image(self):
+        from model_routes import ModelRoutesFailed
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         private_cooldown_seconds=0, quiet_seconds=0))
+        image = ImageReference("cache-key", "https://gchat.qpic.cn/picture")
+        incoming = Incoming("private", 42, None, "image-1", "这是什么？", image, 1)
+        state = Conversation(incoming, pending=[incoming.text], pending_images=[image])
+        bridge.send_reply = AsyncMock(return_value=True)
+        bridge._image_data_url = AsyncMock(return_value="data:image/jpeg;base64,dGVzdA==")
+        outputs = [ModelRoutesFailed("vision", [("vision_1", "网络错误")]),
+                   "图中是一只猫", "这是一只猫。"]
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "can_attempt_stage", return_value=True), \
+             patch.object(qq_bridge, "invoke_stage", side_effect=outputs):
+            await bridge.process(state)
+            self.assertEqual(state.last_failed_image, image)
+            bridge.send_reply.assert_not_awaited()
+            state.incoming = Incoming("private", 42, None, "retry-1", "/retry")
+            state.pending = ["/retry"]
+            await bridge.process(state)
+        self.assertIsNone(state.last_failed_image)
+        bridge.send_reply.assert_awaited_once()
+        self.assertEqual(bridge.send_reply.await_args.args[1], "这是一只猫。")
+        self.assertEqual(bridge._image_data_url.await_count, 2)
+
     async def test_planner_voice_choice_routes_only_short_private_reply(self):
         with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings(enabled=True)):
             bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
@@ -166,7 +293,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
             await bridge.process(state)
             self.assertEqual(state.last_failed_generation, "原始问题")
             self.assertFalse(state.context.history)
-            self.assertIn("/retry", bridge.send_reply.await_args.args[1])
+            bridge.send_reply.assert_not_awaited()
             state.incoming = Incoming("private", 42, None, "a2", "/retry")
             state.pending = ["/retry"]
             await bridge.process(state)
@@ -174,7 +301,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(state.context.history[-2]["content"], "原始问题")
             self.assertEqual(state.context.history[-1]["content"], "备用模型恢复了")
             self.assertEqual(model.call_count, 2)
-        self.assertEqual(bridge.send_reply.await_count, 2)
+        self.assertEqual(bridge.send_reply.await_count, 1)
 
     async def test_stage_direction_is_removed_before_snowluma_and_memory(self):
         with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from llm import ROOT
 from member_memory import MemberKey, MemberMemoryStore, reflect_member
+from zhuangfy.memory.routing import legacy_memory_allowed
 from turn_planner import PlannerSettings
 
 
@@ -82,12 +83,16 @@ def save_link(bot_id: int, qq_id: int, path: Path = LINK_FILE) -> OwnerLink:
 
 
 def memory_snapshot(link: OwnerLink) -> str:
+    if not legacy_memory_allowed("desktop"):
+        return ""
     if not MEMORY_FILE.is_file():
         return ""
     return MemberMemoryStore(MEMORY_FILE).context_for(link.key)
 
 
 def record_voice_turn(link: OwnerLink, user: str, answer: str, settings, api_key: str) -> int:
+    if not legacy_memory_allowed("desktop"):
+        return 0
     store = MemberMemoryStore(MEMORY_FILE)
     count = store.record_turn(link.key, user, answer)
     if count >= 6 and (api_key or settings.provider == "custom"):

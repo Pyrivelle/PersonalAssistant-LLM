@@ -121,8 +121,7 @@ class HttpMemoryTests(unittest.TestCase):
         self.assertEqual(self.client.complete_reply(
             aid, conversation_id=user["conversation_id"], entry_id=user["entry_id"],
             reply_id="reply1", content="我们可以先做剔除实验。")["entry_id"], reply["entry_id"])
-        job = self.core.curated.job_status(reply["reflection_job_id"])
-        self.assertEqual(job[0], "pending")
+        self.assertIsNone(reply["reflection_job_id"])
 
     def test_delivery_is_bound_to_original_channel_even_if_person_is_shared(self):
         alice, qq = self._person("甲", "alice")

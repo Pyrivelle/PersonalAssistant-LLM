@@ -110,8 +110,8 @@ class MemoryCore:
         # A lack of curation consent must never erase or prevent a valid
         # delivered reply already recorded to Timeline.
         try:
-            job_id = self.curated.schedule(conversation_id=conversation_id,
-                                           person_id=person_id)
+            job_id = self.curated.schedule_if_ready(conversation_id=conversation_id,
+                                                    person_id=person_id)
         except PermissionError:
             job_id = None
         return {"entry_id": confirmed.entry_id, "state": confirmed.state,
@@ -155,6 +155,9 @@ class MemoryCore:
         sync = self.project()
         return {"status": result.status, "job_id": result.job_id,
                 "created": len(result.created_memory_ids), "index_failures": sync["failed"]}
+
+    def schedule_due_reflections(self) -> int:
+        return self.curated.schedule_due()
 
     def list_people(self) -> list[dict]:
         with self.database.connection() as db:
