@@ -36,6 +36,7 @@ from zhuangfy.agent_v2.runtime import AgentCycleEngine
 from zhuangfy.agent_v2.scheduler import UnifiedTurnScheduler, SchedulerConfig
 from zhuangfy.agent_v2.turn_trigger import TurnEvent
 from zhuangfy.agent_v2.focus_runtime import QqFocusRuntime
+from zhuangfy.agent_v2.focus_checkpoint import FocusCheckpointStore
 from zhuangfy.agent_v2.skills import build_skill_runtime
 from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
@@ -88,6 +89,8 @@ class QqSettings:
     group_reply_frequency: float = 0.45
     focus_mode: str = "off"  # off / shadow / active
     focus_groups: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    focus_checkpoint_enabled: bool = False
+    focus_checkpoint_account: str = ""
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "QqSettings":
@@ -129,6 +132,15 @@ class QqSettings:
         focus_mode = raw.get("focus_mode", "off")
         if focus_mode not in ("off", "shadow", "active"):
             raise ValueError("focus_mode 必须是 off/shadow/active")
+        checkpoint_enabled = raw.get("focus_checkpoint_enabled", False)
+        checkpoint_account = raw.get("focus_checkpoint_account", "")
+        if type(checkpoint_enabled) is not bool:
+            raise ValueError("focus_checkpoint_enabled 必须是布尔值")
+        if not isinstance(checkpoint_account, str):
+            raise ValueError("focus_checkpoint_account 必须是字符串")
+        if checkpoint_enabled and (focus_mode != "active"
+                                   or not re.fullmatch(r"[a-zA-Z0-9_-]{3,60}", checkpoint_account)):
+            raise ValueError("持久 Focus 必须在 active 模式下设置唯一 bot 账号标签")
         raw_focus_groups = raw.get("focus_groups", [])
         if not isinstance(raw_focus_groups, list) or len(raw_focus_groups) > 12:
             raise ValueError("focus_groups 必须是最多 12 个关注组")
@@ -163,7 +175,9 @@ class QqSettings:
         return cls(url, private_ids, groups,
                    voice_private_ids=voice_ids, message_debounce_mode=mode,
                    passive_group_ids=passive_ids, group_reply_frequency=float(frequency),
-                   focus_mode=focus_mode, focus_groups=tuple(focus_groups), **values)
+                   focus_mode=focus_mode, focus_groups=tuple(focus_groups),
+                   focus_checkpoint_enabled=checkpoint_enabled,
+                   focus_checkpoint_account=checkpoint_account, **values)
 
 
 MAX_VOICE_CHARS = 160
@@ -409,7 +423,13 @@ class QqBridge:
         self.turn_scheduler = UnifiedTurnScheduler(
             SchedulerConfig(group_frequency=settings.group_reply_frequency))
         self.generation_lock = asyncio.Lock()
-        self.focus_runtime = QqFocusRuntime(settings.focus_mode, settings.focus_groups)
+        checkpoint = (FocusCheckpointStore(ROOT / "private_state" / "qq_focus.sqlite3")
+                      if settings.focus_checkpoint_enabled else None)
+        self.focus_runtime = QqFocusRuntime(
+            settings.focus_mode, settings.focus_groups,
+            checkpoint_store=checkpoint,
+            instance_id=f"qq:{settings.focus_checkpoint_account}"
+                        if checkpoint is not None else "")
         self.send_lock = asyncio.Lock()
         self.next_send_at = 0.0
         # Persistence is separate from Mem0 and only enabled for explicitly
