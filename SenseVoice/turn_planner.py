@@ -34,6 +34,8 @@ class PlannerSettings:
     agent_v2_allow_silence_group: bool = False
     agent_v2_wait_max_seconds: int = 8
     agent_v2_tools_enabled: bool = False
+    agent_v2_max_rounds: int = 4
+    agent_v2_max_tools: int = 2
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
@@ -63,13 +65,19 @@ class PlannerSettings:
         silent_group = raw.get("agent_v2_allow_silence_group", False)
         wait_max = raw.get("agent_v2_wait_max_seconds", 8)
         tools_enabled = raw.get("agent_v2_tools_enabled", False)
+        max_rounds = raw.get("agent_v2_max_rounds", 4)
+        max_tools = raw.get("agent_v2_max_tools", 2)
         if any(type(item) is not bool for item in (v2_enabled, silent_private, silent_group, tools_enabled)):
             raise ValueError("Agent V2 开关必须是布尔值")
         if type(wait_max) is not int or not 1 <= wait_max <= 12:
             raise ValueError("Agent V2 等待上限必须是 1–12 秒")
+        if type(max_rounds) is not int or not 1 <= max_rounds <= 8:
+            raise ValueError("agent_v2_max_rounds 必须在 1–8")
+        if type(max_tools) is not int or not 0 <= max_tools <= 6:
+            raise ValueError("agent_v2_max_tools 必须在 0–6")
         return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop,
                    frozenset(memory_ids), skill, v2_enabled, silent_private,
-                   silent_group, wait_max, tools_enabled)
+                   silent_group, wait_max, tools_enabled, max_rounds, max_tools)
 
 
 @dataclass(frozen=True)
