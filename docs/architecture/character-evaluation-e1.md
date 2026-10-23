@@ -96,3 +96,29 @@ python scripts/character_e1_report.py --responses build/e1-ccv2.json --reviews b
 E1 中的 L0–L3 **是合成的评估条件**，不是自动计算出来的用户好感度，也不会自动写入任何真实联系人档案。R1-A 后续可增加：经用户明确接受的亲近风格、熟悉程度视图与可撤销的隐私策略；R1-B 从获授权的真实 Timeline/Curator 中提炼共享经历及未完成话题。关系层级不能变相授予工具权限或访问群友的私聊。
 
 等 R1 建好后，用 E1 同一批固定测试比较：L0 不能越界、L2 能自然关怀、L3 可以适度表达私心、不同阶段表达存在差异但独立价值判断一致。后续再对“官方资料核验”和“语义层面硬性违规”增加更强的评审能力。
+
+
+## 手动触发 GitHub Actions 真实模型评测（云端）
+
+工作流：\`.github/workflows/character-e1-real.yml\`。只响应 \`workflow_dispatch\`，**不会因普通 push / PR 消耗模型费用**。该工作流必须进入 GitHub 仓库**默认分支 main**，才会出现在 Actions 的手动运行列表里；仅在未合并的功能分支上提交尚无法在界面直接点击 Run workflow。
+
+### 一次性配置（仓库所有者操作）
+
+1. 从 ZhuangFY 本地模型设置界面确认当前调用的**服务商**和**完整 Model ID**。GitHub 云端 Runner 无法自动读取你自己电脑里 \`SenseVoice/llm_settings.json\` 或 \`.env.local\`。
+2. 在 GitHub 仓库打开 \`Settings → Secrets and variables → Actions → New repository secret\`，新建唯一名称为 **\`ZHUANGFY_E1_API_KEY\`** 的 Secret，值为对应云服务商的 API Key。**不要贴入 issue、PR、聊天消息、工作流参数或仓库文件。**
+3. 合并包含该 workflow 的 PR 后，在 \`Actions → Character E1 - Real Model (manual) → Run workflow\` 中选择分支 \`main\`，并填写：
+   - \`provider\`：\`siliconflow\`、\`deepseek\`、\`kimi_cn\`、\`kimi_global\` 或 \`hachimi\`（请选择与 Secret 匹配的服务商；这批未接入任意 Custom Base URL）；
+   - \`model\`：来自 ZhuangFY 实际配置的**完整模型 ID**；
+   - \`variant\`：\`v1\`、\`ccv2\` 或 \`ccv2_ckv1\`；
+   - \`cases\`：建议首次选 **3**，通过后再选 **10** 或 **32**。
+4. 运行结束后进入对应 Actions Run 的 **Summary**，页面下方 **Artifacts → character-e1-real-report** 下载 ZIP，解压并打开 \`report.html\`。包含 \`model-capture.json\`、\`details.json\`、\`summary.md\` 和人工打分模板；部分模型请求失败时也会尝试上传已经捕获的结果。
+
+### 可比性和安全限制
+
+- 当前手动流程调用的是**真实的云端 Replyer 模型**，并非手写示例；不过仍然不执行生产 QQ/Planner 的完整工具和消息投递链。对主动静默、提醒是否真的执行等，应在后续事件轨迹级别测试。
+- GitHub Actions 云端运行时统一加载本仓库版本化的 \`resources/personas/zhuang_fangyi_v1/prompt.md\`，并按所选版本注入 V1/CCV2/CKV1 规则；**不会自动带入本地自行编辑的私人人格 Prompt**。若希望完全复刻本地自定义人格，需要另行设计专用的受控配置传输，不应把私密聊天或凭据提交到仓库。
+- 工作流使用固定的官方 API 域名与选定的 Model ID；不会读取 \`model_routes.json\` 的其他候选，更不会自动跨模型 fallback。由此可避免名义上测试模型 A，实际回退到模型 B。
+- \`ZHUANGFY_E1_API_KEY\` 只在工作流环境中读取，不写入输出报告、磁盘配置或 Actions Summary。使用普通云服务商需要有效的、可能计费的 API 密钥；仓库人员可能有权限下载结果 Artifact，请坚持仅用**合成测试场景**。
+- 报告不自动生成“模型还原度得分”。\`hard_failures\` 只检测题目声明的禁用字面串；自然程度与人物性格需通过 \`review-template.json\` 完成独立人工评阅。
+- 每次真实评测要注意产生的模型调用成本与时间。工作流只手动执行，含 3/10/32 三种明确上限，最大运行时限 65 分钟。保存的报告 Artifact 默认保留 14 天。
+
