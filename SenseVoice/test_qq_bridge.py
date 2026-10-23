@@ -442,6 +442,34 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(state.task, timeout=3)
         self.assertEqual(len(bridge.conversations), 1)
 
+    async def test_opted_in_passive_group_can_generate_one_reply(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        settings = QqSettings(allowed_group_ids=frozenset({9}),
+                              passive_group_ids=frozenset({9}),
+                              group_reply_frequency=1.0,
+                              quiet_seconds=0, group_cooldown_seconds=0)
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(settings)
+        bridge.bot_id = 88
+        bridge.send_reply = AsyncMock(return_value=True)
+        event = {"post_type":"message", "message_type":"group",
+                 "group_id":9, "user_id":42, "message_id":601,
+                 "message":[{"type":"text","data":{"text":"大家觉得这个技术怎么样？"}}]}
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", return_value=PlanDecision(
+                 action="reply", confidence=.98)), \
+             patch.object(qq_bridge, "invoke_stage", return_value="我觉得值得试试。"):
+            self.assertTrue(bridge.accept(event))
+            state = bridge.conversations["bot:88:group:9"]
+            await asyncio.wait_for(state.task, timeout=3)
+        bridge.send_reply.assert_awaited_once()
+        self.assertEqual(len(state.context.history), 2)
+        self.assertEqual(bridge.turn_scheduler.metrics("qq:88:group:9",
+                         now=__import__("time").monotonic())["actual_replies"], 1.0)
+        self.assertTrue(any(is_bot for _, is_bot in state.group_activity))
+
     async def test_v2_multi_round_tools_feed_receipt_to_replyer(self):
         from zhuangfy.agent_v2.planner import PlanDecision
         with patch.object(qq_bridge.PlannerSettings, "load",
@@ -468,6 +496,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
             await bridge.process(state)
         self.assertEqual(len(requests), 2)
         self.assertIn("calculator.evaluate", requests[0]["available_tools"])
+        self.assertIn("expression", requests[0]["tool_catalog"])
         self.assertIn("25", requests[1]["tool_feedback"])
         self.assertIn("25", reply_model.call_args.kwargs["context_notes"])
         bridge.send_reply.assert_awaited_once()
