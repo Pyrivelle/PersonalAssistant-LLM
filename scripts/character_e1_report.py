@@ -26,7 +26,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--responses", type=Path,
         default=ROOT / "resources" / "evaluation" / "character_e1_demo_responses.json")
     parser.add_argument("--baseline", type=Path, help="Optional comparison response bundle")
-    parser.add_argument("--reviews", type=Path, help="Optional human review scores")
+    parser.add_argument("--reviews", type=Path, help="Optional current-version human review scores")
+    parser.add_argument("--baseline-reviews", type=Path, help="Optional baseline human review scores")
     parser.add_argument("--out", type=Path, default=ROOT / "build" / "character-e1-report")
     parser.add_argument("--require-full", action="store_true")
     parser.add_argument("--fail-on-hard", action="store_true")
@@ -38,7 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.baseline:
         base_replies, base_metadata = load_responses(args.baseline, cases)
         report["comparison"] = compare_reports(
-            report, audit(cases, base_replies, base_metadata))
+            report, audit(cases, base_replies, base_metadata,
+                          load_reviews(args.baseline_reviews, cases)))
     write_reports(report, cases, args.out)
     info = report["summary"]
     print(f"E1: source={report['source']} variant={report['variant']} "
