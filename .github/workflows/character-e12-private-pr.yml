@@ -84,7 +84,7 @@ jobs:
             --provider "$E12_PROVIDER" \
             --model "$E12_MODEL" \
             --max-cases "$E12_CASES" \
-            --relationship-tier "$E12_RELATION" \
+            --relationship-tier "${E12_RELATION:-unassigned}" \
             --out build/e12-private \
             --allow-network $(if [[ "$E12_EVAL_EVENTS" == "true" ]]; then echo "--evaluate-events"; fi)
       - name: Publish diagnostic summary
