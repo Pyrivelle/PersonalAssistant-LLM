@@ -179,7 +179,8 @@ class ChatWorker(QThread):
                 from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
                 guidance = behavior_r1(self.settings.system_prompt, self.message, channel="chat").guidance
                 if guidance:
-                    emotion_prompt += "\n" + guidance
+                    # Model client caps emotion_context at 2000 chars: put R1 first.
+                    emotion_prompt = guidance + "\n" + emotion_prompt
             if planner_config.character_knowledge_v1_enabled:
                 try:
                     found = retrieve_character_knowledge(
