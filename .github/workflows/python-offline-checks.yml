@@ -22,7 +22,7 @@ jobs:
       - name: A1 through A4 offline agent tests
         env:
           PYTHONPATH: src
-        run: python -m unittest -v tests.unit.test_agent_v2_foundation tests.unit.test_agent_v2_planner_replyer tests.unit.test_agent_v2_cycle_gate
+        run: python -m unittest -v tests.unit.test_agent_v2_foundation tests.unit.test_agent_v2_planner_replyer tests.unit.test_agent_v2_cycle_gate tests.unit.test_agent_v2_scheduler_tools
 
   test-context-and-qq:
     runs-on: ubuntu-latest

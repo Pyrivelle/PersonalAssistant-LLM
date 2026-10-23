@@ -1,0 +1,92 @@
+"""Offline Agent V2 scheduler, tools and event admission regressions."""
+import unittest
+
+from zhuangfy.agent_v2.scheduler import SchedulerConfig, UnifiedTurnScheduler
+from zhuangfy.agent_v2.turn_trigger import TurnEvent
+from zhuangfy.agent_v2.tools import build_builtin_registry
+from zhuangfy.agent_v2.runtime import AgentCycleEngine
+from zhuangfy.agent_v2.planner import PlanDecision
+
+
+def group_event(mid="1", directed=False):
+    return TurnEvent("qq:bot:group:9", mid, "message", "group",
+                     text="今天要不要继续聊下去？", directed=directed)
+
+
+class SchedulerTests(unittest.TestCase):
+    def test_directed_message_and_wait_continuation(self):
+        scheduler = UnifiedTurnScheduler(SchedulerConfig(group_frequency=0.0))
+        self.assertEqual(scheduler.decide(group_event("a", True), now=1).decision, "trigger")
+        self.assertEqual(scheduler.decide(group_event("a", True), now=2).decision, "ignore")
+        self.assertEqual(scheduler.decide(group_event("b"), now=3).decision, "hold")
+        self.assertEqual(scheduler.decide(TurnEvent("qq:bot:private:42", "p", "message",
+                    "private", text="你好"), now=3).decision, "trigger")
+        self.assertEqual(scheduler.decide(TurnEvent("qq:bot:group:9", "tool", "tool_result",
+                    "group", parent_turn_active=True), now=3).decision, "trigger")
+
+    def test_group_frequency_and_backoff(self):
+        scheduler = UnifiedTurnScheduler(SchedulerConfig(group_frequency=1.0,
+                    idle_backoff_start=1, idle_backoff_base_seconds=2.0))
+        self.assertEqual(scheduler.decide(group_event("a"), now=100).decision, "trigger")
+        scheduler.record_cycle("qq:bot:group:9", now=100, action="stop", group=True)
+        self.assertEqual(scheduler.decide(group_event("b"), now=101).decision, "delay")
+        self.assertEqual(scheduler.decide(group_event("b"), now=103).decision, "trigger")
+        scheduler.record_cycle("qq:bot:group:9", now=103, action="reply", delivered=True, group=True)
+        self.assertEqual(scheduler.metrics("qq:bot:group:9", now=104)["actual_replies"], 1.0)
+
+    def test_debounce_precedes_admission_and_permission(self):
+        scheduler = UnifiedTurnScheduler()
+        self.assertEqual(scheduler.decide(group_event("a", True), now=1,
+                                         debounce_remaining=2).decision, "delay")
+        self.assertEqual(scheduler.decide(group_event("a", True), now=3).decision, "trigger")
+        self.assertEqual(scheduler.decide(TurnEvent("qq:bot:group:9", "x",
+                        "message", "group", authorized=False), now=3).decision, "ignore")
+        with self.assertRaises(ValueError):
+            SchedulerConfig(group_frequency=float("inf"))
+
+
+class ToolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_builtins_return_verified_receipts(self):
+        reg = build_builtin_registry()
+        self.assertEqual(set(reg.public_names(scope="group")),
+                         {"calculator.evaluate", "clock.utc_now"})
+        result = await reg.invoke("calculator.evaluate", {"expression":"2*(3+4)/7"},
+                                  scope="group")
+        self.assertTrue(result.success)
+        self.assertIn("2", result.summary)
+        clock = await reg.invoke("clock.utc_now", {}, scope="private")
+        self.assertTrue(clock.success)
+        self.assertIn("UTC", clock.summary)
+
+    async def test_unknown_and_unsafe_expressions_are_rejected(self):
+        reg = build_builtin_registry()
+        for expression in ["__import__('os').system('echo hi')", "2**100000",
+                           "[1,2]", "1/0", "1e300"]:
+            with self.subTest(expression=expression):
+                result = await reg.invoke("calculator.evaluate",
+                                          {"expression":expression}, scope="private")
+                self.assertFalse(result.success)
+        denied = await reg.invoke("mijia.turn_on", {"device":"x"}, scope="private")
+        self.assertFalse(denied.success)
+
+    async def test_live_planner_tool_then_reply(self):
+        reg = build_builtin_registry()
+        steps = []
+        async def planner(receipts):
+            steps.append(tuple(receipts))
+            if not receipts:
+                return PlanDecision(action="tool", confidence=.95,
+                                    tool_name="calculator.evaluate",
+                                    tool_arguments={"expression":"10+15"})
+            return PlanDecision(action="reply", confidence=.95,
+                                reply_act="告知真实计算结果")
+        result = await AgentCycleEngine().run(planner, registry=reg,
+                                              allow_tools=True, scope="private")
+        self.assertEqual(result.action, "reply")
+        self.assertEqual(result.rounds, 2)
+        self.assertIn("25", result.tool_feedback())
+        self.assertEqual(len(steps), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

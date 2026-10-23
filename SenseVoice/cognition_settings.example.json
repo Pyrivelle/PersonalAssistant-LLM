@@ -8,5 +8,8 @@
   "agent_v2_enabled": false,
   "agent_v2_allow_silence_private": false,
   "agent_v2_allow_silence_group": false,
-  "agent_v2_wait_max_seconds": 8
+  "agent_v2_wait_max_seconds": 8,
+  "agent_v2_tools_enabled": false,
+  "agent_v2_max_rounds": 4,
+  "agent_v2_max_tools": 2
 }

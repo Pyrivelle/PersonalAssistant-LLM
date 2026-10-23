@@ -44,6 +44,26 @@ class QqParsingTests(unittest.TestCase):
         self.assertIsNone(parse_message({**group, "message": "没有艾特"}, 88, self.settings))
         self.assertEqual(parse_message({**group, "message": "[CQ:at,qq=88] 你好"}, 88, self.settings).text, "你好")
 
+    def test_passive_group_requires_explicit_allowlist(self):
+        settings = QqSettings(allowed_group_ids=frozenset({9}),
+                              passive_group_ids=frozenset({9}))
+        group = {"post_type": "message", "message_type": "group",
+                 "group_id": 9, "user_id": 43, "message_id": 1,
+                 "message": [{"type": "text", "data": {"text": "下午好"}}]}
+        parsed = parse_message(group, 88, settings)
+        self.assertIsNotNone(parsed)
+        self.assertFalse(parsed.directed)
+        self.assertIsNone(parse_message(group, 88, self.settings))
+        self.assertIsNone(parse_message({**group, "group_id": 10}, 88, settings))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            for values in ({"allowed_group_ids": [9], "passive_group_ids": [10]},
+                           {"group_reply_frequency": 1.5},
+                           {"group_reply_frequency": "NaN"}):
+                path.write_text(json.dumps(values), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    QqSettings.load(path)
+
     def test_optional_agent_v2_debounce_setting(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "qq_settings.json"
@@ -389,6 +409,119 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.partial_replies)
         self.assertEqual(len(state.context.history), 2)
         self.assertEqual(state.context.history[0]["content"], incoming.text)
+
+    async def test_passive_group_frequency_gate_holds_without_calling_llm(self):
+        # Passive groups are opt-in and never enter the legacy always-reply path.
+        base = QqSettings(allowed_group_ids=frozenset({9}),
+                          passive_group_ids=frozenset({9}),
+                          group_reply_frequency=0.0, quiet_seconds=0,
+                          group_cooldown_seconds=0)
+        message = {"post_type": "message", "message_type": "group",
+                   "group_id": 9, "user_id": 42, "message_id": 501,
+                   "message": [{"type": "text", "data": {"text": "你们好"}}]}
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings()):
+            legacy = QqBridge(base)
+        legacy.bot_id = 88
+        self.assertFalse(legacy.accept(message))
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(base)
+        bridge.bot_id = 88
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.object(qq_bridge, "plan_turn_v2") as planner:
+            self.assertTrue(bridge.accept(message))
+            state = bridge.conversations["bot:88:group:9"]
+            await asyncio.wait_for(state.task, timeout=3)
+        planner.assert_not_called()
+        bridge.send_reply.assert_not_awaited()
+        self.assertTrue(state.group_recent)
+        self.assertFalse(state.context.history)
+        # Different senders must share one group conversation identity.
+        self.assertTrue(bridge.accept({**message, "user_id": 43, "message_id": 502}))
+        await asyncio.wait_for(state.task, timeout=3)
+        self.assertEqual(len(bridge.conversations), 1)
+
+    async def test_opted_in_passive_group_can_generate_one_reply(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        settings = QqSettings(allowed_group_ids=frozenset({9}),
+                              passive_group_ids=frozenset({9}),
+                              group_reply_frequency=1.0,
+                              quiet_seconds=0, group_cooldown_seconds=0)
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(settings)
+        bridge.bot_id = 88
+        bridge.send_reply = AsyncMock(return_value=True)
+        event = {"post_type":"message", "message_type":"group",
+                 "group_id":9, "user_id":42, "message_id":601,
+                 "message":[{"type":"text","data":{"text":"大家觉得这个技术怎么样？"}}]}
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", return_value=PlanDecision(
+                 action="reply", confidence=.98)), \
+             patch.object(qq_bridge, "invoke_stage", return_value="我觉得值得试试。"):
+            self.assertTrue(bridge.accept(event))
+            state = bridge.conversations["bot:88:group:9"]
+            await asyncio.wait_for(state.task, timeout=3)
+        bridge.send_reply.assert_awaited_once()
+        self.assertEqual(len(state.context.history), 2)
+        self.assertEqual(bridge.turn_scheduler.metrics("qq:88:group:9",
+                         now=__import__("time").monotonic())["actual_replies"], 1.0)
+        self.assertTrue(any(is_bot for _, is_bot in state.group_activity))
+
+    async def test_v2_multi_round_tools_feed_receipt_to_replyer(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       agent_v2_tools_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+        incoming = Incoming("private", 42, None, "calc-1", "十加十五是多少？")
+        state = Conversation(incoming, pending=[incoming.text])
+        bridge.send_reply = AsyncMock(return_value=True)
+        requests = []
+        def planner(*args, **kwargs):
+            requests.append(kwargs)
+            if not kwargs.get("tool_feedback"):
+                return PlanDecision(action="tool", confidence=.96,
+                                    tool_name="calculator.evaluate",
+                                    tool_arguments={"expression":"10+15"})
+            return PlanDecision(action="reply", confidence=.96,
+                                social_intent="计算并回答")
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", side_effect=planner), \
+             patch.object(qq_bridge, "invoke_stage", return_value="结果是 25。") as reply_model:
+            await bridge.process(state)
+        self.assertEqual(len(requests), 2)
+        self.assertIn("calculator.evaluate", requests[0]["available_tools"])
+        self.assertIn("expression", requests[0]["tool_catalog"])
+        self.assertIn("25", requests[1]["tool_feedback"])
+        self.assertIn("25", reply_model.call_args.kwargs["context_notes"])
+        bridge.send_reply.assert_awaited_once()
+        self.assertEqual(state.context.history[-1]["content"], "结果是 25。")
+
+    async def test_v2_disabled_tools_never_execute_device_actions(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       agent_v2_tools_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+        incoming = Incoming("private", 42, None, "device-1", "打开我的灯")
+        state = Conversation(incoming, pending=[incoming.text])
+        bridge.send_reply = AsyncMock(return_value=True)
+        bridge.tool_registry.invoke = AsyncMock()
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", return_value=PlanDecision(
+                 action="tool", confidence=.96, tool_name="mijia.turn_on",
+                 tool_arguments={"device":"lamp"})), \
+             patch.object(qq_bridge, "invoke_stage", return_value="还没有接入控制台灯的工具。"):
+            await bridge.process(state)
+        bridge.tool_registry.invoke.assert_not_awaited()
+        bridge.send_reply.assert_awaited_once()
 
     async def test_agent_v2_planner_wait_then_reply_once(self):
         from zhuangfy.agent_v2.planner import PlanDecision
