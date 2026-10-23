@@ -99,7 +99,17 @@ def load_responses(path: Path, cases: tuple[Case, ...]) -> tuple[dict[str, str],
                 or not 1 <= len(row["response"]) <= 12000):
             raise ValueError("Unknown, duplicated or malformed E1 response")
         mapping[row["case_id"]] = row["response"]
-    return mapping, {"source": data["source"], "variant": data["variant"]}
+    capture_info = data.get("capture_info", {})
+    if (not isinstance(capture_info, dict)
+            or any(key not in {
+                "configured_model", "provider", "persona_sha256", "dataset_sha256", "note"
+            } or not isinstance(value, str) or len(value) > 300
+                   for key, value in capture_info.items())):
+        raise ValueError("Invalid or unbounded E1 capture metadata")
+    return mapping, {
+        "source": data["source"], "variant": data["variant"],
+        "capture_info": capture_info,
+    }
 
 
 def load_reviews(path: Path | None, cases: tuple[Case, ...]) -> dict[str, dict]:
@@ -170,6 +180,7 @@ def audit(cases: tuple[Case, ...], responses: dict[str, str],
     return {
         "schema": 1, "evaluation": "Character Evaluation E1",
         "source": metadata["source"], "variant": metadata["variant"],
+        "capture_info": metadata.get("capture_info", {}),
         "human_scoring": "manual_only", "summary": summary, "results": results,
         "warning": (
             "Deterministic pass only checks declared test constraints; it does NOT "
@@ -230,11 +241,23 @@ def markdown_report(report: dict) -> str:
         score = row["human_score_100"]
         lines.append(f"| {row['id']} | {row['category']} | {row['relation']} | "
                      f"{row['channel']} | {row['status']} | {score if score is not None else '待评'} |")
+    info = report.get("capture_info", {})
+    if info:
+        lines.extend(["", "## 模型采集元数据", "",
+                      "| 字段 | 捕获时记录的值 |", "|---|---|"])
+        for key, value in info.items():
+            safe = " ".join(value.split()).replace("|", "/").replace("`", "'")
+            lines.append(f"| {key} | {safe} |")
     if report.get("comparison"):
+        changes = report["comparison"]["changed_cases"]
         lines.extend(["", "## 与基线比较", "",
                       f"基线：{report['comparison']['baseline_variant']}",
-                      f"自动标记变化：{len(report['comparison']['changed_cases'])} 个案例；"
-                      "仅有人工复核的维度才能用于角色质量判断。"])
+                      f"可比变化：{len(changes)} 个案例（显式禁令或两边均有人评的分数变化）。"])
+        for item in changes:
+            lines.append(f"- `{item['case_id']}`："
+                         f"自动检查 {len(item['baseline_hard'])} → {len(item['current_hard'])}；"
+                         f"人工分 {item['baseline_human_score']} → {item['current_human_score']}")
+        lines.append("缺失的人工分数不能视为进步或退化。")
     lines.extend([
         "", "## 必须人工复核的项目", "",
         "- 庄方宜是否有独立判断、适当温度与角色特征。",
@@ -265,7 +288,12 @@ def html_report(report: dict) -> str:
             + "<p><b>合成历史：</b>" + escape(background) + "</p>"
             + "<p><b>需要人工观察：</b>" + escape(result["evaluator_note"]) + "</p>"
             + "<p><b>回答：</b></p><pre>" + escape(answer) + "</pre>"
-            + "<p><b>自动告警：</b>" + escape(problems) + "</p></details>"
+            + "<p><b>自动告警：</b>" + escape(problems) + "</p>"
+            + "<p><b>人工评分：</b>" +
+              escape(str(result["human_score_100"]) if result["human_score_100"] is not None
+                     else "待人工评估") + "</p>"
+            + "<p><b>评语：</b>" + escape((result["review"] or {}).get("notes", "")) +
+              "</p></details>"
         )
     provenance = ("仅为人工编写演示回答，未请求真实模型！"
                   if report["source"] == "handcrafted_demo" else
