@@ -31,6 +31,9 @@ PLANNER_V2_PROMPT = """你是虚拟角色的对话行为规划器，不是对用
  "tone":"表达语气",
  "attention":"需要注意的事实和不确定性",
  "reply_style":"short|normal|long",
+ "reply_parts":0,
+ "emotion":"角色此刻的适度情绪",
+ "emotion_intensity":0.0,
  "prefer":["倾向1"],
  "avoid":["避免1"],
  "delivery":"text|voice",
@@ -70,6 +73,9 @@ class PlanDecision:
     tone: str = "自然"
     attention: str = ""
     reply_style: str = "normal"
+    reply_parts: int = 0  # 0 means sender decides; otherwise upper bound 1..3
+    emotion: str = ""
+    emotion_intensity: float = 0.0
     prefer: tuple[str, ...] = ()
     avoid: tuple[str, ...] = ()
     delivery: Literal["text", "voice"] = "text"
@@ -100,6 +106,10 @@ def parse_plan_v2(raw: str, *, allow_voice: bool = False) -> PlanDecision:
         style = payload.get("reply_style", "normal")
         if style not in ("short", "normal", "long"):
             style = "normal"
+        parts = payload.get("reply_parts", 0)
+        parts = parts if type(parts) is int and 0 <= parts <= 3 else 0
+        intensity = payload.get("emotion_intensity", 0.0)
+        intensity = float(intensity) if type(intensity) in (int, float) and 0 <= intensity <= 1 else 0.0
         delivery = "voice" if allow_voice and payload.get("delivery") == "voice" else "text"
         wait = payload.get("wait_seconds", 0)
         wait = min(12, max(1, wait)) if type(wait) is int and action == "wait" else (4 if action == "wait" else 0)
@@ -116,7 +126,9 @@ def parse_plan_v2(raw: str, *, allow_voice: bool = False) -> PlanDecision:
             scene=_plain(payload.get("scene")),
             tone=_plain(payload.get("tone")) or "自然",
             attention=_plain(payload.get("attention"), max_len=160),
-            reply_style=style, prefer=_items(payload.get("prefer")),
+            reply_style=style, reply_parts=parts,
+            emotion=_plain(payload.get("emotion")),
+            emotion_intensity=intensity, prefer=_items(payload.get("prefer")),
             avoid=_items(payload.get("avoid")), delivery=delivery,
             wait_seconds=wait if action == "wait" else 0,
             tool_name=_plain(payload.get("tool_name"), max_len=80) if action == "tool" else "",
