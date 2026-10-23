@@ -178,6 +178,42 @@ def list_models(settings: LlmSettings, key: str, *, timeout: float = 12) -> list
     return models
 
 
+def _read_completion_stream(response) -> tuple[str, str]:
+    """Collect a complete SSE answer; reasoning deltas are never a final reply."""
+    content_parts, reasoning_parts = [], []
+    size, finished = 0, False
+    for line in response:
+        size += len(line)
+        if size > 2_000_000:
+            raise ModelRequestError("模型响应过大", kind="protocol", retryable=False)
+        line = line.strip()
+        if not line or line.startswith(b":"):
+            continue
+        if not line.startswith(b"data:"):
+            continue
+        data = line[5:].strip()
+        if data == b"[DONE]":
+            finished = True
+            break
+        try:
+            event = json.loads(data)
+            choice = event["choices"][0]
+            delta = choice.get("delta") or {}
+            if not isinstance(delta, dict):
+                raise TypeError
+            for field, target in (("content", content_parts), ("reasoning_content", reasoning_parts)):
+                value = delta.get(field)
+                if isinstance(value, str):
+                    target.append(value)
+            if choice.get("finish_reason") is not None:
+                finished = True
+        except (ValueError, KeyError, IndexError, TypeError):
+            raise ModelRequestError("模型流式响应格式错误", kind="protocol", retryable=True) from None
+    if not finished:
+        raise ModelRequestError("模型流式响应未完成", kind="protocol", retryable=True)
+    return "".join(content_parts), "".join(reasoning_parts)
+
+
 def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", visual_context: str = "", timeout: float = 60, stage: str = "回复", image_data_url: str | None = None) -> str:
     settings = settings.validated()
     if not user_text.strip():
@@ -231,8 +267,9 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
             {"type": "text", "text": content},
         ]
     messages.append({"role": "user", "content": content})
-    payload = json.dumps({"model": settings.model, "messages": messages, "stream": False}, ensure_ascii=False).encode("utf-8")
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    stream = stage == "思考"
+    payload = json.dumps({"model": settings.model, "messages": messages, "stream": stream}, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if stream else "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     request = urllib.request.Request(settings.base_url + "/chat/completions", data=payload, headers=headers, method="POST")
@@ -240,7 +277,12 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
     log_event("模型", "调用", f"{stage} · {PROVIDERS[settings.provider]} / {settings.model} · chat/completions")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read(2_000_001)
+            response_type = getattr(response, "headers", {}).get("Content-Type", "").lower()
+            if stream and "text/event-stream" in response_type:
+                content, reasoning = _read_completion_stream(response)
+                body = None
+            else:
+                body = response.read(2_000_001)
     except urllib.error.HTTPError as error:
         log_event("模型", "失败", f"{stage} · HTTP {error.code} · {time.monotonic() - started:.1f} 秒")
         # Authentication and bad model IDs can use another configured provider,
@@ -255,16 +297,17 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
         raise ModelRequestError(
             "模型请求超时" if timed_out else "无法连接模型服务",
             kind="timeout" if timed_out else "network", retryable=True) from None
-    if len(body) > 2_000_000:
-        log_event("模型", "失败", f"{stage} · 响应过大")
-        raise ModelRequestError("模型响应过大", kind="protocol", retryable=False)
-    try:
-        message = json.loads(body)["choices"][0]["message"]
-        content = message["content"]
-        reasoning = message.get("reasoning_content")
-    except (ValueError, KeyError, IndexError, TypeError):
-        log_event("模型", "失败", f"{stage} · 返回格式错误")
-        raise ModelRequestError("模型返回格式不符合 chat/completions 协议", kind="protocol", retryable=True) from None
+    if body is not None:
+        if len(body) > 2_000_000:
+            log_event("模型", "失败", f"{stage} · 响应过大")
+            raise ModelRequestError("模型响应过大", kind="protocol", retryable=False)
+        try:
+            message = json.loads(body)["choices"][0]["message"]
+            content = message["content"]
+            reasoning = message.get("reasoning_content")
+        except (ValueError, KeyError, IndexError, TypeError):
+            log_event("模型", "失败", f"{stage} · 返回格式错误")
+            raise ModelRequestError("模型返回格式不符合 chat/completions 协议", kind="protocol", retryable=True) from None
     if not isinstance(content, str) or not content.strip():
         log_event("模型", "失败", f"{stage} · 空回复")
         raise ModelRequestError("模型没有返回可显示的文字", kind="empty", retryable=True)
