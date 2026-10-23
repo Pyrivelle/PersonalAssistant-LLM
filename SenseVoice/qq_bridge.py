@@ -35,6 +35,7 @@ from zhuangfy.agent_v2.planner import plan_turn_v2, choose_action, PlanDecision
 from zhuangfy.agent_v2.runtime import AgentCycleEngine
 from zhuangfy.agent_v2.scheduler import UnifiedTurnScheduler, SchedulerConfig
 from zhuangfy.agent_v2.turn_trigger import TurnEvent
+from zhuangfy.agent_v2.focus_runtime import QqFocusRuntime
 from zhuangfy.agent_v2.skills import build_skill_runtime
 from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
@@ -85,6 +86,8 @@ class QqSettings:
     message_debounce_mode: str = "off"  # optional V2; preserve legacy by default
     passive_group_ids: frozenset[int] = frozenset()  # explicit group opt-in
     group_reply_frequency: float = 0.45
+    focus_mode: str = "off"  # off / shadow / active
+    focus_groups: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "QqSettings":
@@ -123,12 +126,44 @@ class QqSettings:
         if type(frequency) not in (float, int) or not math.isfinite(frequency) or not 0 <= frequency <= 1:
             raise ValueError("group_reply_frequency 必须为 0–1 的有限数字")
         private_ids = _ids(raw.get("allowed_private_ids", []))
+        focus_mode = raw.get("focus_mode", "off")
+        if focus_mode not in ("off", "shadow", "active"):
+            raise ValueError("focus_mode 必须是 off/shadow/active")
+        raw_focus_groups = raw.get("focus_groups", [])
+        if not isinstance(raw_focus_groups, list) or len(raw_focus_groups) > 12:
+            raise ValueError("focus_groups 必须是最多 12 个关注组")
+        focus_groups = []
+        used_sessions = set()
+        used_names = set()
+        for group in raw_focus_groups:
+            if not isinstance(group, dict) or set(group) != {"id", "sessions"}:
+                raise ValueError("Focus 组需要 id 和 sessions")
+            name, members = group["id"], group["sessions"]
+            if not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]{0,39}", name):
+                raise ValueError("Focus 组 id 不合法")
+            if name in used_names or not isinstance(members, list) or not 1 <= len(members) <= 24:
+                raise ValueError("Focus 组重复或成员数不合法")
+            if any(not isinstance(member, str) for member in members):
+                raise ValueError("Focus 组会话必须为字符串")
+            if len(set(members)) != len(members):
+                raise ValueError("Focus 组有重复成员")
+            for member in members:
+                if not isinstance(member, str) or not re.fullmatch(r"(private|group):[1-9][0-9]*", member):
+                    raise ValueError("Focus 会话必须是 private:号码 或 group:群号")
+                kind, value = member.split(":")
+                if (int(value) not in (private_ids if kind == "private" else groups)
+                        or member in used_sessions):
+                    raise ValueError("Focus 会话必须在现有白名单且不能属于两个组")
+                used_sessions.add(member)
+            used_names.add(name)
+            focus_groups.append((name, tuple(members)))
         voice_ids = _ids(raw.get("voice_private_ids", []))
         if not voice_ids.issubset(private_ids):
             raise ValueError("QQ 语音回复账号必须包含在私聊白名单内")
         return cls(url, private_ids, groups,
                    voice_private_ids=voice_ids, message_debounce_mode=mode,
-                   passive_group_ids=passive_ids, group_reply_frequency=float(frequency), **values)
+                   passive_group_ids=passive_ids, group_reply_frequency=float(frequency),
+                   focus_mode=focus_mode, focus_groups=tuple(focus_groups), **values)
 
 
 MAX_VOICE_CHARS = 160
@@ -374,6 +409,7 @@ class QqBridge:
         self.turn_scheduler = UnifiedTurnScheduler(
             SchedulerConfig(group_frequency=settings.group_reply_frequency))
         self.generation_lock = asyncio.Lock()
+        self.focus_runtime = QqFocusRuntime(settings.focus_mode, settings.focus_groups)
         self.send_lock = asyncio.Lock()
         self.next_send_at = 0.0
         # Persistence is separate from Mem0 and only enabled for explicitly
@@ -693,7 +729,15 @@ class QqBridge:
                             message_id=current.message_id, content=message)
                     except Exception as error:
                         log_event("记忆", "记录跳过", f"新记忆服务不可用或未授权：{type(error).__name__}")
-                async with self.generation_lock:
+                focus_session = (f"group:{current.group_id}" if current.kind == "group"
+                                 else f"private:{current.user_id}")
+                async with self.focus_runtime.turn(
+                    focus_session, turn_id, directed=directed,
+                    priority=90 if directed else 10
+                ) as focus_decision, self.generation_lock:
+                    if focus_decision.admitted:
+                        log_event("QQ", "Focus", f"{focus_decision.mode} · {focus_decision.scope_id} · "
+                                  f"{focus_session} · turn:{turn_id}")
                     settings = load_settings()
                     key = load_key(settings.provider)
                     if not can_attempt_stage("reply", settings, key):
