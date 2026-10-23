@@ -353,6 +353,7 @@ class Conversation:
     pending_event_ids: list[str] = field(default_factory=list)
     pending_directed: bool = False
     group_recent: deque[str] = field(default_factory=lambda: deque(maxlen=8))
+    group_activity: deque[tuple[float, bool]] = field(default_factory=lambda: deque(maxlen=200))
     context: DialogueContext = field(default_factory=DialogueContext)
     last_failed_generation: str = ""
     last_failed_image: ImageReference | None = None
@@ -472,6 +473,8 @@ class QqBridge:
             state = Conversation(incoming=incoming, context=context)
             self.conversations[identity_scope] = state
         state.incoming = incoming
+        if incoming.kind == "group":
+            state.group_activity.append((now, False))
         if not state.pending:
             state.first_arrival = now
         state.pending.append(
@@ -533,13 +536,25 @@ class QqBridge:
                            if state.incoming.kind == "group"
                            else f"qq:{self.bot_id}:private:{state.incoming.user_id}")
                 while True:
+                    evaluated_at = time.monotonic()
+                    recent_activity = [item for item in state.group_activity
+                                       if evaluated_at - item[0] <= 300]
+                    recent_count = len(recent_activity)
+                    self_ratio = (sum(1 for _, bot in recent_activity if bot) / recent_count
+                                  if recent_count else 0.0)
+                    last_bot = next((at for at, bot in reversed(state.group_activity) if bot), None)
+                    since_bot = (max(0.0, evaluated_at - last_bot)
+                                 if last_bot is not None else 3600.0)
                     gate = self.turn_scheduler.decide(
                         TurnEvent(session, batch_events[-1] if batch_events else uuid.uuid4().hex,
                                   "message", state.incoming.kind,
                                   text="\n".join(state.pending)[:1500],
                                   directed=batch_directed,
+                                  recent_self_ratio=self_ratio,
+                                  recent_message_count=recent_count,
+                                  seconds_since_bot_message=since_bot,
                                   pending_count=len(state.pending)),
-                        now=time.monotonic())
+                        now=evaluated_at)
                     if gate.decision != "delay":
                         break
                     await asyncio.sleep(min(0.25, max(0.01, gate.delay_seconds)))
@@ -957,6 +972,7 @@ class QqBridge:
                                             group=current.kind == "group")
             if current.kind == "group":
                 state.group_recent.clear()
+                state.group_activity.append((time.monotonic(), True))
         # Only ALL acknowledged QQ bubbles count as a delivered shared turn.
         if self.memory_client is not None and delivery.memory_ref is not None:
             try:
