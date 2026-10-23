@@ -7,6 +7,7 @@ proposes a reply act; authorization is enforced by the host, not the prompt.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import json
 from typing import Awaitable, Callable, Literal
 
@@ -64,6 +65,12 @@ def timing_gate(policy: PresencePolicy, snapshot: PresenceSnapshot) -> PresenceD
              if start > end else False)
     if quiet:
         return PresenceDecision(False, "quiet_hours")
+    if (any(not math.isfinite(v) or v < 0 for v in (
+            snapshot.seconds_since_human_message,
+            snapshot.seconds_since_last_outbound))
+            or type(snapshot.sent_last_24h) is not int
+            or snapshot.sent_last_24h < 0):
+        return PresenceDecision(False, "incomplete_presence")
     if snapshot.voice_active or snapshot.user_typing or snapshot.active_chat_turn:
         return PresenceDecision(False, "user_busy")
     if snapshot.seconds_since_human_message < policy.min_human_idle_seconds:
@@ -156,3 +163,26 @@ class InitiativeReviewer:
         if not isinstance(result, InitiativeDecision):
             return PresenceDecision(False, "invalid_model_decision"), None
         return gate, result
+
+    async def review_next(self, *, inbox, policy: PresencePolicy,
+                          snapshot: PresenceSnapshot, now: float) -> dict | None:
+        """Pick first still-unreviewed B1 draft and persist decision once.
+
+        If policy says hold, no LLM is called and the draft stays eligible for
+        a later, appropriately timed review. No QQ/voice sender is reachable.
+        """
+        for draft in reversed(inbox.list_drafts(policy.owner_scope)):
+            if inbox.get_review(draft["goal_id"], policy.owner_scope) is not None:
+                continue
+            gate, decision = await self.consider(draft=draft, policy=policy, snapshot=snapshot)
+            if decision is None:
+                return {"goal_id": draft["goal_id"], "gate": gate.reason, "reviewed": False}
+            committed = inbox.record_review(
+                goal_id=draft["goal_id"], owner_scope=policy.owner_scope,
+                action=decision.action, confidence=decision.confidence,
+                proposed_text=decision.text_draft, reviewed_at=now,
+                reason=decision.rationale,
+            )
+            return {"goal_id": draft["goal_id"], "gate": gate.reason,
+                    "reviewed": committed, "decision": decision.action}
+        return None
