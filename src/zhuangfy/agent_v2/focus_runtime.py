@@ -47,7 +47,7 @@ class QqFocusRuntime:
                 continue
             key = (lease.signal.session_id, lease.signal.event_id)
             future = self._pending.get(key)
-            if future is None or future.cancelled():
+            if future is None or future.done():
                 self.coordinator.complete(lease)
                 continue
             future.set_result(lease)
@@ -88,6 +88,11 @@ class QqFocusRuntime:
         finally:
             async with self._lock:
                 self._pending.pop(unique, None)
+                # Cancellation may race between grant and the awaiting
+                # coroutine resuming. Recover an already-issued lease so the
+                # entire Focus group can never be left permanently locked.
+                if lease is None and future.done() and not future.cancelled():
+                    lease = future.result()
                 if lease is not None:
                     self.coordinator.complete(lease)
                 else:
