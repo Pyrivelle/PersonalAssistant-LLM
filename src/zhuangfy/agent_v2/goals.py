@@ -7,12 +7,14 @@ non-idempotent physical actions MUST NOT use this queue.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 import time
 import math
+import json
+import re
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,8 @@ class GoalEvent:
     attempt: int
     lease_until: float
     source_event_id: str
+    tool_name: str = ""
+    tool_arguments: dict = field(default_factory=dict)
 
 
 class GoalStore:
@@ -71,10 +75,22 @@ class GoalStore:
                 summary TEXT NOT NULL
               );
             """)
+            # B1 schema migration keeps existing B0 SQLite files readable.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(goals)")}
+            if "tool_name" not in columns:
+                db.execute("ALTER TABLE goals ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''")
+            if "tool_arguments_json" not in columns:
+                db.execute("ALTER TABLE goals ADD COLUMN tool_arguments_json TEXT NOT NULL DEFAULT '{}'")
+            if "inquiry_allowed" not in columns:
+                db.execute("ALTER TABLE goals ADD COLUMN inquiry_allowed INTEGER NOT NULL DEFAULT 0")
+            if "inquiry_topic" not in columns:
+                db.execute("ALTER TABLE goals ADD COLUMN inquiry_topic TEXT NOT NULL DEFAULT ''")
 
     def create(self, *, goal_id: str, owner_scope: str,
                source_event_id: str, due_at: float, expires_at: float,
-               consent: bool = False, max_attempts: int = 2) -> bool:
+               consent: bool = False, max_attempts: int = 2,
+               tool_name: str = "", tool_arguments: dict | None = None,
+               inquiry_allowed: bool = False, inquiry_topic: str = "") -> bool:
         """Caller must have verified permission; consent=False is never runnable."""
         if not all((isinstance(x, str) and 1 <= len(x) <= 128
                     for x in (goal_id, owner_scope, source_event_id))):
@@ -86,19 +102,44 @@ class GoalStore:
                            for v in (due_at, expires_at))
                 or not due_at < expires_at):
             raise ValueError("invalid goal deadline or attempt budget")
+        if type(inquiry_allowed) is not bool or not isinstance(inquiry_topic, str):
+            raise ValueError("inquiry consent/topic must have correct types")
+        if (inquiry_allowed and (not inquiry_topic.strip() or len(inquiry_topic) > 100)
+                or not inquiry_allowed and bool(inquiry_topic.strip())):
+            raise ValueError("inquiry needs a short, consented and grounded topic")
+        if not isinstance(tool_name, str):
+            raise ValueError("tool name must be a string")
+        if tool_name:
+            if not re.fullmatch(
+                r"[a-z][a-z0-9_]{1,39}\.[a-z][a-z0-9_]{1,50}", tool_name
+            ):
+                raise ValueError("invalid registered tool name")
+        if tool_arguments is None:
+            tool_arguments = {}
+        if not isinstance(tool_arguments, dict) or (tool_arguments and not tool_name):
+            raise ValueError("tool arguments require a named tool")
+        try:
+            encoded = json.dumps(tool_arguments, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("tool arguments must be finite JSON data") from exc
+        if len(encoded) > 1400:
+            raise ValueError("tool arguments too long")
         now = time.time()
         with self._connect() as db:
             cursor = db.execute("""
               INSERT OR IGNORE INTO goals
                 (goal_id, owner_scope, source_event_id, consent, status,
-                 due_at, expires_at, max_attempts, created_at)
-              VALUES (?, ?, ?, ?, 'scheduled', ?, ?, ?, ?)
+                 due_at, expires_at, max_attempts, created_at, tool_name,
+                 tool_arguments_json, inquiry_allowed, inquiry_topic)
+              VALUES (?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?, ?)
             """, (goal_id, owner_scope, source_event_id, int(consent),
-                  due_at, expires_at, max_attempts, now))
+                  due_at, expires_at, max_attempts, now, tool_name, encoded,
+                  int(inquiry_allowed), inquiry_topic.strip()))
             return cursor.rowcount == 1
 
     def claim_due(self, *, now: float, owner_scopes: frozenset[str],
-                  limit: int = 4, lease_seconds: float = 20) -> tuple[GoalEvent, ...]:
+                  limit: int = 4, lease_seconds: float = 20,
+                  require_action: bool = False) -> tuple[GoalEvent, ...]:
         """Atomic claims across workers. Only consented, scoped goals can start."""
         if not 1 <= limit <= 20 or not 1 <= lease_seconds <= 300:
             raise ValueError("invalid claim budget")
@@ -126,8 +167,9 @@ class GoalStore:
                   SELECT * FROM goals WHERE status='scheduled' AND consent=1
                          AND owner_scope IN ({placeholders})
                          AND due_at<=? AND expires_at>?
+                         AND (?=0 OR tool_name<>'')
                   ORDER BY due_at, created_at LIMIT ?
-                """, (*sorted(owner_scopes), now, now, limit)).fetchall()
+                """, (*sorted(owner_scopes), now, now, int(require_action), limit)).fetchall()
                 for row in rows:
                     n = row["attempts"] + 1
                     db.execute("""UPDATE goals SET status='running',
@@ -137,7 +179,8 @@ class GoalStore:
                     claimed.append(GoalEvent(
                         row["goal_id"], row["owner_scope"],
                         f"goal:{row['goal_id']}:{n}", n,
-                        now + lease_seconds, row["source_event_id"]))
+                        now + lease_seconds, row["source_event_id"],
+                        row["tool_name"], json.loads(row["tool_arguments_json"])))
                     if len(claimed) >= limit:
                         break
                 db.execute("COMMIT")
@@ -147,9 +190,10 @@ class GoalStore:
         return tuple(claimed)
 
     def finish(self, event: GoalEvent, *, now: float, success: bool,
-               summary: str = "", retry_delay: float = 15) -> bool:
+               summary: str = "", retry_delay: float = 15,
+               terminal_failure: bool = False) -> bool:
         """Idempotent receipt. A revoked/expired/stale lease cannot complete."""
-        if type(success) is not bool or retry_delay < 0:
+        if type(success) is not bool or type(terminal_failure) is not bool or retry_delay < 0:
             raise ValueError("invalid receipt")
         summary = " ".join(summary.split())[:350]
         with self._connect() as db:
@@ -165,7 +209,8 @@ class GoalStore:
                     db.execute("ROLLBACK")
                     return False
                 next_status = ("done" if success else
-                               "scheduled" if row["attempts"] < row["max_attempts"]
+                               "scheduled" if not terminal_failure
+                               and row["attempts"] < row["max_attempts"]
                                and now + retry_delay < row["expires_at"] else "failed")
                 due = now + retry_delay if next_status == "scheduled" else row["due_at"]
                 db.execute("""UPDATE goals SET status=?, due_at=?, lease_until=0,

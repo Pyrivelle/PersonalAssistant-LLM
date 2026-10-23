@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "poll_seconds": 30,
+  "owner_grants": {
+    "qq:private:123456": {
+      "tools": [
+        "calculator.evaluate",
+        "clock.utc_now"
+      ],
+      "draft_inquiries": false
+    }
+  }
+}
