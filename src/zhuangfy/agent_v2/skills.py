@@ -218,3 +218,21 @@ class SkillManager:
 def inspect_skills(root: Path, config: Path) -> tuple[SkillStatus, ...]:
     """Management-only view; safe to use without importing enabled skill code."""
     return SkillManager(root, load_skill_policies(config)).discover()
+
+
+def build_skill_runtime(directory: Path, config_path: Path, *,
+                        activate: bool = False) -> tuple[AuthorizedToolRegistry, SkillManager]:
+    """Cross-channel startup entry; built-in tools remain available unchanged.
+
+    Newly installed skill Python executes ONLY if host tool mode is on and the
+    corresponding skills_settings.json policy explicitly enables that skill.
+    """
+    from .tools import build_builtin_registry
+
+    registry = build_builtin_registry()
+    manager = SkillManager(directory, load_skill_policies(config_path))
+    if activate:
+        manager.activate(registry)
+    else:
+        manager.discover()
+    return registry, manager
