@@ -38,6 +38,9 @@ from zhuangfy.agent_v2.turn_trigger import TurnEvent
 from zhuangfy.agent_v2.focus_runtime import QqFocusRuntime
 from zhuangfy.agent_v2.focus_checkpoint import FocusCheckpointStore
 from zhuangfy.agent_v2.skills import build_skill_runtime
+from zhuangfy.agent_v2.initiative import InitiativeInbox
+from zhuangfy.agent_v2.initiative_policy import InitiativeReviewer, plan_initiative, plan_checkin, timing_gate
+from zhuangfy.agent_v2.proactive_delivery import ProactiveConfig, ProactiveStore
 from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
 
@@ -461,6 +464,15 @@ class QqBridge:
         self.reflection_lock = asyncio.Semaphore(1)
         # Explicit opt-in; identity must be pre-verified by the Memory Service.
         self.memory_client = MemoryClient.from_environment(enabled_var="ZHUANGFY_MEMORY_QQ")
+        self.proactive_config = ProactiveConfig.load(ROOT / "proactive_settings.json")
+        self.proactive_store = ProactiveStore(ROOT.parent / "data" / "proactive.db")
+        self.initiative_inbox = InitiativeInbox(ROOT.parent / "data" / "agent-v2-background.db")
+        if self.proactive_config.enabled:
+            if self.proactive_config.recipient_id not in settings.allowed_private_ids:
+                log_event("QQ", "主动互动关闭", "收件人不在当前私聊白名单中")
+                self.proactive_config = replace(self.proactive_config, enabled=False)
+            else:
+                self.proactive_store.initialize(self.proactive_config.recipient_id, time.time())
 
     async def action(self, name: str, params: dict, *, timeout: float = 15) -> dict:
         echo = uuid.uuid4().hex
@@ -513,6 +525,9 @@ class QqBridge:
         incoming = parse_message(event, self.bot_id, self.settings)
         if incoming is None:
             return False
+        if (incoming.kind == "private" and self.proactive_config.enabled
+                and incoming.user_id == self.proactive_config.recipient_id):
+            self.proactive_store.human_message(incoming.user_id)
         # Never admit passive group traffic through the old always-reply path.
         if (incoming.kind == "group" and not incoming.directed
                 and not self.planner_settings.agent_v2_enabled):
@@ -1136,10 +1151,86 @@ class QqBridge:
                                 {"type": "text", "data": {"text": " " + reply}}]})
             if not continuation:
                 self.limiter.mark_sent(incoming, time.monotonic())
+            if (incoming.kind == "private" and self.proactive_config.enabled
+                    and incoming.user_id == self.proactive_config.recipient_id):
+                self.proactive_store.outbound_message(incoming.user_id)
             print(("已投递 QQ 私聊语音" if audio is not None else "已投递 QQ 私聊回复")
                   if incoming.kind == "private" else "已投递 QQ 群回复", flush=True)
             log_event("QQ", "语音回复" if audio is not None else "回复", f"{incoming.scope} · {reply}")
             return True
+
+    async def proactive_loop(self) -> None:
+        """Review B1 suggestions, then optionally send one opt-in daily check-in."""
+        config = self.proactive_config
+        if not config.enabled:
+            return
+        policy = config.policy()
+        recipient = config.recipient_id
+        while self.ws is not None and self.bot_id:
+            try:
+                now = time.time()
+                busy = any(state.task and not state.task.done() or state.pending
+                           for state in self.conversations.values())
+                voice_active = self._voice_active(now)
+                snapshot = self.proactive_store.snapshot(
+                    recipient, now, voice_active=voice_active, active_chat_turn=bool(busy))
+                if timing_gate(policy, snapshot).eligible:
+                    settings = load_settings()
+                    key = load_key(settings.provider)
+                    async def review_plan(topic: str, evidence: str):
+                        return await asyncio.to_thread(
+                            plan_initiative, settings, key, topic=topic, evidence=evidence,
+                            trace_id=f"initiative-{uuid.uuid4().hex[:10]}")
+                    reviewer = InitiativeReviewer(review_plan)
+                    await reviewer.review_next(inbox=self.initiative_inbox, policy=policy,
+                                               snapshot=snapshot, now=now)
+                    candidate = None
+                    for review in self.initiative_inbox.actionable_reviews(policy.owner_scope, now - 86400):
+                        source = f"goal:{review['goal_id']}"
+                        if not self.proactive_store.already_reserved(source):
+                            candidate = (source, review["proposed_text"])
+                            break
+                    if candidate is None and config.daily_checkin:
+                        source = f"checkin:{recipient}:{time.strftime('%Y-%m-%d', time.localtime(now))}"
+                        if (not self.proactive_store.already_considered(source)
+                                and not self.proactive_store.already_reserved(source)):
+                            choice = await asyncio.to_thread(
+                                plan_checkin, settings, key,
+                                trace_id=f"checkin-{uuid.uuid4().hex[:10]}")
+                            if choice.action in ("ask", "share"):
+                                candidate = (source, choice.text_draft)
+                            else:
+                                self.proactive_store.mark_considered(source, time.time())
+                    if candidate and candidate[1]:
+                        source, message = candidate
+                        async with self.send_lock:
+                            fresh = time.time()
+                            busy = any(state.task and not state.task.done() or state.pending
+                                       for state in self.conversations.values())
+                            if self.proactive_store.reserve(
+                                    source, recipient, message, fresh, policy,
+                                    voice_active=self._voice_active(fresh),
+                                    active_chat_turn=bool(busy)):
+                                # Reserve before OneBot: an uncertain ACK is never retried automatically.
+                                await self.action("send_private_msg", {
+                                    "user_id": recipient, "message": message,
+                                    "auto_escape": True})
+                                self.proactive_store.mark_sent(source)
+                                self.next_send_at = time.monotonic() + 1.2
+                                log_event("QQ", "主动问候", f"private:0:{recipient} · {message}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                log_event("QQ", "主动互动失败", f"{type(error).__name__}: {error}")
+            await asyncio.sleep(60)
+
+    @staticmethod
+    def _voice_active(now: float) -> bool:
+        try:
+            raw = json.loads((ROOT.parent / "data" / "voice_activity.json").read_text(encoding="utf-8"))
+            return bool(raw["active"] and 0 <= now - float(raw["at"]) < 15)
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
 
     async def run_forever(self) -> None:
         from websockets.asyncio.client import connect
@@ -1148,6 +1239,7 @@ class QqBridge:
         headers = {"Authorization": f"Bearer {token}"} if token else None
         while True:
             receiver = None
+            proactive = None
             try:
                 async with connect(self.settings.ws_url, additional_headers=headers,
                                    open_timeout=10, ping_interval=20, max_size=2_000_000,
@@ -1166,6 +1258,8 @@ class QqBridge:
                         self.accept(event)
                     self.early_events.clear()
                     print(f"已连接 SnowLuma；机器人账号 {self.bot_id}，私聊白名单 {len(self.settings.allowed_private_ids)} 个，群白名单 {len(self.settings.allowed_group_ids)} 个")
+                    if self.proactive_config.enabled:
+                        proactive = asyncio.create_task(self.proactive_loop())
                     await receiver
             except asyncio.CancelledError:
                 raise
@@ -1176,6 +1270,9 @@ class QqBridge:
                 if receiver:
                     receiver.cancel()
                     await asyncio.gather(receiver, return_exceptions=True)
+                if proactive:
+                    proactive.cancel()
+                    await asyncio.gather(proactive, return_exceptions=True)
                 for future in self.pending_actions.values():
                     if not future.done():
                         future.cancel()

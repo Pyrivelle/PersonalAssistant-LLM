@@ -1,40 +1,11 @@
-# B2 (first step) — when should ZhuangFY initiate a conversation?
+# B2 主动互动与 QQ 投递
 
-**Review-only, opt-in prototype.** The social policy does not send QQ/WeChat messages or synthesize voice, and cannot bypass contact consent. It turns grounded B1 goal follow-up ideas into a stored proposal only.
+B1 后台任务完成后可生成带来源的建议。B2 在真实联系人授权、安静时段、最近活动和发送额度校验通过后，让 Planner 审阅为 `ask`、`share`、`defer` 或 `silence`。审阅结果保存在 `initiative_reviews`。QQ 桥接现在会消费仍有效、未撤销且不超过 24 小时的 `ask/share`，发送到单独授权的私聊账号。
 
-## Model: two separate decisions
+日常问候是独立选项。只有开启 `daily_checkin` 且没有可发送的 B1 建议时，Planner 才判断是否值得发一条简短问候。它不能凭空断言用户情绪、日程或经历；`defer/silence` 不发送。
 
-1. **Host timing gate**: contact/owner opt-in, local quiet hours, human interaction idle duration, active voice/chat/typing state, per-contact gap and daily proactive reply budget. These are facts from the host, not information that the LLM may imagine or override.
-2. **Initiative Planner**: only for eligible, grounded B1 `initiative_drafts` with a confirmed source event and a user-approved topic. Uses the preconfigured model `planner` route to choose `ask | share | defer | silence`, with confidence and a short draft. Malformed/low-confidence replies fail closed or defer. Outputs are **suggestions**, not a dispatched message.
+在「平台连接 → 主动互动」选择消息通道、私聊收件人和开关。当前实现只提供 QQ；以后增加其他通道时仍须逐个实现投递器及收件人授权。配置保存在本机 `SenseVoice/proactive_settings.json`，默认关闭。收件人还必须在 QQ 私聊白名单中。保存后重启 QQ 桥接生效。
 
-The model must never fabricate shared experience, infer user emotions without evidence, or start a chat because it is time to produce a greeting.
+默认规则：22:00–08:00 不联系；至少 30 分钟未收到该用户消息；距离任何给该用户的发言至少 8 小时；24 小时内最多一条主动消息。聊天正在处理或桌面语音正在工作时不发送。启动时会建立活动基线，不会立即打招呼。语音状态通过本机短时心跳传给桥接，QQ 来信及正常回复时间持久记录在 `data/proactive.db`。目前还没有跨应用输入状态检测，因此无法判断用户是否正在其他窗口打字。
 
-The `InitiativeReviewer.review_next` service reads existing B1 drafts, checks scope, asks the host social gate, calls a supplied planner only when eligible and stores an idempotent review in `initiative_reviews`. The `InitiativeInbox` retains the original draft and its evidence; different owners cannot read each other's review state. Repeated checks do not duplicate an existing model review.
-
-## Default policy
-
-```python
-PresencePolicy(
-    owner_scope="qq:private:YOUR_ALLOWED_USER",
-    enabled=False,            # explicit opt-in required
-    quiet_start=22,
-    quiet_end=8,
-    min_human_idle_seconds=1800,
-    min_outbound_gap_seconds=8*3600,
-    daily_limit=1
-)
-```
-
-The host must provide an explicit local hour in the user's intended timezone, genuine recent human-message and outbound-delivery timestamps, and truthful `voice_active`, `user_typing` and `active_chat_turn` signals. Unknown/stale values must not be silently replaced with a claim that the user is free. No unattended social send is enabled here.
-
-`plan_initiative(settings, api_key, topic, evidence)` routes through the existing stage-aware Planner model with a special bounded system instruction. The tool receipt is marked untrusted and cannot grant permissions. That function is *not* called by an automatic service until per-account profile permissions and runtime presence signals have been implemented.
-
-## What is still required for B2 actual sending
-
-- Unified event/presence feed from QQ/voice/WeChat into one host with durable recent-activity and real timezone settings;
-- A separate, explicit **outbound consent** per recipient and channel, quiet time + quota enforcement at both planning and send time;
-- Replyer that transforms a social act into persona-aware wording, with audited message ACK/idempotency;
-- Avoid repeating already-asked questions, distinguish one-shot follow-ups from unsolicited social initiatives;
-- Evaluate false interruptions, frequency, user responses and whether the generated interest feels natural.
-
-This first step deliberately keeps the most sensitive part (spontaneous outreach) disabled while proving the decision flow end-to-end with offline reviews.
+每条消息用任务 ID 或日期生成唯一来源键。桥接在发起 OneBot 请求前先登记发送尝试，获得成功 ACK 后标记完成；若连接在 ACK 前中断，保留该登记，不自动重试，以免给用户发重复消息。失败详情会进入运行监控。QQ 群聊和未授权联系人不会收到主动消息。

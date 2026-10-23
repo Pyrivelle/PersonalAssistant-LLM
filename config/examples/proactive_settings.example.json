@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "channel": "qq",
+  "recipient_id": 0,
+  "daily_checkin": false,
+  "quiet_start": 22,
+  "quiet_end": 8,
+  "min_idle_minutes": 30,
+  "min_gap_hours": 8,
+  "daily_limit": 1
+}

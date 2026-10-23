@@ -11,7 +11,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QFrame,
+    QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
     QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from llm import (ROOT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
                  PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS, load_settings)
 from model_catalog import ModelCatalogWorker
+from toggle_switch import ToggleSwitch
 from model_routes import (
     MAX_ROUTES, ModelCandidate, ModelRoutes, StagePolicy, STAGES, STAGE_NAMES,
     load_route_key, load_routes, save_route_key, save_routes,
@@ -33,7 +34,7 @@ class CandidateEditor(QFrame):
         self.setFrameShape(QFrame.Shape.StyledPanel)
         outer = QVBoxLayout(self)
         header = QHBoxLayout()
-        self.active = QCheckBox("启用 · " + candidate.id)
+        self.active = ToggleSwitch("启用 · " + candidate.id)
         self.active.setChecked(candidate.enabled)
         header.addWidget(self.active)
         header.addStretch(1)
@@ -276,7 +277,7 @@ class ModelRoutesDialog(QDialog):
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
-        self.planner_enabled = QCheckBox("启用思考阶段（Planner）；失败自动跳过")
+        self.planner_enabled = ToggleSwitch("启用思考阶段（Planner）；失败自动跳过")
         self.planner_enabled.setChecked(
             PlannerSettings.load(ROOT / "cognition_settings.json").enabled)
         layout.addWidget(self.planner_enabled)

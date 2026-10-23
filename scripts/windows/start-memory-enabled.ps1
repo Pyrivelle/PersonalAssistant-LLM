@@ -63,6 +63,26 @@ Remove-Item Env:ZHUANGFY_MEMORY_ALLOW_REMOTE -ErrorAction SilentlyContinue
 & $python -c "import os; from zhuangfy.memory.client import MemoryClient; MemoryClient(token=os.environ['ZHUANGFY_MEMORY_ADMIN_TOKEN']).list_people()"
 if ($LASTEXITCODE -ne 0) { throw 'Memory Service authentication failed.' }
 
+$autonomyPolicy = Join-Path $legacyRoot 'autonomy_settings.json'
+if (Test-Path -LiteralPath $autonomyPolicy) {
+    $autonomySettings = Get-Content -LiteralPath $autonomyPolicy -Raw | ConvertFrom-Json
+    if ($autonomySettings.enabled) {
+        $autonomyModule = 'zhuangfy.agent_v2.autonomy_cli'
+        $runningAutonomy = Get-CimInstance Win32_Process | Where-Object {
+            $_.CommandLine -like "*$autonomyModule*" -and $_.CommandLine -like '* serve*'
+        }
+        if (-not $runningAutonomy) {
+            Start-Process -FilePath $python `
+                -ArgumentList '-m', $autonomyModule, '--database',
+                    (Join-Path $repoRoot 'data\agent-v2-background.db'),
+                    '--policy', $autonomyPolicy, 'serve' `
+                -WorkingDirectory $repoRoot -WindowStyle Hidden `
+                -RedirectStandardOutput (Join-Path $repoRoot 'data\agent-v2-background.out.log') `
+                -RedirectStandardError (Join-Path $repoRoot 'data\agent-v2-background.err.log') | Out-Null
+        }
+    }
+}
+
 if ($ServiceOnly) {
     Write-Output 'Memory Service is running.'
     return

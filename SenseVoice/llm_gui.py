@@ -7,11 +7,12 @@ import sys
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QComboBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
 from chat_worker import ChatWorker, MemoryWriteWorker, RemoteMemoryWriteWorker
+from toggle_switch import ToggleSwitch
 from zhuangfy.memory.routing import legacy_memory_allowed
 from branding import APP_NAME, app_icon
 from activity_log import log_event
@@ -117,7 +118,7 @@ class ChatWindow(QMainWindow):
         self.prompt.textChanged.connect(self.update_persona_state)
         form.addRow("当前提示词", self.persona_state)
         self.update_persona_state()
-        self.memory_enabled = QCheckBox("启用长期记忆：对话文字会发送给硅基流动做记忆提取和 Embedding")
+        self.memory_enabled = ToggleSwitch("启用长期记忆：对话文字会发送给硅基流动做记忆提取和 Embedding")
         self.memory_enabled.setChecked(saved.memory_enabled)
         if not legacy_memory_allowed("desktop"):
             self.memory_enabled.setChecked(False)

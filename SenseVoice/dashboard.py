@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from urllib.parse import urlparse
@@ -17,7 +18,7 @@ from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QFontDatabase, QTextCursor
 from PySide6.QtNetwork import QHostAddress, QNetworkAccessManager, QNetworkReply, QNetworkRequest, QUdpSocket
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
+    QApplication, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QScrollArea, QSpinBox, QDoubleSpinBox, QStackedWidget, QSystemTrayIcon,
     QVBoxLayout, QWidget,
@@ -38,8 +39,10 @@ from owner_memory import current_bot_id, load_link, save_link
 from gpt_sovits import (ENGINE_ROOT, SpeechSettings, available_models, save_model_config,
                         load_settings as load_speech_settings, save_settings as save_speech_settings)
 from qq_bridge import QqSettings, SETTINGS_FILE as QQ_SETTINGS_FILE, load_snowluma_token
+from zhuangfy.agent_v2.proactive_delivery import ProactiveConfig
 from chat_page import ChatPage
 from chat_stream import ChatStreamPage
+from toggle_switch import ToggleSwitch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -455,7 +458,7 @@ class Dashboard(QMainWindow):
         layout.addWidget(_button("打开新记忆管理  ↗", self.open_curated_memory, primary=True))
         column.addWidget(current)
         legacy, legacy_layout = _card("旧版记忆档案", "旧数据保留供查看和后续迁移；新服务接管时不再读取或写入旧库。")
-        self.memory_enabled = QCheckBox("在对话中使用旧版长期记忆")
+        self.memory_enabled = ToggleSwitch("在对话中使用旧版长期记忆")
         self.memory_enabled.setChecked(load_settings().memory_enabled and legacy_memory_allowed("desktop"))
         self.memory_enabled.setEnabled(legacy_memory_allowed("desktop"))
         legacy_layout.addWidget(self.memory_enabled)
@@ -703,7 +706,7 @@ class Dashboard(QMainWindow):
         row.addWidget(self.bridge_button)
         row.addStretch()
         layout.addLayout(row)
-        self.auto_connect = QCheckBox("启动 SnowLuma 后自动连接 OneBot 并运行 QQ 桥接")
+        self.auto_connect = ToggleSwitch("启动 SnowLuma 后自动连接 OneBot 并运行 QQ 桥接")
         self.auto_connect.setChecked(True)
         layout.addWidget(self.auto_connect)
         column.addWidget(service)
@@ -760,6 +763,27 @@ class Dashboard(QMainWindow):
         self.qq_feedback.setWordWrap(True)
         rules_layout.addWidget(self.qq_feedback)
         column.addWidget(rules)
+        proactive = ProactiveConfig.load(ROOT / "proactive_settings.json")
+        outreach, outreach_layout = _card(
+            "主动互动", "经 B2 审阅的后台任务建议可主动发送；日常问候单独开关。默认安静时段 22:00–08:00，至少 30 分钟未交谈、每 8 小时至多一次、24 小时内至多一条。")
+        outreach_form = QFormLayout()
+        self.proactive_enabled = ToggleSwitch("允许主动私聊")
+        self.proactive_enabled.setChecked(proactive.enabled)
+        outreach_form.addRow("总开关", self.proactive_enabled)
+        self.proactive_channel = QComboBox()
+        self.proactive_channel.addItem("QQ 私聊", "qq")
+        outreach_form.addRow("消息通道", self.proactive_channel)
+        self.proactive_recipient = _line("主动互动收件人 QQ 号", str(proactive.recipient_id or ""))
+        outreach_form.addRow("收件人", self.proactive_recipient)
+        self.proactive_checkin = ToggleSwitch("没有后台任务建议时，允许每日一次自然问候")
+        self.proactive_checkin.setChecked(proactive.daily_checkin)
+        outreach_form.addRow("日常问候", self.proactive_checkin)
+        outreach_layout.addLayout(outreach_form)
+        outreach_layout.addWidget(_button("保存主动互动设置", self.save_proactive, primary=True))
+        self.proactive_feedback = QLabel("只会发给已在 QQ 私聊白名单中的账号；保存后重启 QQ 桥接生效。")
+        self.proactive_feedback.setObjectName("muted")
+        outreach_layout.addWidget(self.proactive_feedback)
+        column.addWidget(outreach)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(250)
@@ -1347,7 +1371,7 @@ class Dashboard(QMainWindow):
     def save_qq(self) -> bool:
         temporary = QQ_SETTINGS_FILE.with_suffix(".tmp")
         try:
-            data = asdict(QqSettings(
+            data = asdict(replace(QqSettings.load(),
                 ws_url=self.ws_url.text().strip(),
                 allowed_private_ids=frozenset(_ids(self.private_ids.text())),
                 allowed_group_ids=frozenset(_ids(self.group_ids.text())),
@@ -1359,9 +1383,9 @@ class Dashboard(QMainWindow):
                 group_max_replies_per_hour=self.group_hourly.value(),
                 quiet_seconds=self.quiet_seconds.value(),
             ))
-            data["allowed_private_ids"] = sorted(data["allowed_private_ids"])
-            data["allowed_group_ids"] = sorted(data["allowed_group_ids"])
-            data["voice_private_ids"] = sorted(data["voice_private_ids"])
+            for key, value in data.items():
+                if isinstance(value, (set, frozenset)):
+                    data[key] = sorted(value)
             temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             QqSettings.load(temporary)
             if self.qq_token.text().strip():
@@ -1375,6 +1399,32 @@ class Dashboard(QMainWindow):
             return True
         except (OSError, ValueError, TypeError) as error:
             self.qq_feedback.setText(f"保存失败：{error}")
+            return False
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def save_proactive(self) -> bool:
+        path = ROOT / "proactive_settings.json"
+        temporary = path.with_suffix(".tmp")
+        try:
+            raw_id = self.proactive_recipient.text().strip()
+            if raw_id and (not raw_id.isdecimal() or int(raw_id) <= 0):
+                raise ValueError("收件人必须是正整数 QQ 号")
+            config = ProactiveConfig(
+                enabled=self.proactive_enabled.isChecked(),
+                channel=self.proactive_channel.currentData(),
+                recipient_id=int(raw_id) if raw_id else 0,
+                daily_checkin=self.proactive_checkin.isChecked(),
+            )
+            config.validate()
+            if config.enabled and config.recipient_id not in QqSettings.load().allowed_private_ids:
+                raise ValueError("请先把收件人加入 QQ 私聊白名单并保存")
+            temporary.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, path)
+            self.proactive_feedback.setText("主动互动设置已保存；重启 QQ 桥接后生效。")
+            return True
+        except (OSError, ValueError, TypeError) as error:
+            self.proactive_feedback.setText(f"保存失败：{error}")
             return False
         finally:
             temporary.unlink(missing_ok=True)
@@ -1528,6 +1578,14 @@ class Dashboard(QMainWindow):
 
     def refresh_status(self) -> None:
         self.refresh_home_voice_status()
+        voice = self.voice_window
+        voice_active = bool(voice is not None and
+                            (voice.continuous_worker is not None or voice.stream is not None))
+        heartbeat = Paths.current().project_root / "data" / "voice_activity.json"
+        try:
+            heartbeat.write_text(json.dumps({"active": voice_active, "at": time.time()}), encoding="utf-8")
+        except OSError:
+            pass
         settings = load_settings()
         self.model_state.setText(f"模型：{settings.model}")
         self.api_state.setText("API Key：已保存" if load_key(settings.provider) else "API Key：未保存")

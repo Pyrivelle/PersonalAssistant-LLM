@@ -23,7 +23,6 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 from PySide6.QtTextToSpeech import QTextToSpeech
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -41,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuous import StreamingVad
+from toggle_switch import ToggleSwitch
 from branding import APP_NAME, app_icon
 from chat_worker import ChatWorker, MemoryWriteWorker, OwnerMemoryWriteWorker, RemoteMemoryWriteWorker
 from owner_memory import load_link
@@ -331,10 +331,10 @@ class MainWindow(QMainWindow):
         self.wake_timeout.setValue(saved["timeout"])
         self.wake_timeout.setSuffix(" 秒")
         form.addRow("对话保持", self.wake_timeout)
-        self.auto_reply = QCheckBox("唤醒后自动发送给模型")
+        self.auto_reply = ToggleSwitch("唤醒后自动发送给模型")
         self.auto_reply.setChecked(saved["auto_reply"])
         form.addRow("对话", self.auto_reply)
-        self.speak_reply = QCheckBox("用扬声器朗读模型回复")
+        self.speak_reply = ToggleSwitch("用扬声器朗读模型回复")
         speech_available = self.tts is not None or load_speech_settings().engine == "gpt_sovits"
         self.speak_reply.setChecked(saved["speak_reply"] and speech_available)
         self.speak_reply.setEnabled(speech_available)
@@ -402,7 +402,7 @@ class MainWindow(QMainWindow):
         trial = QFrame()
         trial.setObjectName("card")
         trial_layout = QVBoxLayout(trial)
-        self.one_shot_enabled = QCheckBox("一次性固定语音 · 仅本次运行")
+        self.one_shot_enabled = ToggleSwitch("一次性固定语音 · 仅本次运行")
         self.one_shot_enabled.toggled.connect(self._one_shot_toggled)
         trial_layout.addWidget(self.one_shot_enabled)
         trial_row = QHBoxLayout()

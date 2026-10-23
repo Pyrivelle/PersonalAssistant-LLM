@@ -161,3 +161,17 @@ class InitiativeInbox:
                 (goal_id, owner_scope),
             ).fetchone()
             return dict(row) if row else None
+
+    def actionable_reviews(self, owner_scope: str, since: float) -> tuple[dict, ...]:
+        """Only current, non-dismissed B1 results may be offered for delivery."""
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT r.*, d.source_event_id, d.topic, d.evidence_excerpt
+                   FROM initiative_reviews AS r JOIN initiative_drafts AS d
+                     ON d.goal_id=r.goal_id AND d.owner_scope=r.owner_scope
+                   WHERE r.owner_scope=? AND r.action IN ('ask','share')
+                     AND d.status='draft' AND d.reason='completed_authorized_goal'
+                     AND d.created_at>=? ORDER BY r.reviewed_at LIMIT 20""",
+                (owner_scope, since),
+            ).fetchall()
+            return tuple(dict(row) for row in rows)
