@@ -69,6 +69,10 @@ class EventTurnGate:
     def record_reply(self, session_id: str, now: float) -> None:
         """Call after a *logical* reply was fully acknowledged, not per bubble."""
         self._gates.setdefault(session_id, DynamicReplyGate(self.window_seconds)).record_reply(now)
+        # Full-delivery ACK arrives after gate.evaluate; refresh observable
+        # metrics immediately instead of reporting the pre-send count.
+        if session_id in self._last_metrics:
+            self._last_metrics[session_id]["actual_replies"] += 1.0
 
     def evaluate(self, event: TurnEvent, *, now: float, debounce_remaining: float = 0,
                  frequency: float = 1.0, backoff_remaining: float = 0) -> GateResult:
