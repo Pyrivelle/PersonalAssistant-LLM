@@ -29,6 +29,10 @@ class PlannerSettings:
     persist_desktop_context: bool = False
     memory_private_ids: frozenset[int] = frozenset()
     fangyi_scene_skill: bool = True
+    agent_v2_enabled: bool = False
+    agent_v2_allow_silence_private: bool = False
+    agent_v2_allow_silence_group: bool = False
+    agent_v2_wait_max_seconds: int = 8
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
@@ -53,8 +57,17 @@ class PlannerSettings:
         skill = raw.get("fangyi_scene_skill", True)
         if type(skill) is not bool:
             raise ValueError("庄方宜场景 Skill 开关必须是布尔值")
+        v2_enabled = raw.get("agent_v2_enabled", False)
+        silent_private = raw.get("agent_v2_allow_silence_private", False)
+        silent_group = raw.get("agent_v2_allow_silence_group", False)
+        wait_max = raw.get("agent_v2_wait_max_seconds", 8)
+        if any(type(item) is not bool for item in (v2_enabled, silent_private, silent_group)):
+            raise ValueError("Agent V2 开关必须是布尔值")
+        if type(wait_max) is not int or not 1 <= wait_max <= 12:
+            raise ValueError("Agent V2 等待上限必须是 1–12 秒")
         return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop,
-                   frozenset(memory_ids), skill)
+                   frozenset(memory_ids), skill, v2_enabled, silent_private,
+                   silent_group, wait_max)
 
 
 @dataclass(frozen=True)
