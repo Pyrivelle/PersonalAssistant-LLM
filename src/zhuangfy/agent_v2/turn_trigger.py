@@ -1,14 +1,18 @@
-"""Event-first Planner gate, inspired by Maisaka's scheduling layers.
+"""Channel-neutral admission policy using GPLv3 Maisaka frequency components.
 
-The numerical score is an intentionally *uncalibrated* bootstrap heuristic.
-MaiBot's fitted coefficients are not copied: they reflect MaiBot's own logs.
-All timestamps here use a caller-provided monotonic clock.
+Original dynamic gate/likelihood code lives in maisaka_port/, attributed and
+pinned to a MaiBot source commit. This is ZhuangFY's channel-event adapter,
+not part of the original upstream source.
 """
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from typing import Literal
+
+from .maisaka_port.dynamic_gate import DynamicReplyGate
+from .maisaka_port.reply_likelihood import (
+    ReplyLikelihoodInput, estimate_reply_probability, summarize_pending_texts,
+)
 
 TriggerDecision = Literal["trigger", "delay", "hold", "ignore"]
 
@@ -24,6 +28,10 @@ class TurnEvent:
     authorized: bool = True
     parent_turn_active: bool = False
     recent_self_ratio: float = 0.0
+    recent_message_count: int = 0
+    seconds_since_bot_message: float = 3600.0
+    pending_count: int = 1
+    at_other: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,56 +40,38 @@ class GateResult:
     reason: str
     delay_seconds: float = 0.0
     score: float = 0.0
+    threshold: float = 0.0
 
 
 class EventTurnGate:
-    """A1/A2 debounce should run before this gate, once per message batch.
+    """Compose Maisaka's model with authorization, debounce and event precedence.
 
-    Gate order: authorization -> debounce -> active tool/wait continuation ->
-    directed/private -> adaptive group-frequency budget -> passive hold.
-    A 'hold' is not a deletion; the channel owns pending message retention.
+    Group likelihood is based on MaiBot's fitted data, not calibrated to
+    ZhuangFY. Live admission remains disabled until the host supplies valid
+    per-conversation context. 'hold' does not discard backlog.
     """
 
-    def __init__(self, *, window_seconds: float = 3600, baseline: float = .45) -> None:
-        if window_seconds <= 0 or not 0 <= baseline <= 1:
-            raise ValueError("Invalid gate configuration")
+    def __init__(self, *, window_seconds: float = 3600) -> None:
+        if window_seconds <= 0:
+            raise ValueError("Invalid window length")
         self.window_seconds = window_seconds
-        self.baseline = baseline
-        self._demand: dict[str, deque[tuple[float, float]]] = {}
-        self._replies: dict[str, deque[float]] = {}
+        self._gates: dict[str, DynamicReplyGate] = {}
         self._seen: dict[str, dict[str, float]] = {}
+        self._last_metrics: dict[str, dict[str, float]] = {}
 
-    def _prune(self, session_id: str, now: float) -> None:
-        floor = now - self.window_seconds
-        demand = self._demand.setdefault(session_id, deque())
-        while demand and demand[0][0] < floor:
-            demand.popleft()
-        replies = self._replies.setdefault(session_id, deque())
-        while replies and replies[0] < floor:
-            replies.popleft()
+    def _prune(self, session_id: str, now: float) -> dict[str, float]:
         seen = self._seen.setdefault(session_id, {})
-        for key, at in list(seen.items()):
-            if at < floor:
+        for key, timestamp in tuple(seen.items()):
+            if timestamp < now - self.window_seconds:
                 del seen[key]
+        return seen
 
     def record_reply(self, session_id: str, now: float) -> None:
-        self._prune(session_id, now)
-        self._replies[session_id].append(now)
-
-    def _score(self, event: TurnEvent) -> float:
-        # Explicitly a deterministic starter policy, not a learned probability.
-        score = .16
-        if "？" in event.text or "?" in event.text:
-            score += .30
-        if len(event.text.strip()) > 16:
-            score += .12
-        if event.text.strip().startswith(("[图片", "[表情")):
-            score -= .10
-        score -= min(.16, max(0.0, event.recent_self_ratio) * .18)
-        return min(1.0, max(0.0, score))
+        """Call after a *logical* reply was fully acknowledged, not per bubble."""
+        self._gates.setdefault(session_id, DynamicReplyGate(self.window_seconds)).record_reply(now)
 
     def evaluate(self, event: TurnEvent, *, now: float, debounce_remaining: float = 0,
-                 frequency: float = 1.0, backoff_remaining: float = 0.0) -> GateResult:
+                 frequency: float = 1.0, backoff_remaining: float = 0) -> GateResult:
         if not event.authorized or not event.session_id or not event.event_id:
             return GateResult("ignore", "unauthorized_or_invalid")
         if debounce_remaining > 0:
@@ -89,34 +79,54 @@ class EventTurnGate:
         if event.kind != "message":
             if event.parent_turn_active and event.kind in {"tool_result", "timer"}:
                 return GateResult("trigger", "continuation")
-            # Plugin-originated/unsolicited signals must be explicitly admitted
-            # through the future proactive-policy layer.
             return GateResult("hold", "unsolicited_event_not_enabled")
-        self._prune(event.session_id, now)
-        seen = self._seen[event.session_id]
+        seen = self._prune(event.session_id, now)
         if event.event_id in seen:
             return GateResult("ignore", "duplicate_event")
         if event.session_kind == "private" or event.directed:
             seen[event.event_id] = now
+            if event.session_kind == "group" and event.directed:
+                self._gates.setdefault(event.session_id, DynamicReplyGate(self.window_seconds)).record_forced_turn(now)
             return GateResult("trigger", "directed_or_private")
         if frequency <= 0:
             return GateResult("hold", "frequency_silent")
         if backoff_remaining > 0:
             return GateResult("delay", "idle_backoff", backoff_remaining)
         seen[event.event_id] = now
-        score = self._score(event)
-        self._demand[event.session_id].append((now, score))
-        expected = sum(value for _, value in self._demand[event.session_id])
-        actual = len(self._replies[event.session_id])
-        ratio = max(0.0, min(1.0, frequency))
-        overshoot = max(0.0, actual - expected * ratio)
-        threshold = self.baseline + (1-ratio) * .35 + min(.35, overshoot / max(1.0, expected) * .35)
-        return GateResult("trigger" if score >= threshold else "hold",
-                          "group_gate", score=score)
+        _, has_question, placeholder_only = summarize_pending_texts(
+            [event.text], has_at_bot=event.directed,
+        )
+        data = ReplyLikelihoodInput(
+            mention_bot=False,
+            at_other=event.at_other,
+            has_question_mark=has_question,
+            placeholder_only=placeholder_only,
+            recent_self_ratio=event.recent_self_ratio,
+            recent_message_count=event.recent_message_count,
+            seconds_since_bot_message=event.seconds_since_bot_message,
+            pending_count=max(1, event.pending_count),
+        )
+        probability = estimate_reply_probability(data)
+        gate = self._gates.setdefault(event.session_id, DynamicReplyGate(self.window_seconds))
+        if gate.take_uncounted_message_ids([event.event_id]):
+            gate.record_proactive_demand(probability, now)
+        decision = gate.evaluate(probability, frequency, now)
+        if decision.should_trigger:
+            gate.close_round()
+        self._last_metrics[event.session_id] = {
+            "expected_replies": decision.expected_replies,
+            "actual_replies": float(decision.actual_replies),
+            "target_replies": decision.target_replies,
+            "threshold": decision.threshold,
+        }
+        return GateResult(
+            "trigger" if decision.should_trigger else "hold",
+            "maisaka_dynamic_gate", score=probability, threshold=decision.threshold,
+        )
 
     def snapshot(self, session_id: str, now: float) -> dict[str, float]:
         self._prune(session_id, now)
-        return {
-            "expected_replies": round(sum(s for _, s in self._demand[session_id]), 3),
-            "actual_replies": float(len(self._replies[session_id])),
-        }
+        return dict(self._last_metrics.get(session_id, {
+            "expected_replies": 0.0, "actual_replies": 0.0,
+            "target_replies": 0.0, "threshold": 0.0,
+        }))
