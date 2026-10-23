@@ -97,8 +97,10 @@ class GoalStore:
                            for v in (due_at, expires_at))
                 or not due_at < expires_at):
             raise ValueError("invalid goal deadline or attempt budget")
+        if not isinstance(tool_name, str):
+            raise ValueError("tool name must be a string")
         if tool_name:
-            if not isinstance(tool_name, str) or not re.fullmatch(
+            if not re.fullmatch(
                 r"[a-z][a-z0-9_]{1,39}\.[a-z][a-z0-9_]{1,50}", tool_name
             ):
                 raise ValueError("invalid registered tool name")
@@ -177,9 +179,10 @@ class GoalStore:
         return tuple(claimed)
 
     def finish(self, event: GoalEvent, *, now: float, success: bool,
-               summary: str = "", retry_delay: float = 15) -> bool:
+               summary: str = "", retry_delay: float = 15,
+               terminal_failure: bool = False) -> bool:
         """Idempotent receipt. A revoked/expired/stale lease cannot complete."""
-        if type(success) is not bool or retry_delay < 0:
+        if type(success) is not bool or type(terminal_failure) is not bool or retry_delay < 0:
             raise ValueError("invalid receipt")
         summary = " ".join(summary.split())[:350]
         with self._connect() as db:
@@ -195,7 +198,8 @@ class GoalStore:
                     db.execute("ROLLBACK")
                     return False
                 next_status = ("done" if success else
-                               "scheduled" if row["attempts"] < row["max_attempts"]
+                               "scheduled" if not terminal_failure
+                               and row["attempts"] < row["max_attempts"]
                                and now + retry_delay < row["expires_at"] else "failed")
                 due = now + retry_delay if next_status == "scheduled" else row["due_at"]
                 db.execute("""UPDATE goals SET status=?, due_at=?, lease_until=0,
