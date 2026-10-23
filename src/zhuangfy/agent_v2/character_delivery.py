@@ -50,7 +50,7 @@ def render_proactive_reply(settings, api_key: str, *, approved_draft: str,
         from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
         r1 = behavior_r1(settings.system_prompt, topic, channel="initiative")
         if r1.guidance:
-            expression += "\n" + r1.guidance
+            expression = r1.guidance + "\n" + expression
     text = invoke_stage(
         "reply", settings, api_key, [],
         "请将已批准的交流候选自然地表述成一条可以发送的 QQ 私聊消息。"
