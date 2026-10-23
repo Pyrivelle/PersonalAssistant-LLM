@@ -18,6 +18,7 @@ from .identity import ChannelIdentity, IdentityProof, IdentityRepository
 from .projector import CuratedIndexProjector
 from .retrieval import HybridMemoryRetriever
 from .timeline import TimelineRepository
+from zhuangfy.relationship import RelationshipCore, RelationshipEvolution, RelationshipCandidate
 from .vector import EmbeddingProvider, QdrantLocalIndex, VectorIndex
 
 
@@ -31,6 +32,8 @@ class MemoryCore:
         self.database = MemoryDatabase(self.root / "memory.sqlite3")
         self.identities = IdentityRepository(self.database)
         self.timeline = TimelineRepository(self.database, self.identities)
+        self.relationship = RelationshipCore(self.database, self.identities)
+        self.relationship_evolution = RelationshipEvolution(self.relationship)
         self.curated = CuratorStore(self.database, self.identities, self.timeline)
         self.projector = CuratedIndexProjector(
             self.database, self.identities, self.curated, embedding,
@@ -65,6 +68,56 @@ class MemoryCore:
             conversation_id=conv.conversation_id, identity=ident,
             source_message_id=message_id, content=content)
         return {"conversation_id": conv.conversation_id, "entry_id": entry.entry_id}
+
+    def relationship_snapshot(self, *, identity: dict) -> dict:
+        """Private, verified client lookup. Unenrolled accounts get no relationship."""
+        import dataclasses
+        person = self._person(identity)
+        self.identities.require_consent(person, "timeline")
+        snap = self.relationship.snapshot(
+            agent_id=self.agent_id, identity=self._identity(identity))
+        if snap is None:
+            return {"enabled": False, "tier": "unassigned", "hint": ""}
+        # Never expose event text or untrusted memory content through the prompt.
+        return {"enabled": True, "tier": snap.tier, "version": snap.version,
+                "hint": snap.prompt_hint()}
+
+    def relationship_apply(self, *, identity: dict, source_entry_id: str,
+                           event_kind: str, confidence: float, evidence_quote: str,
+                           expected_version: int) -> dict:
+        """Candidate-only client submission; deterministic server adjudication."""
+        candidate = RelationshipCandidate.parse(
+            __import__("json").dumps({"event_kind": event_kind, "confidence": confidence,
+                                     "evidence_quote": evidence_quote}),
+            source_entry_id)
+        snap = self.relationship_evolution.apply(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            candidate=candidate, expected_version=expected_version)
+        return {"version": snap.version, "tier": snap.tier}
+
+    def admin_relationship_enroll(self, *, identity: dict, initial_tier: str = "L0",
+                                  allow_affection: bool = False) -> dict:
+        import dataclasses
+        snap = self.relationship.enroll(agent_id=self.agent_id,
+                                        identity=self._identity(identity),
+                                        initial_tier=initial_tier,
+                                        allow_affection=allow_affection)
+        return dataclasses.asdict(snap)
+
+    def admin_relationship_correct(self, *, identity: dict, expected_version: int,
+                                   changes: dict) -> dict:
+        import dataclasses
+        if not isinstance(changes, dict):
+            raise ValueError("Invalid relationship changes")
+        allowed = {"familiarity","trust","closeness","tier_ceiling","allow_affection",
+                   "avoid_nicknames","tone","auto_growth","frozen","enabled",
+                   "lock_familiarity","lock_trust","lock_closeness"}
+        if not changes or set(changes) - allowed:
+            raise ValueError("Unknown relationship correction")
+        snap = self.relationship.correct(agent_id=self.agent_id,
+                  identity=self._identity(identity), expected_version=expected_version,
+                  **changes)
+        return dataclasses.asdict(snap)
 
     def recall(self, *, identity: dict, query: str, limit: int = 5) -> dict:
         person_id = self._person(identity)
@@ -134,6 +187,8 @@ class MemoryCore:
                 # FK cascade removes Timeline entries, reflection jobs,
                 # evidence, curated memories, edited versions and links.
                 db.execute("DELETE FROM private_conversations WHERE person_id=?", (person_id,))
+                # Erase R1 relationship profile and audit events in the same transaction.
+                db.execute("DELETE FROM relationship_profiles WHERE person_id=?", (person_id,))
                 # Also cover any old/orphan curated rows without conversations.
                 db.execute("DELETE FROM curated_memories WHERE person_id=?", (person_id,))
                 db.execute("DELETE FROM reflection_jobs WHERE person_id=?", (person_id,))
