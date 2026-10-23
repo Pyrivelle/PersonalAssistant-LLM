@@ -55,6 +55,7 @@ from gpt_sovits import VOICE_DATA, load_settings as load_speech_settings
 from model_routes import can_attempt_stage
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
 from wake import ConversationGate, DEFAULT_ALIASES, DEFAULT_NAME, TRAILING, parse_aliases
+from zhuangfy.agent_v2.voice_turn import VoiceTurnManager, VoiceTurnConfig, VoiceTurn
 
 
 MAX_SECONDS = 60
@@ -205,6 +206,10 @@ class MainWindow(QMainWindow):
         self.wake_timer = QTimer(self)
         self.wake_timer.setInterval(500)
         self.wake_timer.timeout.connect(self.update_wake_status)
+        self.voice_turn_manager = VoiceTurnManager(VoiceTurnConfig())
+        self.voice_turn_timer = QTimer(self)
+        self.voice_turn_timer.setSingleShot(True)
+        self.voice_turn_timer.timeout.connect(self._finish_voice_turn_if_ready)
         self.gate: ConversationGate | None = None
         self.speech_started_at: float | None = None
         self.speech_started_during_playback = False
@@ -357,6 +362,13 @@ class MainWindow(QMainWindow):
             self.barge_in_mode.setCurrentIndex(mode_index)
         self.barge_in_mode.currentIndexChanged.connect(self.save_wake_settings)
         form.addRow("语音打断", self.barge_in_mode)
+        self.voice_turn_combo = QComboBox()
+        self.voice_turn_combo.addItem("兼容模式：识别一句立即回复", "legacy")
+        self.voice_turn_combo.addItem("连续对话：等待补充后合并回复（实验）", "combined")
+        turn_mode = self.voice_turn_combo.findData(saved["voice_turn_mode"])
+        self.voice_turn_combo.setCurrentIndex(max(0, turn_mode))
+        self.voice_turn_combo.currentIndexChanged.connect(self.save_wake_settings)
+        form.addRow("对话轮次", self.voice_turn_combo)
         self.model_button = QPushButton("模型设置与文字测试…")
         self.model_button.clicked.connect(self.open_model_settings)
         form.addRow("模型", self.model_button)
@@ -471,7 +483,7 @@ class MainWindow(QMainWindow):
     def load_wake_settings() -> dict:
         defaults = {"name": DEFAULT_NAME, "aliases": DEFAULT_ALIASES, "timeout": 30,
                     "auto_reply": True, "speak_reply": True, "voice_name": "Microsoft Yaoyao",
-                    "barge_in_mode": "speakers"}
+                    "barge_in_mode": "speakers", "voice_turn_mode": "legacy"}
         try:
             data = json.loads(SETTINGS.read_text(encoding="utf-8"))
             return {
@@ -482,6 +494,9 @@ class MainWindow(QMainWindow):
                 "speak_reply": bool(data.get("speak_reply", True)),
                 "voice_name": str(data.get("voice_name", "Microsoft Yaoyao")),
                 "barge_in_mode": str(data.get("barge_in_mode", "speakers")),
+                "voice_turn_mode": (data.get("voice_turn_mode")
+                                    if data.get("voice_turn_mode") in ("legacy", "combined")
+                                    else "legacy"),
             }
         except (OSError, ValueError, TypeError, AttributeError):
             return defaults
@@ -494,7 +509,8 @@ class MainWindow(QMainWindow):
         data = {"name": name, "aliases": self.wake_aliases.text().strip(), "timeout": self.wake_timeout.value(),
                 "auto_reply": self.auto_reply.isChecked(), "speak_reply": self.speak_reply.isChecked(),
                 "voice_name": self.voice_combo.currentText(),
-                "barge_in_mode": self.barge_in_mode.currentData()}
+                "barge_in_mode": self.barge_in_mode.currentData(),
+                "voice_turn_mode": self.voice_turn_combo.currentData()}
         try:
             SETTINGS.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         except OSError as error:
@@ -656,6 +672,8 @@ class MainWindow(QMainWindow):
             self.stop_continuous()
 
     def start_continuous(self) -> None:
+        self.voice_turn_timer.stop()
+        self.voice_turn_manager.interrupt()
         self.save_wake_settings()
         self.gate = ConversationGate(
             self.wake_name.text(), parse_aliases(self.wake_aliases.text()), self.wake_timeout.value()
@@ -725,6 +743,8 @@ class MainWindow(QMainWindow):
     def continuous_voice_started(self) -> None:
         if self.continuous_worker is None:
             return
+        if self.voice_turn_combo.currentData() == "combined":
+            self.voice_turn_timer.stop()
         self.speech_started_at = time.monotonic()
         self.speech_started_during_playback = (
             self.interaction_state == InteractionState.SPEAKING
@@ -753,6 +773,7 @@ class MainWindow(QMainWindow):
         if not text.strip():
             self.speech_started_at = None
             self.speech_started_during_playback = False
+            self._arm_voice_turn_timer()
             return
         log_event("语音", "识别", f"{language or '未知语言'} · {text}")
         started_during_playback = self.speech_started_during_playback
@@ -779,11 +800,13 @@ class MainWindow(QMainWindow):
         result = self.gate.process(text, now=self.speech_started_at)
         self.speech_started_at = None
         if result.event == "ignored":
+            self._arm_voice_turn_timer()
             self.update_wake_status()
             return
         self.gate.active_until = time.monotonic() + self.gate.timeout
         message = result.text[len(self.gate.name):].lstrip(TRAILING) if result.called_by_name else result.text
         if not message:
+            self._arm_voice_turn_timer()
             self.status_label.setText(f"已唤醒 {self.gate.name} · 现在可以直接说话")
             return
         self.result_edit.appendPlainText(f"你：{result.text}")
@@ -792,9 +815,50 @@ class MainWindow(QMainWindow):
             self.play_one_shot_audio()
             return
         if self.auto_reply.isChecked():
-            self.begin_chat_turn(message)
+            if self.voice_turn_combo.currentData() == "combined":
+                now = time.monotonic()
+                completed = self.voice_turn_manager.offer_final(
+                    message, at=now, language=language,
+                    authorized=True, final=True)
+                if completed is not None:
+                    self._dispatch_voice_turn(completed)
+                self._arm_voice_turn_timer()
+            else:
+                self.begin_chat_turn(message)
         else:
             self.status_label.setText(f"对话中 · 已识别一句（{language or '语言未知'}）")
+
+    def _arm_voice_turn_timer(self) -> None:
+        self.voice_turn_timer.stop()
+        if self.voice_turn_combo.currentData() != "combined":
+            return
+        deadline = self.voice_turn_manager.deadline
+        if deadline is None or self.continuous_worker is None:
+            return
+        delay_ms = max(20, int((deadline - time.monotonic()) * 1000) + 15)
+        self.voice_turn_timer.start(delay_ms)
+
+    @Slot()
+    def _finish_voice_turn_if_ready(self) -> None:
+        if self.continuous_worker is None or self.voice_turn_combo.currentData() != "combined":
+            return
+        if self.speech_started_at is not None:
+            self.voice_turn_timer.start(100)
+            return
+        completed = self.voice_turn_manager.take_ready(now=time.monotonic())
+        if completed is not None:
+            self._dispatch_voice_turn(completed)
+        self._arm_voice_turn_timer()
+
+    def _dispatch_voice_turn(self, turn: VoiceTurn) -> None:
+        if not self.voice_turn_manager.accepts_output(turn):
+            return
+        if self.interaction_state == InteractionState.THINKING:
+            self.interrupt_reply()
+        if self.interaction_state == InteractionState.LISTENING:
+            log_event("语音", "轮次合并",
+                      f"包含 {turn.parts} 个识别片段；结束原因={turn.reason}")
+            self.begin_chat_turn(turn.text)
 
     def _one_shot_matches(self, message: str) -> bool:
         def normalized(value: str) -> str:
@@ -1323,6 +1387,9 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def interrupt_reply(self) -> None:
+        if self.interaction_state in (InteractionState.THINKING, InteractionState.SPEAKING):
+            self.voice_turn_timer.stop()
+            self.voice_turn_manager.interrupt()
         if self.interaction_state == InteractionState.THINKING:
             # urllib may still be waiting for the old reply. Its turn token makes
             # that reply stale, so it cannot enter history or start playback.
@@ -1383,6 +1450,8 @@ class MainWindow(QMainWindow):
 
     def stop_continuous(self) -> None:
         self.wake_timer.stop()
+        self.voice_turn_timer.stop()
+        self.voice_turn_manager.interrupt()
         self.active_turn = None
         self.chat_worker = None
         self.tts_pending = False
@@ -1412,6 +1481,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def continuous_finished(self) -> None:
         self.wake_timer.stop()
+        self.voice_turn_timer.stop()
+        self.voice_turn_manager.interrupt()
         self.set_interaction_state(InteractionState.IDLE)
         self.gate = None
         self.speech_started_at = None

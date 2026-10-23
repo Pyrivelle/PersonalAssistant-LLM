@@ -38,6 +38,9 @@ class FakeCapture:
     def resume(self):
         self.paused = False
 
+    def request_stop(self):
+        self.stop_requested.set()
+
 
 class FakeStream:
     def __init__(self):
@@ -49,6 +52,9 @@ class FakeStream:
 
     def start(self):
         self.starts += 1
+
+    def close(self):
+        pass
 
 
 class FakeChatWorker(QObject):
@@ -362,6 +368,82 @@ class VoiceLoopTests(unittest.TestCase):
                         self.assertEqual(window.tts_chunks, ["第三段"])
                 finally:
                     window.close()
+
+    def test_combined_voice_turn_waits_for_user_and_sends_once(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                gui, "SETTINGS", Path(directory) / "settings.json"):
+            window = gui.MainWindow()
+            window.speak_reply.setChecked(False)
+            window.voice_turn_combo.setCurrentIndex(1)
+            window.gate = ConversationGate("庄方宜", (), 30)
+            window.continuous_worker = FakeCapture()
+            window.continuous_stream = FakeStream()
+            window.set_interaction_state(InteractionState.LISTENING)
+            FakeChatWorker.messages.clear()
+            real_now = gui.time.monotonic()
+            tick = [real_now]
+            try:
+                with patch.object(gui, "ChatWorker", FakeChatWorker), \
+                     patch.object(gui, "load_key", return_value="test-only-key"), \
+                     patch.object(gui.time, "monotonic", side_effect=lambda: tick[0]):
+                    window.continuous_result("庄方宜，我今天", "zh")
+                    self.assertEqual(FakeChatWorker.messages, [])
+                    tick[0] += 0.6
+                    window.continuous_result("遇到一件事情", "zh")
+                    self.assertEqual(FakeChatWorker.messages, [])
+                    self.assertTrue(window.voice_turn_manager.has_pending)
+                    tick[0] += 1.5
+                    window._finish_voice_turn_if_ready()
+                self.assertEqual(FakeChatWorker.messages, ["我今天 遇到一件事情"])
+                self.assertEqual(len(window.chat_history), 2)
+                self.assertFalse(window.voice_turn_manager.has_pending)
+            finally:
+                window.continuous_worker = None
+                window.continuous_stream = None
+                window.voice_turn_timer.stop()
+                window.close()
+
+    def test_combined_voice_turn_not_sent_during_active_speech_and_stops_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                gui, "SETTINGS", Path(directory) / "settings.json"):
+            window = gui.MainWindow()
+            window.voice_turn_combo.setCurrentIndex(1)
+            window.gate = ConversationGate("庄方宜", (), 30)
+            window.continuous_worker = FakeCapture()
+            window.continuous_stream = FakeStream()
+            window.set_interaction_state(InteractionState.LISTENING)
+            FakeChatWorker.messages.clear()
+            try:
+                with patch.object(gui, "ChatWorker", FakeChatWorker), \
+                     patch.object(gui, "load_key", return_value="test-only-key"):
+                    window.continuous_result("庄方宜，我还没讲完", "zh")
+                    window.continuous_voice_started()
+                    # Even when the deadline expires, active speech blocks dispatch.
+                    with patch.object(gui.time, "monotonic",
+                                      return_value=window.voice_turn_manager.deadline + 1):
+                        window._finish_voice_turn_if_ready()
+                    self.assertEqual(FakeChatWorker.messages, [])
+                    window.stop_continuous()
+                    self.assertFalse(window.voice_turn_manager.has_pending)
+                    self.assertFalse(window.voice_turn_timer.isActive())
+            finally:
+                window.continuous_worker = None
+                window.continuous_stream = None
+                window.voice_turn_timer.stop()
+                window.close()
+
+    def test_voice_turn_default_is_legacy_and_setting_persists(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                gui, "SETTINGS", Path(directory) / "settings.json"):
+            window = gui.MainWindow()
+            try:
+                self.assertEqual(window.voice_turn_combo.currentData(), "legacy")
+                window.voice_turn_combo.setCurrentIndex(1)
+                self.assertEqual(gui.MainWindow.load_wake_settings()["voice_turn_mode"],
+                                 "combined")
+            finally:
+                window.voice_turn_timer.stop()
+                window.close()
 
     def test_wake_sends_command_once_and_resumes_capture(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(gui, "SETTINGS", Path(directory) / "settings.json"):
