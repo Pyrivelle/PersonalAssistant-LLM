@@ -15,6 +15,9 @@ class ReplyPlan(Protocol):
     reply_act: str
     scene: str
     reply_style: str
+    reply_parts: int
+    emotion: str
+    emotion_intensity: float
     prefer: tuple[str, ...]
     avoid: tuple[str, ...]
     confidence: float
@@ -46,12 +49,15 @@ def build_replyer_guidance(plan: ReplyPlan) -> str:
         ("回复行为", plan.reply_act),
         ("交流场景", plan.scene),
         ("语气", plan.tone),
+        ("角色情绪", plan.emotion),
         ("注意", plan.attention),
     )
     for label, value in labels:
         if value:
             pieces.append(f"{label}：{value}")
     pieces.append(STYLE_HINTS.get(plan.reply_style, STYLE_HINTS["normal"]))
+    if plan.emotion and plan.emotion_intensity > 0:
+        pieces.append(f"情绪表现强度建议：{plan.emotion_intensity:.1f}（0为克制，1为明显；不要外露标签）")
     if plan.prefer:
         pieces.append("优先：" + "、".join(plan.prefer[:3]))
     if plan.avoid:
