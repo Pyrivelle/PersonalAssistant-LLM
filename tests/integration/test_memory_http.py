@@ -140,6 +140,50 @@ class HttpMemoryTests(unittest.TestCase):
             entry_id=reference["entry_id"], reply_id="qq-actual-ack",
             content="我们可以讨论剔除方案")["state"], "delivered")
 
+    def test_relationship_http_opt_in_correction_event_and_atomic_erasure(self):
+        alice, qq = self._person("甲", "alice")
+        bob, other = self._person("乙", "bob")
+        self.assertFalse(self.client.relationship_snapshot(qq)["enabled"])
+        with self.assertRaises(MemoryClientError) as err:
+            self.client.relationship_enroll(qq, initial_tier="L3", allow_affection=True)
+        self.assertEqual(err.exception.status, 401)  # Admin token only.
+        prof = self.admin.relationship_enroll(qq, initial_tier="L1")
+        self.assertEqual(prof["tier"], "L1")
+        snap = self.client.relationship_snapshot(qq)
+        self.assertTrue(snap["enabled"])
+        self.assertIn("可信宿主建议", snap["hint"])
+        self.assertFalse(self.client.relationship_snapshot(other)["enabled"])
+        with self.assertRaises(MemoryClientError) as err:
+            self.client.relationship_correct(qq, expected_version=1, changes={"frozen": True})
+        self.assertEqual(err.exception.status, 401)
+        revised = self.admin.relationship_correct(qq, expected_version=1,
+                 changes={"familiarity": 73, "trust": 64, "tier_ceiling": "L1",
+                          "avoid_nicknames": True})
+        self.assertEqual(revised["version"], 2)
+        self.assertEqual(self.client.relationship_snapshot(qq)["tier"], "L1")
+        user = self.client.receive(qq, chat_id="private:alice",
+                                   message_id="qq-relationship-1",
+                                   content="我们继续讨论港口渲染插件")
+        with self.assertRaises(MemoryClientError) as err:
+            self.client.relationship_apply(other, source_entry_id=user["entry_id"],
+                   event_kind="shared_topic", confidence=.99,
+                   evidence_quote="港口渲染插件", expected_version=1)
+        self.assertEqual(err.exception.status, 400)
+        grown = self.client.relationship_apply(qq, source_entry_id=user["entry_id"],
+                  event_kind="shared_topic", confidence=.95,
+                  evidence_quote="港口渲染插件", expected_version=2)
+        self.assertEqual(grown["version"], 3)
+        self.assertEqual(self.client.relationship_apply(qq, source_entry_id=user["entry_id"],
+                         event_kind="shared_topic", confidence=.95,
+                         evidence_quote="港口渲染插件", expected_version=3)["version"], 3)
+        self.assertTrue(self.client.erase_self(qq)["erased"])
+        with self.core.database.connection() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM relationship_profiles WHERE person_id=?",
+                                        (alice,)).fetchone()[0], 0)
+        with self.assertRaises(MemoryClientError) as err:
+            self.client.relationship_snapshot(qq)
+        self.assertEqual(err.exception.status, 403)
+
     def test_erasure_revokes_both_consents_and_does_not_silently_recapture(self):
         alice, qq = self._person("甲", "alice")
         desktop = MemoryChannel("desktop", "local", "alice-desktop")
