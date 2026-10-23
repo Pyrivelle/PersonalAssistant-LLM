@@ -3,6 +3,9 @@ from pathlib import Path
 import importlib.util
 import json
 import unittest
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "scripts/character_e12_private_trace.py"
@@ -18,6 +21,21 @@ class E12PrivateTraceTests(unittest.TestCase):
         self.assertTrue(all(c["channel"] == "qq_private" for c in cases))
         self.assertTrue(all(c["category"] == "private" for c in cases))
         self.assertTrue(all("lore" not in c["id"] for c in cases))
+
+    def test_planner_pins_route_and_receives_synthetic_context(self):
+        from zhuangfy.agent_v2.planner import plan_turn_v2
+        route = object()
+        received = {}
+        def fake_stage(*args, **kwargs):
+            received.update(kwargs)
+            return '{"action":"reply","confidence":0.9,"reply_style":"normal"}'
+        with patch.dict(sys.modules, {"model_routes": SimpleNamespace(invoke_stage=fake_stage)}):
+            plan = plan_turn_v2(SimpleNamespace(system_prompt="你是庄方宜。"), "fake",
+                                [], "你还记得项目名吗？", routes=route,
+                                trusted_context_notes="合成可信历史：项目为 AuroraKit。")
+        self.assertEqual(plan.action, "reply")
+        self.assertIs(received["routes"], route)
+        self.assertIn("AuroraKit", received["context_notes"])
 
     def test_html_escapes_untrusted_model_text(self):
         spec = importlib.util.spec_from_file_location("e12_runner", RUNNER)
