@@ -12,5 +12,6 @@
   "agent_v2_tools_enabled": false,
   "agent_v2_max_rounds": 4,
   "agent_v2_max_tools": 2,
-  "character_core_v2_enabled": false
+  "character_core_v2_enabled": false,
+  "character_knowledge_v1_enabled": false
 }
