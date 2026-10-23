@@ -40,3 +40,8 @@ data/*
 
 # Local skill grants; never commit enabled external plugin policies.
 **/skills_settings.json
+
+# Local B1 autonomy permissions and durable task database.
+**/autonomy_settings.json
+**/private_state/
+**/background*.sqlite3*
