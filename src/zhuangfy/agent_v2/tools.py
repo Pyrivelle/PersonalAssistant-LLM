@@ -57,8 +57,16 @@ async def _clock_utc_now(args: dict) -> str:
 def build_builtin_registry() -> AuthorizedToolRegistry:
     """Small useful read-only starter set; extensions must explicitly register."""
     registry = AuthorizedToolRegistry()
-    registry.register(ToolBinding("calculator.evaluate", _math_calculate,
-                                  frozenset({"private", "group"})))
-    registry.register(ToolBinding("clock.utc_now", _clock_utc_now,
-                                  frozenset({"private", "group"})))
+    registry.register(ToolBinding(
+        "calculator.evaluate", _math_calculate, frozenset({"private", "group"}),
+        description="仅计算有限长度的加减乘除及括号表达式，不执行 Python 代码",
+        parameters={"type": "object",
+                    "properties": {"expression": {"type": "string", "maxLength": 100}},
+                    "required": ["expression"], "additionalProperties": False},
+    ))
+    registry.register(ToolBinding(
+        "clock.utc_now", _clock_utc_now, frozenset({"private", "group"}),
+        description="获取宿主计算机的当前 UTC 时间，不返回用户时区",
+        parameters={"type": "object", "properties": {}, "additionalProperties": False},
+    ))
     return registry
