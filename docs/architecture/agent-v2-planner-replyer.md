@@ -56,3 +56,10 @@ Further work: A5 group participation and send timing; A6 cross-session Focus and
 ## Rollback
 
 Set `agent_v2_enabled` back to `false` and restart the QQ Bridge / affected desktop conversation window. The legacy Planner and message flow remain intact; no data migration is required.
+
+
+## Source-port reinforcement
+
+Following the GPLv3 licensing decision, the independent placeholder scoring is replaced by the actual upstream MaiBot fitted **reply-likelihood** and **DynamicReplyGate** classes in `src/zhuangfy/agent_v2/maisaka_port/`. The ZhuangFY `EventTurnGate` adapter preserves authorization, debounce, @ override, conversation scope, timer/tool-result continuation and future plugin admission boundaries. The upstream fitted probabilities are **not validated on ZhuangFY conversations**; do not activate passive group admission until actual session features and user permissions are connected.
+
+A separate `AgentCycleEngine` now models a bounded Planner → authorized Tool → receipt → Planner loop; each external tool must be explicitly registered, scoped and permitted. The real QQ bridge does not register external tools in this PR; `agent_v2_tools_enabled` defaults to false. **These new building blocks do not yet replace Maisaka's full Focus, interrupt control, or event scheduler.**
