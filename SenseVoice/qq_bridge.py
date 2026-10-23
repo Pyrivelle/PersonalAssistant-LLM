@@ -696,9 +696,12 @@ class QqBridge:
                         try:
                             allow_voice = (image_ref is None and current.kind == "private" and
                                            current.user_id in self.settings.voice_private_ids)
-                            allow_silence = (self.planner_settings.agent_v2_allow_silence_group
-                                             if current.kind == "group"
-                                             else self.planner_settings.agent_v2_allow_silence_private)
+                            allow_silence = (
+                                self.planner_settings.agent_v2_allow_silence_group
+                                or (current.kind == "group" and not directed)
+                                if current.kind == "group"
+                                else self.planner_settings.agent_v2_allow_silence_private
+                            )
                             tools_enabled = self.planner_settings.agent_v2_tools_enabled
                             names = (self.tool_registry.public_names(scope=current.kind)
                                      if tools_enabled else ())
