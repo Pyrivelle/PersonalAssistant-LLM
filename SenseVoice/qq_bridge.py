@@ -26,6 +26,7 @@ from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
 from fangyi_skill import guidance as fangyi_guidance
 from zhuangfy.persona.character_core_v2 import character_behavior, is_zhuangfangyi_prompt
+from zhuangfy.persona.knowledge_v1 import retrieve_character_knowledge, knowledge_context
 from zhuangfy.agent_v2.character_delivery import render_proactive_reply
 from gpt_sovits import load_settings as load_speech_settings
 from qq_reply_formatter import format_qq_reply
@@ -955,6 +956,19 @@ class QqBridge:
                         # LLMClient caps extra context; keep the member identity
                         # snapshot first rather than truncating it off the end.
                         notes = "\n".join([member_snapshot, notes])
+                    if self.planner_settings.character_knowledge_v1_enabled:
+                        try:
+                            found = retrieve_character_knowledge(
+                                settings.system_prompt, message, enabled=True)
+                            if found:
+                                lore = knowledge_context(found)
+                                # Real dialogue and member memory take precedence.
+                                if len(notes) + len(lore) + 1 <= 2600:
+                                    notes += "\n" + lore
+                                    log_event("QQ", "角色知识",
+                                              f"{current.scope} · 命中 {len(found)} 个带来源整理条目")
+                        except (OSError, ValueError, TypeError) as error:
+                            log_event("QQ", "角色知识跳过", type(error).__name__)
                     log_event("QQ", "生成开始", f"turn:{turn_id} · {current.scope}")
                     reply = await asyncio.to_thread(
                         invoke_stage, "reply", settings, key,
