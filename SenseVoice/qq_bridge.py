@@ -25,7 +25,8 @@ from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
 from fangyi_skill import guidance as fangyi_guidance
-from zhuangfy.persona.character_core_v2 import character_behavior
+from zhuangfy.persona.character_core_v2 import character_behavior, is_zhuangfangyi_prompt
+from zhuangfy.agent_v2.character_delivery import render_proactive_reply
 from gpt_sovits import load_settings as load_speech_settings
 from qq_reply_formatter import format_qq_reply
 from emotion import EmotionState
@@ -1198,8 +1199,9 @@ class QqBridge:
                     candidate = None
                     for review in self.initiative_inbox.actionable_reviews(policy.owner_scope, now - 86400):
                         source = f"goal:{review['goal_id']}"
-                        if not self.proactive_store.already_reserved(source):
-                            candidate = (source, review["proposed_text"])
+                        if (not self.proactive_store.already_reserved(source)
+                                and not self.proactive_store.already_considered(source)):
+                            candidate = (source, review["proposed_text"], review["topic"])
                             break
                     if candidate is None and config.daily_checkin:
                         source = f"checkin:{recipient}:{time.strftime('%Y-%m-%d', time.localtime(now))}"
@@ -1209,11 +1211,26 @@ class QqBridge:
                                 plan_checkin, settings, key,
                                 trace_id=f"checkin-{uuid.uuid4().hex[:10]}")
                             if choice.action in ("ask", "share"):
-                                candidate = (source, choice.text_draft)
+                                candidate = (source, choice.text_draft, "日常近况")
                             else:
                                 self.proactive_store.mark_considered(source, time.time())
                     if candidate and candidate[1]:
-                        source, message = candidate
+                        source, message, topic = candidate
+                        if (self.planner_settings.character_core_v2_enabled
+                                and is_zhuangfangyi_prompt(settings.system_prompt)):
+                            # CCV2 uses the same persona-aware Replyer stage as
+                            # normal conversation; the host still owns send consent.
+                            try:
+                                message = await asyncio.to_thread(
+                                    render_proactive_reply, settings, key,
+                                    approved_draft=message, topic=topic,
+                                    trace_id=f"ccv2-outreach-{uuid.uuid4().hex[:10]}")
+                                log_event("QQ", "角色V2主动表达", f"{source} · 已通过 Replyer")
+                            except Exception as error:
+                                self.proactive_store.mark_considered(source, time.time())
+                                log_event("QQ", "角色V2主动表达失败",
+                                          f"{source} · {type(error).__name__} · 本次不发送")
+                                continue
                         async with self.send_lock:
                             fresh = time.time()
                             busy = any(state.task and not state.task.done() or state.pending
