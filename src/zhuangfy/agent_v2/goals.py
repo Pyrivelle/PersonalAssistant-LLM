@@ -81,11 +81,16 @@ class GoalStore:
                 db.execute("ALTER TABLE goals ADD COLUMN tool_name TEXT NOT NULL DEFAULT ''")
             if "tool_arguments_json" not in columns:
                 db.execute("ALTER TABLE goals ADD COLUMN tool_arguments_json TEXT NOT NULL DEFAULT '{}'")
+            if "inquiry_allowed" not in columns:
+                db.execute("ALTER TABLE goals ADD COLUMN inquiry_allowed INTEGER NOT NULL DEFAULT 0")
+            if "inquiry_topic" not in columns:
+                db.execute("ALTER TABLE goals ADD COLUMN inquiry_topic TEXT NOT NULL DEFAULT ''")
 
     def create(self, *, goal_id: str, owner_scope: str,
                source_event_id: str, due_at: float, expires_at: float,
                consent: bool = False, max_attempts: int = 2,
-               tool_name: str = "", tool_arguments: dict | None = None) -> bool:
+               tool_name: str = "", tool_arguments: dict | None = None,
+               inquiry_allowed: bool = False, inquiry_topic: str = "") -> bool:
         """Caller must have verified permission; consent=False is never runnable."""
         if not all((isinstance(x, str) and 1 <= len(x) <= 128
                     for x in (goal_id, owner_scope, source_event_id))):
@@ -97,6 +102,11 @@ class GoalStore:
                            for v in (due_at, expires_at))
                 or not due_at < expires_at):
             raise ValueError("invalid goal deadline or attempt budget")
+        if type(inquiry_allowed) is not bool or not isinstance(inquiry_topic, str):
+            raise ValueError("inquiry consent/topic must have correct types")
+        if (inquiry_allowed and (not inquiry_topic.strip() or len(inquiry_topic) > 100)
+                or not inquiry_allowed and bool(inquiry_topic.strip())):
+            raise ValueError("inquiry needs a short, consented and grounded topic")
         if not isinstance(tool_name, str):
             raise ValueError("tool name must be a string")
         if tool_name:
@@ -120,10 +130,11 @@ class GoalStore:
               INSERT OR IGNORE INTO goals
                 (goal_id, owner_scope, source_event_id, consent, status,
                  due_at, expires_at, max_attempts, created_at, tool_name,
-                 tool_arguments_json)
-              VALUES (?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?)
+                 tool_arguments_json, inquiry_allowed, inquiry_topic)
+              VALUES (?, ?, ?, ?, 'scheduled', ?, ?, ?, ?, ?, ?, ?, ?)
             """, (goal_id, owner_scope, source_event_id, int(consent),
-                  due_at, expires_at, max_attempts, now, tool_name, encoded))
+                  due_at, expires_at, max_attempts, now, tool_name, encoded,
+                  int(inquiry_allowed), inquiry_topic.strip()))
             return cursor.rowcount == 1
 
     def claim_due(self, *, now: float, owner_scopes: frozenset[str],
