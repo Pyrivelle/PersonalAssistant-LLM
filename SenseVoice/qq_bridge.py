@@ -824,7 +824,8 @@ class QqBridge:
                                         tool_catalog=self.tool_registry.prompt_catalog(
                                             scope=current.kind),
                                         character_core_v2=self.planner_settings.character_core_v2_enabled,
-                                        character_channel="qq_group" if current.kind == "group" else "qq_private")
+                                        character_channel="qq_group" if current.kind == "group" else "qq_private",
+                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled)
                                 result = await AgentCycleEngine(
                                     max_rounds=self.planner_settings.agent_v2_max_rounds,
                                     max_tools=self.planner_settings.agent_v2_max_tools,
@@ -844,7 +845,8 @@ class QqBridge:
                                     allow_voice=allow_voice,
                                     visual_context=visual_context, trace_id=turn_id,
                                     character_core_v2=self.planner_settings.character_core_v2_enabled,
-                                    character_channel="qq_group" if current.kind == "group" else "qq_private")
+                                    character_channel="qq_group" if current.kind == "group" else "qq_private",
+                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled)
                                 action = choose_action(
                                     plan, allow_silence=allow_silence,
                                     already_waited=bool(state.planner_waits) or image_ref is not None)
@@ -925,6 +927,12 @@ class QqBridge:
                     if scene:
                         emotion_prompt += "\n" + scene
                         log_event("QQ", "角色场景", f"{current.scope} · {scene}")
+                    if self.planner_settings.relationship_behavior_r1_enabled:
+                        from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
+                        r1 = behavior_r1(settings.system_prompt, message,
+                                         channel="qq_group" if current.kind == "group" else "qq_private")
+                        if r1.guidance:
+                            emotion_prompt += "\n" + r1.guidance
                     member_key = None
                     member_snapshot = ""
                     if (image_ref is None and self.member_store is not None and current.kind == "private"
@@ -1244,7 +1252,8 @@ class QqBridge:
                                     render_proactive_reply, settings, key,
                                     approved_draft=message, topic=topic,
                                     trace_id=f"ccv2-outreach-{uuid.uuid4().hex[:10]}",
-                                    knowledge_enabled=self.planner_settings.character_knowledge_v1_enabled)
+                                    knowledge_enabled=self.planner_settings.character_knowledge_v1_enabled,
+                                    relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled)
                                 log_event("QQ", "角色V2主动表达", f"{source} · 已通过 Replyer")
                             except Exception as error:
                                 # A temporary Replyer/API failure should not
