@@ -25,7 +25,7 @@ SEEDS = {
 # These are conservative design heuristics, NOT claims of psychological accuracy.
 EVENTS = {
     "shared_topic": ("familiarity", 2, "received", 86400),
-    "cooperative_exchange": ("trust", 2, "delivered", 604800),
+    "cooperative_exchange": ("trust", 2, "received", 604800),
     "affection_signal": ("closeness", 1, "received", 604800),
 }
 TONE_OPTIONS = ("natural", "gentle", "direct")
@@ -295,7 +295,7 @@ class RelationshipCore:
             if consent is None:
                 raise PermissionError("Timeline consent is not active")
             source = db.execute("""
-                SELECT e.entry_id FROM timeline_entries e
+                SELECT e.entry_id,e.sequence,e.conversation_id FROM timeline_entries e
                 JOIN private_conversations c ON c.conversation_id=e.conversation_id
                 WHERE e.entry_id=? AND c.agent_id=? AND c.person_id=?
                   AND e.state=?
@@ -304,7 +304,17 @@ class RelationshipCore:
             """, (entry, agent_id, person_id, required_state, person_id,
                   required_state, required_state)).fetchone()
             if source is None:
-                raise ValueError("Evidence is missing, not delivered, or belongs to another person/agent")
+                raise ValueError("Evidence is missing or belongs to another person/agent")
+            if event_kind == "cooperative_exchange":
+                # An outbound delivery alone does not establish the user trusts us.
+                # The user must have engaged AFTER a delivered reply.
+                engaged = db.execute("""
+                    SELECT 1 FROM timeline_entries
+                    WHERE conversation_id=? AND speaker_role='assistant'
+                      AND state='delivered' AND sequence<? LIMIT 1
+                """, (source["conversation_id"], source["sequence"])).fetchone()
+                if engaged is None:
+                    raise ValueError("Trust signal needs user engagement after delivered reply")
             duplicate = db.execute("""
                 SELECT 1 FROM relationship_events
                 WHERE agent_id=? AND person_id=? AND kind=? AND source_entry_id=?
