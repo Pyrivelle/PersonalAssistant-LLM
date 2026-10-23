@@ -144,11 +144,13 @@ class HttpMemoryTests(unittest.TestCase):
         alice, qq = self._person("甲", "alice")
         bob, other = self._person("乙", "bob")
         self.assertFalse(self.client.relationship_snapshot(qq)["enabled"])
+        self.assertFalse(self.admin.relationship_get(qq)["enrolled"])
         with self.assertRaises(MemoryClientError) as err:
             self.client.relationship_enroll(qq, initial_tier="L3", allow_affection=True)
         self.assertEqual(err.exception.status, 401)  # Admin token only.
         prof = self.admin.relationship_enroll(qq, initial_tier="L1")
         self.assertEqual(prof["tier"], "L1")
+        self.assertEqual(self.admin.relationship_get(qq)["profile"]["tier"], "L1")
         snap = self.client.relationship_snapshot(qq)
         self.assertTrue(snap["enabled"])
         self.assertIn("可信宿主建议", snap["hint"])
@@ -176,6 +178,7 @@ class HttpMemoryTests(unittest.TestCase):
         self.assertEqual(self.client.relationship_apply(qq, source_entry_id=user["entry_id"],
                          event_kind="shared_topic", confidence=.95,
                          evidence_quote="港口渲染插件", expected_version=3)["version"], 3)
+        self.assertGreaterEqual(len(self.admin.relationship_events(qq)["events"]), 2)
         self.assertTrue(self.client.erase_self(qq)["erased"])
         with self.core.database.connection() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM relationship_profiles WHERE person_id=?",
