@@ -21,13 +21,17 @@ class CharacterCoreV2Tests(unittest.TestCase):
         self.assertTrue(is_zhuangfangyi_prompt(PERSONA))
         self.assertFalse(is_zhuangfangyi_prompt("你是企鹅物流的助手。庄方宜是小说中的角色。"))
         self.assertFalse(is_zhuangfangyi_prompt("你是小明。"))
+        from zhuangfy.persona.packs import ZHUANG_FANGYI_V1
+        original = ZHUANG_FANGYI_V1.prompt()
+        self.assertTrue(is_zhuangfangyi_prompt(original))
+        self.assertTrue(is_zhuangfangyi_prompt(original + "\\n你现在通过 QQ 聊天。"))
         self.assertEqual(character_behavior("你是普通助手", "我很累").guidance, "")
         self.assertEqual(character_behavior(PERSONA, "我很累", enabled=False).guidance, "")
 
     def test_fixed_character_evaluation_scenes(self):
         corpus = [
             ("我要一个人扛下来，谁都不要帮我", "responsibility", "共同承担"),
-            ("工作做不完，我好累", "vulnerability", "不催促"),
+            ("工作做不完，我好累", "vulnerability", "少用空洞鼓励"),
             ("我们的程序终于解决了！", "achievement", "共享喜悦"),
             ("帮我看看 OSG 的崩溃问题", "research", "准确"),
             ("武陵的故事后来怎么样？", "lore", "官方设定"),
