@@ -453,6 +453,9 @@ class QqBridge:
                   + (f" · {incoming.image_count} 张图片" if incoming.image else ""))
         state.pending = state.pending[-4:]
         state.last_arrival = now
+        if state.planner_waits and state.resume_after:
+            # A new user message is an explicit reason to reconsider early.
+            state.resume_after = 0.0
         if self.settings.message_debounce_mode != "off":
             if state.debouncer is None:
                 state.debouncer = MessageDebouncer(self.settings.message_debounce_mode)
@@ -624,7 +627,7 @@ class QqBridge:
                                 allow_silence=(self.planner_settings.agent_v2_allow_silence_group
                                                if current.kind == "group"
                                                else self.planner_settings.agent_v2_allow_silence_private),
-                                already_waited=bool(state.planner_waits))
+                                already_waited=bool(state.planner_waits) or image_ref is not None)
                             log_event("QQ", "思考V2",
                                       f"{current.scope} · 行为：{action} · 意图：{plan.social_intent[:70]} · "
                                       f"语气：{plan.tone} · 置信度：{plan.confidence:.2f}")
