@@ -44,9 +44,18 @@ class AuthorizedToolRegistry:
         self._tools: dict[str, ToolBinding] = {}
 
     def register(self, tool: ToolBinding) -> None:
-        if not tool.name or tool.name in self._tools:
+        self.register_many((tool,))
+
+    def register_many(self, bindings: tuple[ToolBinding, ...] | list[ToolBinding]) -> None:
+        """All-or-nothing registration; a failed skill cannot install half its tools."""
+        names = [tool.name for tool in bindings]
+        if not names or any(not name or name in self._tools for name in names):
             raise ValueError("Tool name empty or already registered")
-        self._tools[tool.name] = tool
+        if len(set(names)) != len(names):
+            raise ValueError("Duplicate tool names within one skill")
+        if any(not callable(tool.handler) for tool in bindings):
+            raise ValueError("Tool handler must be callable")
+        self._tools.update({tool.name: tool for tool in bindings})
 
     def available(self, name: str, *, scope: str, allow_mutation: bool = False) -> bool:
         tool = self._tools.get(name)
