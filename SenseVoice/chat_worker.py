@@ -16,6 +16,7 @@ from zhuangfy.agent_v2.planner import plan_turn_v2, PlanDecision
 from emotion import EmotionState
 from fangyi_skill import guidance as fangyi_guidance
 from zhuangfy.persona.character_core_v2 import character_behavior
+from zhuangfy.persona.knowledge_v1 import retrieve_character_knowledge, knowledge_context
 from activity_log import log_event, set_current_turn
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
 from zhuangfy.memory.routing import legacy_memory_allowed, new_memory_selected
@@ -173,6 +174,22 @@ class ChatWorker(QThread):
             if skill_hint:
                 emotion_prompt += "\n" + skill_hint
                 log_event(self.source, "角色场景", skill_hint)
+            if planner_config.character_knowledge_v1_enabled:
+                try:
+                    found = retrieve_character_knowledge(
+                        self.settings.system_prompt, self.message, enabled=True)
+                    # Protect trusted conversation + private memory priority.
+                    # Lore is read-only reference data, not user memory.
+                    if found:
+                        lore = knowledge_context(found)
+                        if len(context_notes) + len(lore) + 1 > 2600:
+                            lore = knowledge_context(found[:1])
+                        if len(context_notes) + len(lore) + 1 <= 2600:
+                            context_notes += "\n" + lore
+                            log_event(self.source, "角色知识",
+                                      f"本轮匹配 {len(found)} 个整理条目（非官方逐句核验）")
+                except (OSError, ValueError, TypeError) as error:
+                    log_event(self.source, "角色知识跳过", type(error).__name__)
             reply = invoke_stage(
                 "reply", self.settings, self.key, self.history, self.message,
                 memories=memories, emotion_context=emotion_prompt,
