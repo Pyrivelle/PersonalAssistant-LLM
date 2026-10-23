@@ -580,7 +580,7 @@ class QqBridge:
             state.pending.clear()
             event_ids = list(state.pending_event_ids)
             state.pending_event_ids.clear()
-            directed = state.pending_directed
+            directed = state.pending_directed or state.incoming.directed
             state.pending_directed = False
             images = state.pending_images[:]
             state.pending_images.clear()
