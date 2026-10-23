@@ -714,7 +714,9 @@ class QqBridge:
                                         plan_turn_v2, settings, key, state.context.history, message,
                                         allow_voice=allow_voice, visual_context=visual_context,
                                         trace_id=turn_id, tool_feedback=feedback,
-                                        available_tools=names)
+                                        available_tools=names,
+                                        tool_catalog=self.tool_registry.prompt_catalog(
+                                            scope=current.kind))
                                 result = await AgentCycleEngine(
                                     max_rounds=self.planner_settings.agent_v2_max_rounds,
                                     max_tools=self.planner_settings.agent_v2_max_tools,
