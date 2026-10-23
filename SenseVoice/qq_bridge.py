@@ -718,8 +718,11 @@ class QqBridge:
                     log_event("QQ", "已生成", f"turn:{turn_id} · {current.scope}")
                 # Format only model output; system commands and status notices
                 # are never passed through role/stage-cue cleanup.
+                reply_parts_cap = self.settings.private_max_reply_parts
+                if isinstance(plan, PlanDecision) and plan.reply_parts:
+                    reply_parts_cap = min(reply_parts_cap, plan.reply_parts)
                 cleaned, parts = format_qq_reply(reply, private=current.kind == "private",
-                                                  max_parts=self.settings.private_max_reply_parts)
+                                                  max_parts=reply_parts_cap)
                 if not cleaned:
                     state.last_failed_generation = message
                     state.last_failed_image = image_ref
@@ -747,7 +750,7 @@ class QqBridge:
                     # For long voice-request replies, fall back to short text
                     # bubbles as usual rather than synthesizing partial audio.
                     cleaned, parts = format_qq_reply(cleaned, private=current.kind == "private",
-                                                  max_parts=self.settings.private_max_reply_parts)
+                                                  max_parts=reply_parts_cap)
                 delivery = PartialReply(
                     user_text=message, canonical_reply=cleaned, parts=tuple(parts),
                     delivered=0, emotion=candidate, settings=settings,
