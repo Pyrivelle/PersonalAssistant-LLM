@@ -36,6 +36,7 @@ class PlannerSettings:
     agent_v2_tools_enabled: bool = False
     agent_v2_max_rounds: int = 4
     agent_v2_max_tools: int = 2
+    character_core_v2_enabled: bool = False  # opt-in while V1 remains available
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
@@ -67,6 +68,9 @@ class PlannerSettings:
         tools_enabled = raw.get("agent_v2_tools_enabled", False)
         max_rounds = raw.get("agent_v2_max_rounds", 4)
         max_tools = raw.get("agent_v2_max_tools", 2)
+        core_v2 = raw.get("character_core_v2_enabled", False)
+        if type(core_v2) is not bool:
+            raise ValueError("CCV2 开关必须是布尔值")
         if any(type(item) is not bool for item in (v2_enabled, silent_private, silent_group, tools_enabled)):
             raise ValueError("Agent V2 开关必须是布尔值")
         if type(wait_max) is not int or not 1 <= wait_max <= 12:
@@ -77,7 +81,8 @@ class PlannerSettings:
             raise ValueError("agent_v2_max_tools 必须在 0–6")
         return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop,
                    frozenset(memory_ids), skill, v2_enabled, silent_private,
-                   silent_group, wait_max, tools_enabled, max_rounds, max_tools)
+                   silent_group, wait_max, tools_enabled, max_rounds, max_tools,
+                   core_v2)
 
 
 @dataclass(frozen=True)
