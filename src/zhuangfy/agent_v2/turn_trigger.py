@@ -53,10 +53,12 @@ class EventTurnGate:
 
     def _prune(self, session_id: str, now: float) -> None:
         floor = now - self.window_seconds
-        for values in (self._demand.setdefault(session_id, deque()),
-                       self._replies.setdefault(session_id, deque())):
-            while values and values[0][0 if values is self._demand[session_id] else 0] < floor:
-                values.popleft()
+        demand = self._demand.setdefault(session_id, deque())
+        while demand and demand[0][0] < floor:
+            demand.popleft()
+        replies = self._replies.setdefault(session_id, deque())
+        while replies and replies[0] < floor:
+            replies.popleft()
         seen = self._seen.setdefault(session_id, {})
         for key, at in list(seen.items()):
             if at < floor:
@@ -94,13 +96,14 @@ class EventTurnGate:
         seen = self._seen[event.session_id]
         if event.event_id in seen:
             return GateResult("ignore", "duplicate_event")
-        seen[event.event_id] = now
         if event.session_kind == "private" or event.directed:
+            seen[event.event_id] = now
             return GateResult("trigger", "directed_or_private")
         if frequency <= 0:
             return GateResult("hold", "frequency_silent")
         if backoff_remaining > 0:
             return GateResult("delay", "idle_backoff", backoff_remaining)
+        seen[event.event_id] = now
         score = self._score(event)
         self._demand[event.session_id].append((now, score))
         expected = sum(value for _, value in self._demand[event.session_id])
