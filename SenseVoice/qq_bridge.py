@@ -1133,6 +1133,41 @@ class QqBridge:
                     reply_id=delivery.turn_id, content=delivery.canonical_reply)
             except Exception as error:
                 log_event("记忆", "送达记录失败", f"新记忆服务写入失败：{type(error).__name__}")
+        # R1-C only evaluates an actually delivered private turn. This is
+        # separately opt-in and cannot grant permissions or write facts.
+        if (self.planner_settings.relationship_behavior_r1_enabled
+                and self.planner_settings.relationship_evolution_r1_enabled
+                and self.memory_client is not None and delivery.memory_ref is not None
+                and current.kind == "private"):
+            try:
+                from zhuangfy.relationship.evolution import PROMPT, RelationshipCandidate
+                claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
+                state_now = await asyncio.to_thread(
+                    self.memory_client.relationship_snapshot, claim)
+                if state_now.get("enabled") and type(state_now.get("version")) is int:
+                    src_id = delivery.memory_ref["entry_id"]
+                    def _valid_relation_json(value):
+                        try:
+                            RelationshipCandidate.parse(value, src_id)
+                            return True
+                        except (ValueError, TypeError, KeyError):
+                            return False
+                    raw_candidate = await asyncio.to_thread(
+                        invoke_stage, "planner", delivery.settings, delivery.api_key,
+                        [], delivery.user_text[:1200], system_prompt=PROMPT,
+                        trace_id="r1c-" + delivery.turn_id,
+                        response_validator=_valid_relation_json)
+                    proposal = RelationshipCandidate.parse(raw_candidate, src_id)
+                    if proposal.event_kind != "none" and proposal.confidence >= .9:
+                        await asyncio.to_thread(
+                            self.memory_client.relationship_apply, claim,
+                            source_entry_id=src_id, event_kind=proposal.event_kind,
+                            confidence=proposal.confidence,
+                            evidence_quote=proposal.evidence_quote,
+                            expected_version=state_now["version"])
+            except Exception as error:
+                # Evaluation errors never affect delivered messages or permissions.
+                log_event("关系R1", "候选审核跳过", type(error).__name__)
         if (self.context_store and current.kind == "private"
                 and current.user_id in self.planner_settings.persist_private_ids):
             try:
