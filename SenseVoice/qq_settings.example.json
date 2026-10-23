@@ -9,5 +9,7 @@
   "group_max_replies_per_hour": 8,
   "quiet_seconds": 1.2,
   "private_max_reply_parts": 3,
-  "message_debounce_mode": "off"
+  "message_debounce_mode": "off",
+  "passive_group_ids": [],
+  "group_reply_frequency": 0.45
 }
