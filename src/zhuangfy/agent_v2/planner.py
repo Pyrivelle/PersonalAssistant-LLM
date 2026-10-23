@@ -161,10 +161,14 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
                  character_core_v2: bool = False,
                  character_channel: str = "qq_private",
                  relationship_behavior_r1: bool = False,
-                 routes=None, trusted_context_notes: str = "") -> PlanDecision:
+                 routes=None, trusted_context_notes: str = "",
+                 relationship_tier: str = "unassigned",
+                 relationship_hint: str = "") -> PlanDecision:
     """Use existing stage routing; caller handles errors and default fallback."""
     from model_routes import invoke_stage
 
+    if relationship_tier not in ("unassigned", "L0", "L1", "L2", "L3"):
+        raise ValueError("Invalid trusted relationship tier")
     prompt = PLANNER_V2_PROMPT
     if getattr(settings, "system_prompt", ""):
         # Character persona is background for behavior, not a replacement for
@@ -180,7 +184,11 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
             prompt += "\n【角色行为判断准则（不赋予执行权限）】\n" + cue.guidance[:1100]
     if relationship_behavior_r1:
         from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
-        r1 = behavior_r1(settings.system_prompt, user_text, channel=character_channel)
+        r1 = behavior_r1(settings.system_prompt, user_text, channel=character_channel,
+                         tier=relationship_tier)
+        if relationship_hint:
+            # Host-owned snapshot only: never derive status from user text.
+            prompt += "\n【已验证身份的关系快照】\n" + relationship_hint[:480]
         if r1.guidance:
             prompt += "\n【R1-A 实际行为约束（非执行许可）】\n" + r1.guidance[:1250]
     names = [name for name in available_tools[:12]
@@ -207,7 +215,8 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
     decision = parse_plan_v2(raw, allow_voice=allow_voice)
     if relationship_behavior_r1 and decision.action == "reply":
         from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
-        context = behavior_r1(settings.system_prompt, user_text, channel=character_channel)
+        context = behavior_r1(settings.system_prompt, user_text,
+                              channel=character_channel, tier=relationship_tier)
         # Apply a small deterministic host-side style constraint rather than
         # relying only on the LLM noticing a long prompt. Explicitly requested
         # in-depth answers and creative writing are not shortened.
