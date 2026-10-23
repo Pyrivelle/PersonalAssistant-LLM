@@ -38,6 +38,9 @@ class FakeCapture:
     def resume(self):
         self.paused = False
 
+    def request_stop(self):
+        self.stop_requested.set()
+
 
 class FakeStream:
     def __init__(self):
