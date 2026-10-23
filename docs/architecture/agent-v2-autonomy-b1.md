@@ -40,6 +40,8 @@ GoalStore(Path("private_state/background.db")).create(
     due_at=1730000000, expires_at=1930000000,
     consent=True, tool_name="calculator.evaluate",
     tool_arguments={"expression": "12 * 3"},
+    # 只有明确允许讨论此任务后才填写以下两项：
+    inquiry_allowed=False, inquiry_topic="",
 )
 ```
 
@@ -63,7 +65,7 @@ PYTHONPATH=src python -m zhuangfy.agent_v2.autonomy_cli \
 
 后台循环每次处理有限任务，没有到期任务时仅等待下一轮检查；服务退出后仍然保存已完成、失败或可恢复的任务。建议通过操作系统服务管理器管理进程，这个 PR 不创建自动启动项。
 
-`draft_inquiries` 默认 false。即使启用也只在数据库的 `initiative_drafts` 表记录候选意图，不自动发消息。若你希望庄方宜自然主动问你问题，后续 B2 应接入经过许可的 `InitiativePlanner`、社交频率门控、安静时段和平台送达回执，而不是直接把草稿送进 QQ。
+`draft_inquiries` 默认 false。**仅开启它仍然不足以产生候选：每个任务还要单独授权 `inquiry_allowed=true` 并注明清楚的 `inquiry_topic`，或者由管理员使用 CLI 的 `--allow-inquiry --inquiry-topic` 明确设置。** 即使满足条件，也只在数据库的 `initiative_drafts` 表记录候选意图，不自动发消息。若你希望庄方宜自然主动问你问题，后续 B2 应接入经过许可的 `InitiativePlanner`、社交频率门控、安静时段和平台送达回执，而不是直接把草稿送进 QQ。
 
 ## 安全与限制
 
