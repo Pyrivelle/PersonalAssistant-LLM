@@ -768,6 +768,18 @@ class QqBridge:
                             message_id=current.message_id, content=message)
                     except Exception as error:
                         log_event("记忆", "记录跳过", f"新记忆服务不可用或未授权：{type(error).__name__}")
+                relation_tier, relation_hint = "unassigned", ""
+                if (self.planner_settings.relationship_behavior_r1_enabled
+                        and self.memory_client is not None and memory_claim is not None
+                        and memory_ref is not None and current.kind == "private"):
+                    try:
+                        relation = await asyncio.to_thread(
+                            self.memory_client.relationship_snapshot, memory_claim)
+                        if relation.get("enabled") and relation.get("tier") in ("L0","L1","L2","L3"):
+                            relation_tier = relation["tier"]
+                            relation_hint = str(relation.get("hint", ""))[:480]
+                    except Exception as error:
+                        log_event("关系R1", "读取跳过", type(error).__name__)
                 focus_session = (f"group:{current.group_id}" if current.kind == "group"
                                  else f"private:{current.user_id}")
                 async with self.focus_runtime.turn(
@@ -825,7 +837,9 @@ class QqBridge:
                                             scope=current.kind),
                                         character_core_v2=self.planner_settings.character_core_v2_enabled,
                                         character_channel="qq_group" if current.kind == "group" else "qq_private",
-                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled)
+                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled,
+                                        relationship_tier=relation_tier,
+                                        relationship_hint=relation_hint)
                                 result = await AgentCycleEngine(
                                     max_rounds=self.planner_settings.agent_v2_max_rounds,
                                     max_tools=self.planner_settings.agent_v2_max_tools,
@@ -846,7 +860,9 @@ class QqBridge:
                                     visual_context=visual_context, trace_id=turn_id,
                                     character_core_v2=self.planner_settings.character_core_v2_enabled,
                                     character_channel="qq_group" if current.kind == "group" else "qq_private",
-                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled)
+                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled,
+                                        relationship_tier=relation_tier,
+                                        relationship_hint=relation_hint)
                                 action = choose_action(
                                     plan, allow_silence=allow_silence,
                                     already_waited=bool(state.planner_waits) or image_ref is not None)
@@ -930,10 +946,11 @@ class QqBridge:
                     if self.planner_settings.relationship_behavior_r1_enabled:
                         from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
                         r1 = behavior_r1(settings.system_prompt, message,
-                                         channel="qq_group" if current.kind == "group" else "qq_private")
+                                         channel="qq_group" if current.kind == "group" else "qq_private",
+                                         tier=relation_tier)
                         if r1.guidance:
                             # Model client caps emotion_context: evidence guidance first.
-                            emotion_prompt = r1.guidance + "\n" + emotion_prompt
+                            emotion_prompt = r1.guidance + "\n" + relation_hint + "\n" + emotion_prompt
                     member_key = None
                     member_snapshot = ""
                     if (image_ref is None and self.member_store is not None and current.kind == "private"
