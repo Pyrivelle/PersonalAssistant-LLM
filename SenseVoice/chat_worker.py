@@ -146,7 +146,8 @@ class ChatWorker(QThread):
                         self.settings, self.key, self.history, self.message,
                         allow_voice=False, visual_context=visual_context, trace_id=self.turn_id,
                         character_core_v2=planner_config.character_core_v2_enabled,
-                        character_channel="chat")
+                        character_channel="chat",
+                        relationship_behavior_r1=planner_config.relationship_behavior_r1_enabled)
                     # Desktop/voice UI expects a visible reply for every initiated
                     # request. Wait/stop are enabled only in the QQ async scheduler.
                     if isinstance(plan, PlanDecision) and plan.action != "reply":
@@ -174,6 +175,12 @@ class ChatWorker(QThread):
             if skill_hint:
                 emotion_prompt += "\n" + skill_hint
                 log_event(self.source, "角色场景", skill_hint)
+            if planner_config.relationship_behavior_r1_enabled:
+                from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
+                guidance = behavior_r1(self.settings.system_prompt, self.message, channel="chat").guidance
+                if guidance:
+                    # Model client caps emotion_context at 2000 chars: put R1 first.
+                    emotion_prompt = guidance + "\n" + emotion_prompt
             if planner_config.character_knowledge_v1_enabled:
                 try:
                     found = retrieve_character_knowledge(
@@ -195,6 +202,11 @@ class ChatWorker(QThread):
                 memories=memories, emotion_context=emotion_prompt,
                 context_notes=context_notes, visual_context=visual_context,
                 trace_id=self.turn_id)
+            if planner_config.relationship_behavior_r1_enabled:
+                from zhuangfy.persona.relationship_behavior_r1 import tidy_r1_reply
+                reply = tidy_r1_reply(self.settings.system_prompt, self.message, reply, channel="chat")
+                if not reply.strip():
+                    raise ValueError("R1 回答仅含舞台旁白，未生成可见对白")
             self.replied.emit(reply)
         except Exception as error:
             log_event(self.source, "失败", f"turn:{self.turn_id} · 对话失败：{type(error).__name__}: {error}")

@@ -27,6 +27,7 @@ on:
           - v1
           - ccv2
           - ccv2_ckv1
+          - ccv2_ckv1_r1
       cases:
         description: Number of synthetic cases (3 = low-cost smoke test)
         type: choice

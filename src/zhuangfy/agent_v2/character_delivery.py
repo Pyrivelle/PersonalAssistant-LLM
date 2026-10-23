@@ -12,7 +12,8 @@ from zhuangfy.persona.knowledge_v1 import retrieve_character_knowledge, knowledg
 
 def render_proactive_reply(settings, api_key: str, *, approved_draft: str,
                            topic: str = "", trace_id: str = "",
-                           knowledge_enabled: bool = False) -> str:
+                           knowledge_enabled: bool = False,
+                           relationship_behavior_r1: bool = False) -> str:
     """Rephrase a reviewed initiative through the ordinary 'reply' model route.
 
     A planner draft is DATA, not a new user message, instruction or tool receipt.
@@ -44,12 +45,18 @@ def render_proactive_reply(settings, api_key: str, *, approved_draft: str,
             lore = knowledge_context(found)
             if len(notes) + len(lore) + 1 <= 1400:
                 notes += "\n" + lore
+    expression = REPLYER_POLICY + "\n" + cue.guidance
+    if relationship_behavior_r1:
+        from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
+        r1 = behavior_r1(settings.system_prompt, topic, channel="initiative")
+        if r1.guidance:
+            expression = r1.guidance + "\n" + expression
     text = invoke_stage(
         "reply", settings, api_key, [],
         "请将已批准的交流候选自然地表述成一条可以发送的 QQ 私聊消息。"
         "不需要再决定是否发送。不要添加候选之外的用户生活事实，"
         "不声称查看了用户当前状态；直接给出对白，尽量一两句话。",
-        emotion_context=(REPLYER_POLICY + "\n" + cue.guidance)[:1850],
+        emotion_context=expression[:3300],
         context_notes=notes[:1400], trace_id=trace_id,
         response_validator=lambda value: (
             isinstance(value, str) and 0 < len(value.strip()) <= 220
