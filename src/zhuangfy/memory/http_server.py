@@ -36,6 +36,8 @@ ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/forget-person", "/v1/admin/link-episodes",
     "/v1/admin/list-jobs", "/v1/admin/retry-job",
     "/v1/admin/relationship/enroll", "/v1/admin/relationship/correct",
+    "/v1/admin/relationship/get", "/v1/admin/relationship/events",
+    "/v1/admin/relationship/erase",
 })
 
 
@@ -107,6 +109,12 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.admin_relationship_enroll(**payload)
                 elif path == "/v1/admin/relationship/correct":
                     result = core.admin_relationship_correct(**payload)
+                elif path == "/v1/admin/relationship/get":
+                    result = core.admin_relationship_get(**payload)
+                elif path == "/v1/admin/relationship/events":
+                    result = core.admin_relationship_events(**payload)
+                elif path == "/v1/admin/relationship/erase":
+                    result = core.admin_relationship_erase(**payload)
                 elif path == "/v1/admin/create-person":
                     result = core.admin_create_person(**payload)
                 elif path == "/v1/admin/link":
