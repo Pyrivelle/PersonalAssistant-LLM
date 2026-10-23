@@ -19,7 +19,7 @@ def render(rows, provider, model):
             ("Planner 决策（非隐藏推理）", json.dumps(r["planner"], ensure_ascii=False, indent=2)),
             ("宿主动作", r["action"]),
             ("Replyer 指导", r["guidance"]),
-            ("传给 Replyer 的合并约束（最多 2000 字符）", r["all_cues"]),
+            ("传给 Replyer 的合并约束（最多 2000 字符）", r.get("all_cues", "")),
             ("Replyer 原始回答", r["raw"]),
             ("R1 最终回答", r["final"]),
             ("自动提示", ", ".join(r["warnings"])),
