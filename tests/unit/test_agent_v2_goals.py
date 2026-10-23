@@ -71,6 +71,7 @@ class GoalStoreTests(unittest.TestCase):
         self.assertTrue(self.store.revoke("goal-1"))
         self.assertFalse(self.store.finish(event, now=101, success=True))
         self.assertEqual(self.store.inspect("goal-1")["status"], "revoked")
+        self.assertEqual([x["action"] for x in self.store.audit("goal-1")], ["revoked"])
         self.assertFalse(self.store.revoke("goal-1"))
         self.assertEqual(self.store.claim_due(now=150, owner_scopes=frozenset({"qq:private:42"})), ())
 
