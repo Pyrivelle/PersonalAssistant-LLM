@@ -74,13 +74,13 @@ class QqParsingTests(unittest.TestCase):
                 "description":"offline", "entry":"skill.py", "api_version":1
             }), encoding="utf-8")
             (folder / "skill.py").write_text(
-                "from zhuangfy.agent_v2.runtime import ToolBinding\\n"
-                "async def call(args): return 'ok'\\n"
-                "def setup(context):\\n"
+                "from zhuangfy.agent_v2.runtime import ToolBinding\n"
+                "async def call(args): return 'ok'\n"
+                "def setup(context):\n"
                 " return [ToolBinding('demo_skill.read',call,"
                 "frozenset({'private','group'}),description='read-only',"
                 "parameters={'type':'object','properties':{},"
-                "'additionalProperties':False})]\\n",
+                "'additionalProperties':False})]\n",
                 encoding="utf-8")
             config = root / "skills_settings.json"
             config.write_text(json.dumps({"skills":{"demo_skill":{
