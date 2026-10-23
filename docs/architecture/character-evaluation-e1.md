@@ -40,6 +40,9 @@ python scripts/character_e1_capture.py --variant ccv2 --out build/e1-ccv2.json -
 python scripts/character_e1_capture.py --variant ccv2_ckv1 --out build/e1-ccv2-ckv1.json --allow-network
 
 python scripts/character_e1_report.py --responses build/e1-ccv2.json --baseline build/e1-v1.json --out build/e1-compare
+
+# 两份回答都已有各自人工盲评后，另可指定两份评分：
+python scripts/character_e1_report.py --responses build/e1-ccv2.json --baseline build/e1-v1.json --reviews build/e1-ccv2-reviewed.json --baseline-reviews build/e1-v1-reviewed.json --out build/e1-rated-compare
 \`\`\`
 
 \`--max-cases 3\` 可低成本试跑。捕获文件可包含模型生成的敏感内容，不要直接提交到公开仓库。需要使用同一模型、采样参数、合成历史与完整题目版本进行相对比较，并记录模型路由与人格配置；API 后端可能有随机性，不应从单次样本得出显著性结论。
