@@ -1,6 +1,11 @@
 """B1 background goals/inquiry tests: SQLite + real builtin tools, no LLM/network."""
 import asyncio
+import contextlib
+import io
 import json
+import sys
+import time
+from unittest.mock import patch
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -11,7 +16,7 @@ from zhuangfy.agent_v2.autonomy import BackgroundGoalRunner, GoalGrant
 from zhuangfy.agent_v2.initiative import InitiativeGrant, InitiativeInbox
 from zhuangfy.agent_v2.tools import build_builtin_registry
 from zhuangfy.agent_v2.runtime import AuthorizedToolRegistry, ToolBinding
-from zhuangfy.agent_v2.autonomy_cli import load_policy
+from zhuangfy.agent_v2.autonomy_cli import load_policy, main
 
 
 class BackgroundTests(unittest.IsolatedAsyncioTestCase):
@@ -209,6 +214,33 @@ class InitiativeTests(unittest.TestCase):
                 path.write_text(json.dumps(invalid), encoding="utf-8")
                 with self.assertRaises(ValueError):
                     load_policy(path)
+
+    def test_operator_cli_run_once_executes_only_explicitly_granted_goal(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            db = root / "b1.sqlite3"
+            policy = root / "autonomy_settings.json"
+            policy.write_text(json.dumps({
+                "enabled": True,
+                "owner_grants": {"qq:private:42": {
+                    "tools": ["calculator.evaluate"], "draft_inquiries": False
+                }}
+            }), encoding="utf-8")
+            clock = time.time()
+            GoalStore(db).create(
+                goal_id="cli-1", owner_scope="qq:private:42",
+                source_event_id="explicit-consent-proof", due_at=clock - 5,
+                expires_at=clock + 300, consent=True, tool_name="calculator.evaluate",
+                tool_arguments={"expression": "6 * 8"},
+            )
+            stdout = io.StringIO()
+            with patch.object(sys, "argv", ["autonomy_cli",
+                      "--database", str(db), "--policy", str(policy), "once"]), \
+                 contextlib.redirect_stdout(stdout):
+                main()
+            self.assertIn("cli-1", stdout.getvalue())
+            self.assertIn("48", GoalStore(db).inspect("cli-1")["last_receipt"])
+            self.assertEqual(GoalStore(db).inspect("cli-1")["status"], "done")
 
     def test_legacy_sqlite_schema_migrates_without_data_loss(self):
         with tempfile.TemporaryDirectory() as d:
