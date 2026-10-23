@@ -120,6 +120,30 @@ class CharacterE1Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compare_reports({"results":test["results"][:-1],"variant":"bad"},report)
 
+    def test_compares_real_human_scores_when_both_variants_reviewed(self):
+        one = {self.cases[0].id: {"scores":{k:3 for k in WEIGHTS}, "notes":"旧版盲评"}}
+        two = {self.cases[0].id: {"scores":{k:4 for k in WEIGHTS}, "notes":"新版盲评"}}
+        prev = audit(self.cases,self.responses,{"source":"model_capture","variant":"v1"},one)
+        newer = audit(self.cases,self.responses,{"source":"model_capture","variant":"ccv2"},two)
+        delta = compare_reports(newer,prev)
+        self.assertEqual(delta["changed_cases"][0]["baseline_human_score"],60)
+        self.assertEqual(delta["changed_cases"][0]["current_human_score"],80)
+        self.assertIn("v1",markdown_report({**newer,"comparison":delta}))
+
+    def test_capture_metadata_is_bounded_and_visible(self):
+        with tempfile.TemporaryDirectory() as d:
+            data=json.loads(DEMO.read_text(encoding="utf-8"))
+            data["capture_info"]={"provider":"local_test","configured_model":"example"}
+            path=Path(d)/"source.json"
+            path.write_text(json.dumps(data,ensure_ascii=False),encoding="utf-8")
+            responses,meta=load_responses(path,self.cases)
+            report=audit(self.cases,responses,meta)
+            self.assertEqual(report["capture_info"]["provider"],"local_test")
+            self.assertIn("local_test",markdown_report(report))
+            data["capture_info"]["secret"] = "not permitted"
+            path.write_text(json.dumps(data),encoding="utf-8")
+            with self.assertRaises(ValueError): load_responses(path,self.cases)
+
     def test_cli_creates_reports_and_blocks_unconsented_real_model_capture(self):
         with tempfile.TemporaryDirectory() as d:
             output=Path(d)/"reports"
