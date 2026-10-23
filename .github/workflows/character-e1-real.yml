@@ -36,9 +36,41 @@ on:
           - "3"
           - "10"
           - "32"
+      reply_timeout:
+        description: E1-only timeout in seconds per attempt (not production chat)
+        type: choice
+        required: true
+        default: "75"
+        options:
+          - "45"
+          - "75"
+          - "105"
+      backup_provider:
+        description: Optional backup provider on timeout/network/429 (mixed models labelled)
+        type: choice
+        required: true
+        default: none
+        options:
+          - none
+          - siliconflow
+          - deepseek
+          - kimi_cn
+          - kimi_global
+          - hachimi
+      backup_model:
+        description: Exact backup model ID; blank when backup_provider is none
+        type: string
+        required: false
+        default: ""
+      resume_run_id:
+        description: Previous E1 run ID to resume from (0 = start fresh)
+        type: string
+        required: true
+        default: "0"
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: character-e1-live-${{ github.ref }}
@@ -55,7 +87,12 @@ jobs:
       E1_MODEL: ${{ inputs.model }}
       E1_VARIANT: ${{ inputs.variant }}
       E1_CASES: ${{ inputs.cases }}
+      E1_TIMEOUT: ${{ inputs.reply_timeout }}
+      E1_BACKUP_PROVIDER: ${{ inputs.backup_provider }}
+      E1_BACKUP_MODEL: ${{ inputs.backup_model }}
+      E1_RESUME_RUN: ${{ inputs.resume_run_id }}
       ZHUANGFY_E1_API_KEY: ${{ secrets.ZHUANGFY_E1_API_KEY }}
+      ZHUANGFY_E1_BACKUP_API_KEY: ${{ secrets.ZHUANGFY_E1_BACKUP_API_KEY }}
     steps:
       - name: Checkout trusted repository code
         uses: actions/checkout@v4
@@ -70,17 +107,50 @@ jobs:
             echo "::error::Missing Actions repository secret ZHUANGFY_E1_API_KEY"
             exit 1
           fi
+      - name: Validate resume and backup inputs
+        shell: bash
+        run: |
+          if [[ ! "$E1_RESUME_RUN" =~ ^(0|[1-9][0-9]{0,17})$ ]]; then
+            echo "::error::resume_run_id must be 0 or a numeric run ID"
+            exit 1
+          fi
+          if [[ "$E1_BACKUP_PROVIDER" == "none" ]]; then
+            if [[ -n "$E1_BACKUP_MODEL" ]]; then
+              echo "::error::backup_model must be empty when backup is disabled"
+              exit 1
+            fi
+          elif [[ -z "$E1_BACKUP_MODEL" || -z "$ZHUANGFY_E1_BACKUP_API_KEY" ]]; then
+            echo "::error::Backup requires backup_model and ZHUANGFY_E1_BACKUP_API_KEY Secret"
+            exit 1
+          fi
+      - name: Download previous capture from E1 run
+        if: ${{ inputs.resume_run_id != '0' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: character-e1-real-report
+          run-id: ${{ inputs.resume_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: build/e1-previous
       - name: Capture actual cloud model responses (billable)
         shell: bash
         run: |
           mkdir -p build/e1-real-report
-          python scripts/character_e1_capture.py \
-            --variant "$E1_VARIANT" \
-            --max-cases "$E1_CASES" \
-            --cloud-provider "$E1_PROVIDER" \
-            --cloud-model "$E1_MODEL" \
-            --out build/e1-real-report/model-capture.json \
+          args=(
+            --variant "$E1_VARIANT"
+            --max-cases "$E1_CASES"
+            --reply-timeout "$E1_TIMEOUT"
+            --cloud-provider "$E1_PROVIDER"
+            --cloud-model "$E1_MODEL"
+            --out build/e1-real-report/model-capture.json
             --allow-network
+          )
+          if [[ "$E1_RESUME_RUN" != "0" ]]; then
+            args+=(--resume-from build/e1-previous/model-capture.json)
+          fi
+          if [[ "$E1_BACKUP_PROVIDER" != "none" ]]; then
+            args+=(--backup-provider "$E1_BACKUP_PROVIDER" --backup-model "$E1_BACKUP_MODEL")
+          fi
+          python scripts/character_e1_capture.py "${args[@]}"
       - name: Generate human-reviewable HTML, Markdown and JSON
         if: always()
         shell: bash
