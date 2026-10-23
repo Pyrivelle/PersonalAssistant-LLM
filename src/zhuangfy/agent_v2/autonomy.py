@@ -13,6 +13,7 @@ import time
 from typing import Callable
 
 from .goals import GoalEvent, GoalStore
+from .initiative import InitiativeInbox, InitiativeGrant
 from .runtime import AuthorizedToolRegistry, ToolReceipt
 
 
@@ -35,6 +36,7 @@ class BackgroundResult:
     committed: bool
     tool_name: str
     receipt: str
+    inquiry_drafted: bool = False
 
 
 class BackgroundGoalRunner:
@@ -50,7 +52,9 @@ class BackgroundGoalRunner:
                  enabled: bool = False, batch_size: int = 2,
                  tool_timeout: float = 6.0,
                  lease_seconds: float = 20.0,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 inbox: InitiativeInbox | None = None,
+                 inquiry_grants: tuple[InitiativeGrant, ...] = ()) -> None:
         if type(enabled) is not bool:
             raise ValueError("enabled must be explicitly boolean")
         if not 1 <= batch_size <= 5:
@@ -66,6 +70,12 @@ class BackgroundGoalRunner:
         self.enabled = enabled
         self.batch_size, self.tool_timeout, self.lease_seconds = batch_size, tool_timeout, lease_seconds
         self.clock = clock
+        if len({g.owner_scope for g in inquiry_grants}) != len(inquiry_grants):
+            raise ValueError("Duplicated inquiry grants")
+        if any(g.owner_scope not in self.grants for g in inquiry_grants):
+            raise ValueError("Proactive inquiry scope needs a goal tool grant")
+        self.inbox = inbox
+        self.inquiry_grants = {g.owner_scope: g for g in inquiry_grants}
 
     async def run_once(self) -> tuple[BackgroundResult, ...]:
         """Returns [] when disabled. Does not queue tasks or start a daemon."""
@@ -103,9 +113,17 @@ class BackgroundGoalRunner:
                 summary=receipt.as_context(), retry_delay=15,
                 terminal_failure=terminal_failure,
             )
+            drafted = False
+            grant = self.inquiry_grants.get(event.owner_scope)
+            if receipt.success and committed and grant is not None and self.inbox is not None:
+                # A grounded *draft*, not permission to send or generate speech.
+                drafted = self.inbox.propose_from_goal(
+                    goal_id=event.goal_id, source_event_id=event.source_event_id,
+                    owner_scope=event.owner_scope, evidence=receipt.as_context(),
+                    now=finished_at, grant=grant)
             results.append(BackgroundResult(
                 event.goal_id, event.event_id, receipt.success and committed,
-                committed, event.tool_name, receipt.as_context(),
+                committed, event.tool_name, receipt.as_context(), drafted,
             ))
         return tuple(results)
 
