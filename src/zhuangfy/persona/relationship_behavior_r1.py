@@ -113,3 +113,38 @@ def behavior_r1(system_prompt: str, user_text: str, *,
         "【本轮表达策略】" + expression,
     ))
     return R1Behavior(mode, tier, guidance[:1550])
+
+
+# Conservative display-only cleanup. Never rewrite actual claims or fabricate
+# tool receipts. Original model text is retained in E1 captures for regression.
+_LEADING_THINK_END = re.compile(r"^\s*</think>\s*", re.I)
+_LEADING_STAGE = re.compile(
+    r"^\s*[（(](?:看着|看向|望向|轻声|低声|柔声|微笑|轻笑|叹息|"
+    r"靠在|坐在|起身|抬头|低头|她(?:看|想|沉默|遵守|点头)|"
+    r"他(?:看|想|沉默|点头))[^（）()\n]{0,110}[）)]\s*"
+)
+
+
+def tidy_r1_reply(system_prompt: str, user_text: str, response: str, *,
+                  channel: Channel = "chat", enabled: bool = True) -> str:
+    """Remove only unambiguous *leading* theatrical cues in real chat.
+
+    Keep parenthetical technical data and all creative-mode narrative intact.
+    A result that contains only stage cues becomes empty; caller may suppress
+    sending rather than claim it was a real action.
+    """
+    if not isinstance(response, str):
+        raise ValueError("R1 reply must be text")
+    if not enabled:
+        return response
+    cue = behavior_r1(system_prompt, user_text, channel=channel)
+    if not cue.guidance or cue.mode == "creative":
+        return response
+    cleaned = response
+    for _ in range(4):
+        before = cleaned
+        cleaned = _LEADING_THINK_END.sub("", cleaned, count=1)
+        cleaned = _LEADING_STAGE.sub("", cleaned, count=1)
+        if cleaned == before:
+            break
+    return cleaned.strip() if cleaned != response else response
