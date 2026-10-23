@@ -19,6 +19,7 @@ def render(rows, provider, model):
             ("Planner 决策（非隐藏推理）", json.dumps(r["planner"], ensure_ascii=False, indent=2)),
             ("宿主动作", r["action"]),
             ("Replyer 指导", r["guidance"]),
+            ("传给 Replyer 的合并约束（最多 2000 字符）", r["all_cues"]),
             ("Replyer 原始回答", r["raw"]),
             ("R1 最终回答", r["final"]),
             ("自动提示", ", ".join(r["warnings"])),
@@ -39,6 +40,7 @@ def run(args):
     from llm import LlmSettings, PROVIDER_BASE_URLS
     from model_routes import invoke_stage
     from zhuangfy.persona.packs import ZHUANG_FANGYI_V1
+    from zhuangfy.llm.routes import ModelRoutes, StagePolicy
     from zhuangfy.agent_v2.planner import plan_turn_v2, choose_action
     from zhuangfy.persona.character_core_v2 import character_behavior
     from zhuangfy.persona.relationship_behavior_r1 import behavior_r1, tidy_r1_reply
@@ -49,19 +51,23 @@ def run(args):
     settings = LlmSettings(provider=args.provider, base_url=PROVIDER_BASE_URLS[args.provider],
                            model=args.model, system_prompt=ZHUANG_FANGYI_V1.prompt(),
                            memory_enabled=False).validated()
+    stage_policy = StagePolicy(retries=1, timeout=75, total_timeout=162)
+    fixed_routes = ModelRoutes(planner=stage_policy, reply=stage_policy)
     data = json.loads((ROOT / "resources/evaluation/character_e12_private_cases.json").read_text(encoding="utf-8"))
     cases = data["cases"][:args.max_cases]
     rows = []
     args.out.mkdir(parents=True, exist_ok=True)
     for case in cases:
         r = dict(case_id=case["id"], message=case["message"], background=case["background"],
-                 planner=None, action="", guidance="", raw="", final="", warnings=[], error="")
+                 planner=None, action="", guidance="", all_cues="", raw="", final="", warnings=[], error="")
         rows.append(r)
         try:
             plan = plan_turn_v2(settings, token, [], case["message"],
                                 character_core_v2=True, character_channel="qq_private",
                                 relationship_behavior_r1=True,
-                                available_tools=(), trace_id="e12-p-" + case["id"])
+                                available_tools=(), trace_id="e12-p-" + case["id"],
+                                routes=fixed_routes,
+                                trusted_context_notes="\n".join(case["background"]))
             r["planner"] = asdict(plan)
             r["action"] = choose_action(plan, allow_silence=True, tools_enabled=False)
             if r["action"] == "reply":
@@ -69,10 +75,12 @@ def run(args):
                 scene = character_behavior(settings.system_prompt, case["message"], channel="qq_private")
                 r["guidance"] = plan.prompt()
                 emotion = cue.guidance + "\n" + r["guidance"] + "\n" + scene.guidance
+                r["all_cues"] = emotion[:2000]
                 notes = "以下仅为虚构测试场景，不是现实用户记忆。"
                 if case["background"]:
                     notes += "\n" + "\n".join(case["background"])
                 r["raw"] = invoke_stage("reply", settings, token, [], case["message"],
+                                         routes=fixed_routes,
                                          emotion_context=emotion, context_notes=notes,
                                          trace_id="e12-r-" + case["id"])
                 r["final"] = tidy_r1_reply(settings.system_prompt, case["message"],
