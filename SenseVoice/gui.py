@@ -773,6 +773,7 @@ class MainWindow(QMainWindow):
         if not text.strip():
             self.speech_started_at = None
             self.speech_started_during_playback = False
+            self._arm_voice_turn_timer()
             return
         log_event("语音", "识别", f"{language or '未知语言'} · {text}")
         started_during_playback = self.speech_started_during_playback
@@ -799,11 +800,13 @@ class MainWindow(QMainWindow):
         result = self.gate.process(text, now=self.speech_started_at)
         self.speech_started_at = None
         if result.event == "ignored":
+            self._arm_voice_turn_timer()
             self.update_wake_status()
             return
         self.gate.active_until = time.monotonic() + self.gate.timeout
         message = result.text[len(self.gate.name):].lstrip(TRAILING) if result.called_by_name else result.text
         if not message:
+            self._arm_voice_turn_timer()
             self.status_label.setText(f"已唤醒 {self.gate.name} · 现在可以直接说话")
             return
         self.result_edit.appendPlainText(f"你：{result.text}")
