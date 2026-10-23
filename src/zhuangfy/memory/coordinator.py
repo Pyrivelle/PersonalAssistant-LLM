@@ -7,6 +7,7 @@ derived by resolving a verified account identity, not accepted from chat text.
 from __future__ import annotations
 
 import threading
+import json
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +72,6 @@ class MemoryCore:
 
     def relationship_snapshot(self, *, identity: dict) -> dict:
         """Private, verified client lookup. Unenrolled accounts get no relationship."""
-        import dataclasses
         person = self._person(identity)
         self.identities.require_consent(person, "timeline")
         snap = self.relationship.snapshot(
@@ -80,6 +80,7 @@ class MemoryCore:
             return {"enabled": False, "tier": "unassigned", "hint": ""}
         # Never expose event text or untrusted memory content through the prompt.
         return {"enabled": True, "tier": snap.tier, "version": snap.version,
+                "auto_growth": snap.auto_growth, "frozen": snap.frozen,
                 "hint": snap.prompt_hint()}
 
     def relationship_apply(self, *, identity: dict, source_entry_id: str,
@@ -87,7 +88,7 @@ class MemoryCore:
                            expected_version: int) -> dict:
         """Candidate-only client submission; deterministic server adjudication."""
         candidate = RelationshipCandidate.parse(
-            __import__("json").dumps({"event_kind": event_kind, "confidence": confidence,
+            json.dumps({"event_kind": event_kind, "confidence": confidence,
                                      "evidence_quote": evidence_quote}),
             source_entry_id)
         snap = self.relationship_evolution.apply(
