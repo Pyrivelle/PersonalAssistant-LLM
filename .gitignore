@@ -37,3 +37,6 @@ data/*
 
 # Candidate API routing metadata (credentials stay in .env.local).
 **/model_routes.json
+
+# Local skill grants; never commit enabled external plugin policies.
+**/skills_settings.json

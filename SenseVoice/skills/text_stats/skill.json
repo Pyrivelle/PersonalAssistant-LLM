@@ -1,0 +1,8 @@
+{
+  "id": "text_stats",
+  "name": "文字统计（示例技能）",
+  "version": "0.1.0",
+  "description": "在不访问网络、文件系统或账号数据的情况下，统计输入文本的字符数量。",
+  "api_version": 1,
+  "entry": "skill.py"
+}

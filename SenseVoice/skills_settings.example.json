@@ -1,0 +1,11 @@
+{
+  "skills": {
+    "text_stats": {
+      "enabled": false,
+      "scopes": [
+        "private"
+      ],
+      "allow_mutation": false
+    }
+  }
+}
