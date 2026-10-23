@@ -94,6 +94,20 @@ jobs:
           PYTHONPATH: src
         run: python -m unittest -v tests.unit.test_memory_vector tests.integration.test_memory_qdrant
 
+  test-relationship-r1b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: R1-B relationship evidence and user control tests (offline)
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m compileall -q src/zhuangfy/relationship scripts/relationship_admin.py scripts/character_e12_private_trace.py
+          python -m unittest -v tests.unit.test_relationship_core_r1b tests.unit.test_relationship_evolution_r1c tests.unit.test_relationship_evaluation_r1e tests.unit.test_relationship_admin_cli
+
   test-memory-identity-timeline:
     runs-on: ubuntu-latest
     steps:

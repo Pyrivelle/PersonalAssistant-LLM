@@ -463,6 +463,7 @@ class QqBridge:
                              if self.planner_settings.memory_private_ids
                              and legacy_memory_allowed("qq") else None)
         self.reflection_tasks: dict[MemberKey, asyncio.Task] = {}
+        self.relationship_tasks: dict[int, asyncio.Task] = {}
         self.reflection_retry_at: dict[MemberKey, float] = {}
         self.reflection_lock = asyncio.Semaphore(1)
         # Explicit opt-in; identity must be pre-verified by the Memory Service.
@@ -725,6 +726,11 @@ class QqBridge:
                     log_event("QQ", "手动重试", f"{current.scope} · 重新提交上次生成失败的文字")
                 if (image_ref is None and current.kind == "private" and
                         message.strip() in {"/forget_me", "/删除我的记忆"}):
+                    # Cancel relationship review before erasure; backend consent
+                    # verification also guards against late writes.
+                    related_task = self.relationship_tasks.pop(current.user_id, None)
+                    if related_task is not None:
+                        related_task.cancel()
                     # Wait for pending background writes before erasing. Otherwise
                     # a late reflection could recreate deleted personal records.
                     if current.user_id in self.planner_settings.memory_private_ids:
@@ -768,6 +774,18 @@ class QqBridge:
                             message_id=current.message_id, content=message)
                     except Exception as error:
                         log_event("记忆", "记录跳过", f"新记忆服务不可用或未授权：{type(error).__name__}")
+                relation_tier, relation_hint = "unassigned", ""
+                if (self.planner_settings.relationship_behavior_r1_enabled
+                        and self.memory_client is not None and memory_claim is not None
+                        and memory_ref is not None and current.kind == "private"):
+                    try:
+                        relation = await asyncio.to_thread(
+                            self.memory_client.relationship_snapshot, memory_claim)
+                        if relation.get("enabled") and relation.get("tier") in ("L0","L1","L2","L3"):
+                            relation_tier = relation["tier"]
+                            relation_hint = str(relation.get("hint", ""))[:480]
+                    except Exception as error:
+                        log_event("关系R1", "读取跳过", type(error).__name__)
                 focus_session = (f"group:{current.group_id}" if current.kind == "group"
                                  else f"private:{current.user_id}")
                 async with self.focus_runtime.turn(
@@ -825,7 +843,9 @@ class QqBridge:
                                             scope=current.kind),
                                         character_core_v2=self.planner_settings.character_core_v2_enabled,
                                         character_channel="qq_group" if current.kind == "group" else "qq_private",
-                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled)
+                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled,
+                                        relationship_tier=relation_tier,
+                                        relationship_hint=relation_hint)
                                 result = await AgentCycleEngine(
                                     max_rounds=self.planner_settings.agent_v2_max_rounds,
                                     max_tools=self.planner_settings.agent_v2_max_tools,
@@ -846,7 +866,9 @@ class QqBridge:
                                     visual_context=visual_context, trace_id=turn_id,
                                     character_core_v2=self.planner_settings.character_core_v2_enabled,
                                     character_channel="qq_group" if current.kind == "group" else "qq_private",
-                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled)
+                                        relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled,
+                                        relationship_tier=relation_tier,
+                                        relationship_hint=relation_hint)
                                 action = choose_action(
                                     plan, allow_silence=allow_silence,
                                     already_waited=bool(state.planner_waits) or image_ref is not None)
@@ -930,10 +952,11 @@ class QqBridge:
                     if self.planner_settings.relationship_behavior_r1_enabled:
                         from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
                         r1 = behavior_r1(settings.system_prompt, message,
-                                         channel="qq_group" if current.kind == "group" else "qq_private")
+                                         channel="qq_group" if current.kind == "group" else "qq_private",
+                                         tier=relation_tier)
                         if r1.guidance:
                             # Model client caps emotion_context: evidence guidance first.
-                            emotion_prompt = r1.guidance + "\n" + emotion_prompt
+                            emotion_prompt = r1.guidance + "\n" + relation_hint + "\n" + emotion_prompt
                     member_key = None
                     member_snapshot = ""
                     if (image_ref is None and self.member_store is not None and current.kind == "private"
@@ -1106,6 +1129,7 @@ class QqBridge:
                 state.group_recent.clear()
                 state.group_activity.append((time.monotonic(), True))
         # Only ALL acknowledged QQ bubbles count as a delivered shared turn.
+        relationship_receipt = False
         if self.memory_client is not None and delivery.memory_ref is not None:
             try:
                 claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
@@ -1114,8 +1138,21 @@ class QqBridge:
                     conversation_id=delivery.memory_ref["conversation_id"],
                     entry_id=delivery.memory_ref["entry_id"],
                     reply_id=delivery.turn_id, content=delivery.canonical_reply)
+                relationship_receipt = True
             except Exception as error:
                 log_event("记忆", "送达记录失败", f"新记忆服务写入失败：{type(error).__name__}")
+        # Model event inference is optional and must not hold the QQ turn lock.
+        if (relationship_receipt and self.planner_settings.relationship_behavior_r1_enabled
+                and self.planner_settings.relationship_evolution_r1_enabled
+                and current.kind == "private"):
+            previous = self.relationship_tasks.get(current.user_id)
+            if previous is None or previous.done():
+                task = asyncio.create_task(self._review_relationship_after_delivery(current, delivery))
+                self.relationship_tasks[current.user_id] = task
+                def _release(finished, user_id=current.user_id):
+                    if self.relationship_tasks.get(user_id) is finished:
+                        self.relationship_tasks.pop(user_id, None)
+                task.add_done_callback(_release)
         if (self.context_store and current.kind == "private"
                 and current.user_id in self.planner_settings.persist_private_ids):
             try:
@@ -1134,6 +1171,46 @@ class QqBridge:
                                                  delivery.settings, delivery.api_key)
             except Exception as error:
                 print(f"QQ 用户记忆排队失败：{type(error).__name__}")
+
+    async def _review_relationship_after_delivery(self, current: Incoming,
+                                               delivery: PartialReply) -> None:
+        # R1-C only evaluates an actually delivered private turn. This is
+        # separately opt-in and cannot grant permissions or write facts.
+        if (self.planner_settings.relationship_behavior_r1_enabled
+                and self.planner_settings.relationship_evolution_r1_enabled
+                and self.memory_client is not None and delivery.memory_ref is not None
+                and current.kind == "private"):
+            try:
+                from zhuangfy.relationship.evolution import PROMPT, RelationshipCandidate
+                claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
+                state_now = await asyncio.to_thread(
+                    self.memory_client.relationship_snapshot, claim)
+                if (state_now.get("enabled") and state_now.get("auto_growth")
+                        and not state_now.get("frozen")
+                        and type(state_now.get("version")) is int):
+                    src_id = delivery.memory_ref["entry_id"]
+                    def _valid_relation_json(value):
+                        try:
+                            RelationshipCandidate.parse(value, src_id)
+                            return True
+                        except (ValueError, TypeError, KeyError):
+                            return False
+                    raw_candidate = await asyncio.to_thread(
+                        invoke_stage, "planner", delivery.settings, delivery.api_key,
+                        [], delivery.user_text[:1200], system_prompt=PROMPT,
+                        trace_id="r1c-" + delivery.turn_id,
+                        response_validator=_valid_relation_json)
+                    proposal = RelationshipCandidate.parse(raw_candidate, src_id)
+                    if proposal.event_kind != "none" and proposal.confidence >= .9:
+                        await asyncio.to_thread(
+                            self.memory_client.relationship_apply, claim,
+                            source_entry_id=src_id, event_kind=proposal.event_kind,
+                            confidence=proposal.confidence,
+                            evidence_quote=proposal.evidence_quote,
+                            expected_version=state_now["version"])
+            except Exception as error:
+                # Evaluation errors never affect delivered messages or permissions.
+                log_event("关系R1", "候选审核跳过", type(error).__name__)
 
     def queue_member_reflection(self, identity: MemberKey, settings, api_key: str) -> None:
         previous = self.reflection_tasks.get(identity)

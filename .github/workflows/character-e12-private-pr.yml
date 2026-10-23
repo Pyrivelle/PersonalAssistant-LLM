@@ -18,6 +18,22 @@ on:
         description: Exact model ID (use the same model across comparisons)
         type: string
         required: true
+      relationship_tier:
+        description: Synthetic trusted starting relationship (R1-E)
+        type: choice
+        required: true
+        default: unassigned
+        options:
+          - unassigned
+          - L0
+          - L1
+          - L2
+          - L3
+      evaluate_events:
+        description: Also ask model for relationship event candidates (additional calls)
+        type: boolean
+        required: true
+        default: false
       cases:
         description: Number of synthetic private conversations
         type: choice
@@ -44,6 +60,8 @@ jobs:
       E12_PROVIDER: ${{ inputs.provider }}
       E12_MODEL: ${{ inputs.model }}
       E12_CASES: ${{ inputs.cases }}
+      E12_RELATION: ${{ inputs.relationship_tier }}
+      E12_EVAL_EVENTS: ${{ inputs.evaluate_events }}
       ZHUANGFY_E1_API_KEY: ${{ secrets.ZHUANGFY_E1_API_KEY }}
     steps:
       - name: Checkout repository
@@ -66,8 +84,9 @@ jobs:
             --provider "$E12_PROVIDER" \
             --model "$E12_MODEL" \
             --max-cases "$E12_CASES" \
+            --relationship-tier "${E12_RELATION:-unassigned}" \
             --out build/e12-private \
-            --allow-network
+            --allow-network $(if [[ "$E12_EVAL_EVENTS" == "true" ]]; then echo "--evaluate-events"; fi)
       - name: Publish diagnostic summary
         if: always()
         shell: bash
