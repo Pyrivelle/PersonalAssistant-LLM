@@ -64,6 +64,44 @@ class QqParsingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     QqSettings.load(path)
 
+    def test_qq_bridge_loads_only_explicitly_enabled_local_skill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "skills" / "demo_skill"
+            folder.mkdir(parents=True)
+            (folder / "skill.json").write_text(json.dumps({
+                "id":"demo_skill", "name":"Test skill", "version":"1.0.0",
+                "description":"offline", "entry":"skill.py", "api_version":1
+            }), encoding="utf-8")
+            (folder / "skill.py").write_text(
+                "from zhuangfy.agent_v2.runtime import ToolBinding\\n"
+                "async def call(args): return 'ok'\\n"
+                "def setup(context):\\n"
+                " return [ToolBinding('demo_skill.read',call,"
+                "frozenset({'private','group'}),description='read-only',"
+                "parameters={'type':'object','properties':{},"
+                "'additionalProperties':False})]\\n",
+                encoding="utf-8")
+            config = root / "skills_settings.json"
+            config.write_text(json.dumps({"skills":{"demo_skill":{
+                "enabled":True,"scopes":["private"],"allow_mutation":False}}}),
+                encoding="utf-8")
+            flags = PlannerSettings(agent_v2_enabled=True, agent_v2_tools_enabled=True)
+            with patch.object(qq_bridge, "ROOT", root), \
+                 patch.object(qq_bridge.PlannerSettings, "load", return_value=flags):
+                bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+                self.assertIn("demo_skill.read",
+                              bridge.tool_registry.public_names(scope="private"))
+                self.assertNotIn("demo_skill.read",
+                                 bridge.tool_registry.public_names(scope="group"))
+                self.assertTrue(bridge.skill_manager.statuses[0].loaded)
+                config.write_text(json.dumps({"skills":{"demo_skill":{
+                    "enabled":False,"scopes":["private"],"allow_mutation":False}}}),
+                    encoding="utf-8")
+                restarted = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+                self.assertNotIn("demo_skill.read",
+                                 restarted.tool_registry.public_names(scope="private"))
+
     def test_optional_agent_v2_debounce_setting(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "qq_settings.json"
