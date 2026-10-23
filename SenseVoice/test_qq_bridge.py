@@ -66,6 +66,27 @@ class QqParsingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     QqSettings.load(path)
 
+    def test_focus_checkpoint_must_be_opted_in_and_account_scoped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            allow = {"allowed_private_ids": [42], "focus_mode": "active",
+                     "focus_groups": [{"id": "test", "sessions": ["private:42"]}],
+                     "focus_checkpoint_enabled": True,
+                     "focus_checkpoint_account": "bot_1234"}
+            path.write_text(json.dumps(allow), encoding="utf-8")
+            settings = QqSettings.load(path)
+            self.assertTrue(settings.focus_checkpoint_enabled)
+            self.assertEqual(settings.focus_checkpoint_account, "bot_1234")
+            for invalid in (
+                {**allow, "focus_checkpoint_account": ""},
+                {**allow, "focus_mode": "shadow"},
+                {**allow, "focus_checkpoint_account": "../../bad"},
+                {**allow, "focus_checkpoint_enabled": "true"},
+            ):
+                path.write_text(json.dumps(invalid), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    QqSettings.load(path)
+
     def test_passive_group_requires_explicit_allowlist(self):
         settings = QqSettings(allowed_group_ids=frozenset({9}),
                               passive_group_ids=frozenset({9}))
