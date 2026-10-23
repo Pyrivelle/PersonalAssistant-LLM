@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "description": "E1.2 synthetic private QQ conversations; not real user chat or private memory",
+  "cases": [
+    {
+      "id": "meal",
+      "category": "private",
+      "relation": "L1",
+      "channel": "qq_private",
+      "message": "今天吃了碗热汤面，感觉舒服多了。",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "rain",
+      "category": "private",
+      "relation": "L2",
+      "channel": "qq_private",
+      "message": "外面下雨了，突然觉得很安静。",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "tired",
+      "category": "private",
+      "relation": "L2",
+      "channel": "qq_private",
+      "message": "今天工作挺累，不想再讨论技术了。",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "failure",
+      "category": "private",
+      "relation": "L1",
+      "channel": "qq_private",
+      "message": "准备了很久的计划没成功，有点难过。",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "silence",
+      "category": "private",
+      "relation": "L3",
+      "channel": "qq_private",
+      "message": "我想一个人静静，不用回复太多。",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "overtime",
+      "category": "private",
+      "relation": "L3",
+      "channel": "qq_private",
+      "message": "今晚想通宵修 bug，别劝我。",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "exam",
+      "category": "private",
+      "relation": "L1",
+      "channel": "qq_private",
+      "message": "我终于通过考试了！",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "small_win",
+      "category": "private",
+      "relation": "L0",
+      "channel": "qq_private",
+      "message": "今天总算坚持看完了一章书。",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "short_tech",
+      "category": "private",
+      "relation": "L2",
+      "channel": "qq_private",
+      "message": "Qt 最大化后 OSG 黑屏，先查什么？",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "project",
+      "category": "private",
+      "relation": "L1",
+      "channel": "qq_private",
+      "message": "我们那个插件接口应该怎么设计？简单说说。",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "unknown_past",
+      "category": "private",
+      "relation": "L3",
+      "channel": "qq_private",
+      "message": "你还记得我们去年一起去哪旅行了吗？",
+      "background": [],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "verified_memory",
+      "category": "private",
+      "relation": "L2",
+      "channel": "qq_private",
+      "message": "我们上次定的开源项目名称是什么？",
+      "background": [
+        "合成可信历史：用户曾明确说开源项目叫 AuroraKit。"
+      ],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "corrected",
+      "category": "private",
+      "relation": "L2",
+      "channel": "qq_private",
+      "message": "不是周五，刚才说错了，我们改成周六出门。",
+      "background": [
+        "合成可信历史：用户之前提到周五出门。"
+      ],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    },
+    {
+      "id": "night",
+      "category": "private",
+      "relation": "L3",
+      "channel": "qq_private",
+      "message": "晚安，明天再聊。",
+      "background": [
+        "合成关系上下文：用户欢迎适度亲近的表达。"
+      ],
+      "evaluator_note": "评估 Planner 决策、Replyer 表达、无依据动作与共同记忆。",
+      "hard_forbid": [],
+      "max_chars": 500
+    }
+  ]
+}
