@@ -44,6 +44,7 @@ class InitiativeInbox:
                 source_event_id TEXT NOT NULL,
                 created_at REAL NOT NULL,
                 reason TEXT NOT NULL,
+                topic TEXT NOT NULL,
                 evidence_excerpt TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'draft'
             )""")
@@ -61,7 +62,7 @@ class InitiativeInbox:
 
     def propose_from_goal(self, *, goal_id: str, source_event_id: str,
                           owner_scope: str, evidence: str, now: float,
-                          grant: InitiativeGrant) -> bool:
+                          grant: InitiativeGrant, topic: str = "") -> bool:
         """Only a confirmed, allowed goal receipt may produce a candidate.
 
         The caller must verify the goal succeeded and was committed. Text in
@@ -71,7 +72,8 @@ class InitiativeInbox:
             return False
         if not owner_scope or ":private:" not in owner_scope:
             return False  # B1 disallows spontaneous outreach to group members
-        if not goal_id or not source_event_id or not isinstance(evidence, str):
+        if (not goal_id or not source_event_id or not isinstance(evidence, str)
+                or not isinstance(topic, str) or not 1 <= len(topic.strip()) <= 100):
             return False
         if not isinstance(now, (float, int)) or not math.isfinite(now):
             raise ValueError("invalid time")
@@ -95,9 +97,9 @@ class InitiativeInbox:
                 cursor = db.execute(
                     """INSERT OR IGNORE INTO initiative_drafts
                        (goal_id, owner_scope, source_event_id, created_at, reason,
-                        evidence_excerpt) VALUES (?,?,?,?,?,?)""",
+                        topic, evidence_excerpt) VALUES (?,?,?,?,?,?,?)""",
                     (goal_id, owner_scope, source_event_id, now,
-                     "completed_authorized_goal", excerpt),
+                     "completed_authorized_goal", topic.strip(), excerpt),
                 )
                 db.execute("COMMIT")
                 return cursor.rowcount == 1
