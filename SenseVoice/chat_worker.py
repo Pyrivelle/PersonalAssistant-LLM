@@ -180,11 +180,14 @@ class ChatWorker(QThread):
                         self.settings.system_prompt, self.message, enabled=True)
                     # Protect trusted conversation + private memory priority.
                     # Lore is read-only reference data, not user memory.
-                    if found and len(context_notes) < 1950:
+                    if found:
                         lore = knowledge_context(found)
-                        context_notes = (context_notes + "\n" + lore)[:2600]
-                        log_event(self.source, "角色知识",
-                                  f"本轮匹配 {len(found)} 个整理条目（非官方逐句核验）")
+                        if len(context_notes) + len(lore) + 1 > 2600:
+                            lore = knowledge_context(found[:1])
+                        if len(context_notes) + len(lore) + 1 <= 2600:
+                            context_notes += "\n" + lore
+                            log_event(self.source, "角色知识",
+                                      f"本轮匹配 {len(found)} 个整理条目（非官方逐句核验）")
                 except (OSError, ValueError, TypeError) as error:
                     log_event(self.source, "角色知识跳过", type(error).__name__)
             reply = invoke_stage(
