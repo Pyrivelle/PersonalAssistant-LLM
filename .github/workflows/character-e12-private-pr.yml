@@ -1,0 +1,85 @@
+name: Character E1.2 - Private Planner + Replyer (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Cloud API provider
+        type: choice
+        required: true
+        default: siliconflow
+        options:
+          - siliconflow
+          - deepseek
+          - kimi_cn
+          - kimi_global
+          - hachimi
+      model:
+        description: Exact model ID (use the same model across comparisons)
+        type: string
+        required: true
+      cases:
+        description: Number of synthetic private conversations
+        type: choice
+        required: true
+        default: "3"
+        options:
+          - "3"
+          - "7"
+          - "14"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e12-private-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  private-planner-replyer:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      E12_PROVIDER: ${{ inputs.provider }}
+      E12_MODEL: ${{ inputs.model }}
+      E12_CASES: ${{ inputs.cases }}
+      ZHUANGFY_E1_API_KEY: ${{ secrets.ZHUANGFY_E1_API_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate manual test input
+        shell: bash
+        run: |
+          if [[ -z "$ZHUANGFY_E1_API_KEY" ]]; then
+            echo "::error::Missing repository secret ZHUANGFY_E1_API_KEY"
+            exit 1
+          fi
+      - name: Run real Planner and Replyer (billable)
+        shell: bash
+        run: |
+          python scripts/character_e12_private_trace.py \
+            --provider "$E12_PROVIDER" \
+            --model "$E12_MODEL" \
+            --max-cases "$E12_CASES" \
+            --out build/e12-private \
+            --allow-network
+      - name: Publish diagnostic summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f build/e12-private/summary.md ]]; then
+            cat build/e12-private/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload per-stage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: character-e12-private-pr-report
+          path: build/e12-private/
+          if-no-files-found: warn
+          retention-days: 14
