@@ -469,6 +469,7 @@ class QqBridge:
         self.proactive_config = ProactiveConfig.load(ROOT / "proactive_settings.json")
         self.proactive_store = ProactiveStore(ROOT.parent / "data" / "proactive.db")
         self.initiative_inbox = InitiativeInbox(ROOT.parent / "data" / "agent-v2-background.db")
+        self.ccv2_render_retry_after: dict[str, float] = {}
         if self.proactive_config.enabled:
             if self.proactive_config.recipient_id not in settings.allowed_private_ids:
                 log_event("QQ", "主动互动关闭", "收件人不在当前私聊白名单中")
@@ -1200,13 +1201,15 @@ class QqBridge:
                     for review in self.initiative_inbox.actionable_reviews(policy.owner_scope, now - 86400):
                         source = f"goal:{review['goal_id']}"
                         if (not self.proactive_store.already_reserved(source)
-                                and not self.proactive_store.already_considered(source)):
+                                and not self.proactive_store.already_considered(source)
+                                and now >= self.ccv2_render_retry_after.get(source, 0)):
                             candidate = (source, review["proposed_text"], review["topic"])
                             break
                     if candidate is None and config.daily_checkin:
                         source = f"checkin:{recipient}:{time.strftime('%Y-%m-%d', time.localtime(now))}"
                         if (not self.proactive_store.already_considered(source)
-                                and not self.proactive_store.already_reserved(source)):
+                                and not self.proactive_store.already_reserved(source)
+                                and now >= self.ccv2_render_retry_after.get(source, 0)):
                             choice = await asyncio.to_thread(
                                 plan_checkin, settings, key,
                                 trace_id=f"checkin-{uuid.uuid4().hex[:10]}")
@@ -1227,9 +1230,11 @@ class QqBridge:
                                     trace_id=f"ccv2-outreach-{uuid.uuid4().hex[:10]}")
                                 log_event("QQ", "角色V2主动表达", f"{source} · 已通过 Replyer")
                             except Exception as error:
-                                self.proactive_store.mark_considered(source, time.time())
+                                # A temporary Replyer/API failure should not
+                                # burn the approved goal or cause 60s retry spam.
+                                self.ccv2_render_retry_after[source] = time.time() + 600
                                 log_event("QQ", "角色V2主动表达失败",
-                                          f"{source} · {type(error).__name__} · 本次不发送")
+                                          f"{source} · {type(error).__name__} · 10分钟后可重试")
                                 continue
                         async with self.send_lock:
                             fresh = time.time()
