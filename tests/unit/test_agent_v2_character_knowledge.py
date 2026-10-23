@@ -23,7 +23,8 @@ class CharacterKnowledgeV1Tests(unittest.TestCase):
         for e in entries:
             self.assertEqual(e.level, "community_summary")
             self.assertTrue(e.source_url.startswith("https://github.com/"))
-            self.assertIn("2026-10-23", e.source_version)
+            self.assertEqual(len(e.source_version), 40)
+            self.assertIn(e.source_version, e.source_url)
 
     def test_retrieve_exact_entity_only_and_respect_default_off(self):
         self.assertEqual(retrieve_character_knowledge(PERSONA,"武陵今天有什么趣事"), ())
