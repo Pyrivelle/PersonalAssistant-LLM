@@ -73,6 +73,8 @@ class RelationshipCoreTests(unittest.TestCase):
         self.assertTrue(p.frozen)
         events = self.core.events(agent_id=AGENT, identity=self.a)
         self.assertEqual(sum(e.kind == "manual_correction" for e in events), 2)
+        self.assertTrue(any('"before"' in e.detail and '"after"' in e.detail
+                            for e in events if e.kind == "manual_correction"))
 
     def test_only_real_timeline_evidence_can_drive_autonomous_growth(self):
         p = self.core.enroll(agent_id=AGENT, identity=self.a)
@@ -185,6 +187,24 @@ class RelationshipCoreTests(unittest.TestCase):
                               enabled=False)
         self.assertIsNone(self.core.snapshot(agent_id=AGENT, identity=self.a))
         self.assertEqual(self.core.events(agent_id=AGENT, identity=self.a), ())
+
+    def test_user_can_lock_one_dimension_while_others_still_evolve(self):
+        p = self.core.enroll(agent_id=AGENT, identity=self.a)
+        p = self.core.correct(agent_id=AGENT, identity=self.a,
+                              expected_version=p.version, lock_familiarity=True)
+        self.assertTrue(p.lock_familiarity)
+        self.assertFalse(p.lock_trust)
+        first = self._received("lock-msg")
+        blocked = self.core.observe(agent_id=AGENT, identity=self.a,
+                                    event_kind="shared_topic", timeline_entry_id=first.entry_id,
+                                    expected_version=p.version)
+        self.assertEqual(blocked.version, p.version)
+        p = self.core.correct(agent_id=AGENT, identity=self.a,
+                              expected_version=p.version, lock_familiarity=False)
+        after = self.core.observe(agent_id=AGENT, identity=self.a,
+                                  event_kind="shared_topic", timeline_entry_id=first.entry_id,
+                                  expected_version=p.version)
+        self.assertEqual(after.familiarity, 12)
 
     def test_erasure_and_opt_in_again(self):
         self.core.enroll(agent_id=AGENT, identity=self.a)
