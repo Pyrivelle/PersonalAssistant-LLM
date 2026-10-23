@@ -44,6 +44,28 @@ class QqParsingTests(unittest.TestCase):
         self.assertIsNone(parse_message({**group, "message": "没有艾特"}, 88, self.settings))
         self.assertEqual(parse_message({**group, "message": "[CQ:at,qq=88] 你好"}, 88, self.settings).text, "你好")
 
+    def test_focus_groups_must_be_explicitly_allowlisted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            base = {"allowed_private_ids": [42], "allowed_group_ids": [9]}
+            valid = {**base, "focus_mode": "active", "focus_groups": [
+                {"id": "friends", "sessions": ["private:42", "group:9"]}
+            ]}
+            path.write_text(json.dumps(valid), encoding="utf-8")
+            cfg = QqSettings.load(path)
+            self.assertEqual(cfg.focus_mode, "active")
+            self.assertEqual(cfg.focus_groups[0][1], ("private:42", "group:9"))
+            for bad in (
+                {**base, "focus_mode": "invalid"},
+                {**base, "focus_groups": [{"id": "x", "sessions": ["private:43"]}]},
+                {**base, "focus_groups": [{"id": "x", "sessions": ["group:99"]}]},
+                {**base, "focus_groups": [{"id": "x", "sessions": ["group:9"]},
+                                           {"id": "y", "sessions": ["group:9"]}]},
+            ):
+                path.write_text(json.dumps(bad), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    QqSettings.load(path)
+
     def test_passive_group_requires_explicit_allowlist(self):
         settings = QqSettings(allowed_group_ids=frozenset({9}),
                               passive_group_ids=frozenset({9}))
@@ -560,6 +582,29 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
             await bridge.process(state)
         bridge.tool_registry.invoke.assert_not_awaited()
         bridge.send_reply.assert_awaited_once()
+
+    async def test_qq_focus_shadow_observes_real_reply_without_sharing_history(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        settings = QqSettings(allowed_private_ids=frozenset({42}),
+                              quiet_seconds=0, private_cooldown_seconds=0,
+                              focus_mode="shadow",
+                              focus_groups=(("test", ("private:42",)),))
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(settings)
+        incoming = Incoming("private", 42, None, "focus-msg", "你好")
+        state = Conversation(incoming, pending=["你好"])
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2",
+                          return_value=PlanDecision(action="reply", confidence=.99)), \
+             patch.object(qq_bridge, "invoke_stage", return_value="你好呀。"):
+            await bridge.process(state)
+        self.assertEqual(len(bridge.focus_runtime.decisions), 1)
+        self.assertTrue(bridge.focus_runtime.decisions[0].admitted)
+        self.assertEqual(len(state.context.history), 2)
+        self.assertFalse(bridge.focus_runtime.snapshot()["test"]["pending_sessions"])
 
     async def test_agent_v2_planner_wait_then_reply_once(self):
         from zhuangfy.agent_v2.planner import PlanDecision
