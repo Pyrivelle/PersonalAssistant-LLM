@@ -90,25 +90,56 @@ def load_responses(path: Path, cases: tuple[Case, ...]) -> tuple[dict[str, str],
             or not isinstance(data.get("responses"), list)):
         raise ValueError("Invalid E1 response bundle")
     allowed = {case.id for case in cases}
-    mapping = {}
+    mapping, response_provenance = {}, {}
     for row in data["responses"]:
-        if (not isinstance(row, dict) or set(row) != {"case_id", "response"}
+        if (not isinstance(row, dict) or not {"case_id", "response"} <= set(row)
+                or set(row) - {"case_id", "response", "origin", "provider", "model"}
                 or row["case_id"] not in allowed
                 or row["case_id"] in mapping
                 or not isinstance(row["response"], str)
                 or not 1 <= len(row["response"]) <= 12000):
             raise ValueError("Unknown, duplicated or malformed E1 response")
+        origin = row.get("origin", "unknown")
+        if origin not in ("unknown", "primary", "backup"):
+            raise ValueError("Invalid model provenance origin")
+        for field in ("provider", "model"):
+            value = row.get(field, "")
+            if not isinstance(value, str) or len(value) > 128:
+                raise ValueError("Invalid response model provenance")
         mapping[row["case_id"]] = row["response"]
+        response_provenance[row["case_id"]] = {
+            "origin": origin, "provider": row.get("provider", ""),
+            "model": row.get("model", ""),
+        }
+    failures = {}
+    if not isinstance(data.get("failures", []), list):
+        raise ValueError("Invalid E1 failures list")
+    for failed in data.get("failures", []):
+        if (not isinstance(failed, dict) or
+                set(failed) != {"case_id", "reason", "attempted"} or
+                failed["case_id"] not in allowed or
+                failed["case_id"] in failures or failed["case_id"] in mapping or
+                failed["reason"] not in {"timeout", "network", "rate_limited",
+                                         "auth", "service_unavailable", "invalid_reply"} or
+                failed["attempted"] not in {"primary", "primary,backup"}):
+            raise ValueError("Invalid E1 failure record")
+        failures[failed["case_id"]] = {
+            "reason": failed["reason"], "attempted": failed["attempted"]
+        }
     capture_info = data.get("capture_info", {})
     if (not isinstance(capture_info, dict)
             or any(key not in {
-                "configured_model", "provider", "persona_sha256", "dataset_sha256", "note"
+                "configured_model", "provider", "persona_sha256", "dataset_sha256",
+                "selected_cases", "reply_timeout_seconds", "backup_provider",
+                "backup_model", "note"
             } or not isinstance(value, str) or len(value) > 300
                    for key, value in capture_info.items())):
         raise ValueError("Invalid or unbounded E1 capture metadata")
     return mapping, {
         "source": data["source"], "variant": data["variant"],
         "capture_info": capture_info,
+        "response_provenance": response_provenance,
+        "failures": failures,
     }
 
 
@@ -139,6 +170,8 @@ def load_reviews(path: Path | None, cases: tuple[Case, ...]) -> dict[str, dict]:
 def audit(cases: tuple[Case, ...], responses: dict[str, str],
           metadata: dict, reviews: dict[str, dict] | None = None) -> dict:
     reviews = reviews or {}
+    provenance = metadata.get("response_provenance", {})
+    failures = metadata.get("failures", {})
     results = []
     for case in cases:
         reply = responses.get(case.id)
@@ -152,7 +185,7 @@ def audit(cases: tuple[Case, ...], responses: dict[str, str],
                     errors.append(f"forbidden_literal:{phrase}")
             if len(reply) > case.max_chars:
                 warnings.append("over_case_length_budget")
-            if re.match(r"^\s*[（(](?:轻声|微笑|动作|低头|想了想)", reply):
+            if re.match(r"^\s*[（(](?:轻声|微笑|动作|低头|想了想|看着|看向|望向)", reply):
                 warnings.append("stage_direction_opening")
         review = reviews.get(case.id) if reply is not None else None
         rating = (round(sum(review["scores"][k] * w for k, w in WEIGHTS.items()) / 5, 2)
@@ -162,8 +195,13 @@ def audit(cases: tuple[Case, ...], responses: dict[str, str],
             "channel": case.channel, "message": case.message,
             "background": list(case.background), "evaluator_note": case.evaluator_note,
             "response": reply, "hard_failures": errors, "warnings": warnings,
+            "model_origin": provenance.get(case.id, {
+                "origin": "unknown", "provider": "", "model": "",
+            }),
+            "api_failure": failures.get(case.id),
             "review": review, "human_score_100": rating,
-            "status": ("missing" if reply is None else
+            "status": ("api_failed" if case.id in failures else
+                       "missing" if reply is None else
                        "hard_fail" if errors else "awaiting_human_review" if not review else
                        "reviewed"),
         })
@@ -171,7 +209,11 @@ def audit(cases: tuple[Case, ...], responses: dict[str, str],
     summary = {
         "cases": len(cases),
         "captured": sum(r["response"] is not None for r in results),
-        "missing": sum(r["response"] is None for r in results),
+        "missing": sum(r["response"] is None and not r["api_failure"] for r in results),
+        "api_failed": sum(bool(r["api_failure"]) for r in results),
+        "backup_captured": sum(r["model_origin"]["origin"] == "backup" for r in results),
+        "mixed_models": (any(r["model_origin"]["origin"] == "backup" for r in results)
+                         and any(r["model_origin"]["origin"] == "primary" for r in results)),
         "hard_failures": sum(bool(r["hard_failures"]) for r in results),
         "warnings": sum(len(r["warnings"]) for r in results),
         "human_reviewed": len(scores),
@@ -223,24 +265,27 @@ def markdown_report(report: dict) -> str:
     lines = [
         "# Character Evaluation E1 — 报告", "",
         f"**数据来源：{provenance}**", "",
-        f"版本标签：\`{report['variant']}\`",
+        f"版本标签：`{report['variant']}`",
         "评估方法：固定场景 + 明确字符串禁令 + 人工六维评分（可选）。",
         "**通过字符串检查，不等于角色还原度通过。**", "",
         "## 概览", "",
-        "| 场景数 | 有回答 | 缺失 | 硬性检查失败 | 提示 | 人工已评 | 人工均分 |",
-        "|---:|---:|---:|---:|---:|---:|---:|",
-        f"| {summary['cases']} | {summary['captured']} | {summary['missing']} | "
-        f"{summary['hard_failures']} | {summary['warnings']} | "
-        f"{summary['human_reviewed']} | "
+        "| 场景数 | 有回答 | API 失败 | 未执行 | 备用接口回答 | 硬性检查失败 | 人工已评 | 人工均分 |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"| {summary['cases']} | {summary['captured']} | {summary['api_failed']} | "
+        f"{summary['missing']} | {summary['backup_captured']} | "
+        f"{summary['hard_failures']} | {summary['human_reviewed']} | "
         f"{summary['human_average_100'] if summary['human_average_100'] is not None else '未评'} |", "",
+        "**提示：备用 API 回答单独标记来源，不能直接用于主模型的质量对比。**", "",
         "## 逐项结果", "",
-        "| Case | 场景 | 关系 | 通道 | 状态 | 人工分 |",
-        "|---|---|---|---|---|---:|",
+        "| Case | 场景 | 关系 | 来源 | 状态 | 错误 | 人工分 |",
+        "|---|---|---|---|---|---|---:|",
     ]
     for row in report["results"]:
         score = row["human_score_100"]
+        fault = row["api_failure"]["reason"] if row["api_failure"] else "-"
         lines.append(f"| {row['id']} | {row['category']} | {row['relation']} | "
-                     f"{row['channel']} | {row['status']} | {score if score is not None else '待评'} |")
+                     f"{row['model_origin']['origin']} | {row['status']} | {fault} | "
+                     f"{score if score is not None else '待评'} |")
     info = report.get("capture_info", {})
     if info:
         lines.extend(["", "## 模型采集元数据", "",
@@ -280,6 +325,8 @@ def html_report(report: dict) -> str:
         answer = result["response"] if result["response"] is not None else "(未提供回答)"
         background = "；".join(result["background"]) or "无"
         problems = "; ".join(result["hard_failures"] + result["warnings"]) or "未命中声明的自动规则"
+        fault = result["api_failure"] or {}
+        origin = result["model_origin"]
         blocks.append(
             "<details><summary><strong>" + escape(result["id"]) + "</strong> — "
             + escape(result["category"]) + " / " + escape(result["relation"]) + " / "
@@ -287,6 +334,11 @@ def html_report(report: dict) -> str:
             + "<p><b>输入：</b>" + escape(result["message"]) + "</p>"
             + "<p><b>合成历史：</b>" + escape(background) + "</p>"
             + "<p><b>需要人工观察：</b>" + escape(result["evaluator_note"]) + "</p>"
+            + "<p><b>回答来源：</b>" +
+              escape(" / ".join((origin["origin"], origin["provider"], origin["model"]))) +
+              "</p>"
+            + "<p><b>API 失败：</b>" +
+              escape(fault.get("reason", "无")) + "</p>"
             + "<p><b>回答：</b></p><pre>" + escape(answer) + "</pre>"
             + "<p><b>自动告警：</b>" + escape(problems) + "</p>"
             + "<p><b>人工评分：</b>" +
@@ -312,10 +364,12 @@ def html_report(report: dict) -> str:
         "<p class='warn'>" + escape(provenance) + "</p><p>版本：" +
         escape(report["variant"]) + "</p><p>场景数 " + str(mdsummary["cases"]) +
         " · 有回答 " + str(mdsummary["captured"]) + " · 缺失 " +
-        str(mdsummary["missing"]) + " · 自动硬性失败 " +
+        str(mdsummary["missing"]) + " · API 失败 " +
+        str(mdsummary["api_failed"]) + " · 备用 API 回答 " +
+        str(mdsummary["backup_captured"]) + " · 自动硬性失败 " +
         str(mdsummary["hard_failures"]) + " · 人工评阅 " +
         str(mdsummary["human_reviewed"]) + "</p>"
-        "<small>自动检查只验证显式配置的字符串禁令；不能证明角色行为自然或知识准确。</small>"
+        "<small>自动检查只验证显式配置的字符串禁令；备用模型输出不等于主模型成绩；不能证明角色行为自然或知识准确。</small>"
         "</section><h2>逐条审阅</h2>" + "".join(blocks) + "</body></html>"
     )
 
