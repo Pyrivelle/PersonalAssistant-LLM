@@ -19,11 +19,10 @@ jobs:
           python-version: "3.12"
       - name: Compile Agent V2 and legacy bridges
         run: python -m compileall -q src/zhuangfy/agent_v2 SenseVoice/qq_bridge.py SenseVoice/chat_worker.py SenseVoice/turn_planner.py
-      - name: A1 through A4 offline agent tests
+      - name: Agent V2 offline tests (auto-discover)
         env:
           PYTHONPATH: src
-        run: python -m unittest -v tests.unit.test_agent_v2_foundation tests.unit.test_agent_v2_planner_replyer tests.unit.test_agent_v2_cycle_gate tests.unit.test_agent_v2_scheduler_tools tests.unit.test_agent_v2_skills tests.unit.test_agent_v2_focus tests.unit.test_agent_v2_focus_runtime
-
+        run: python -m unittest discover -v -s tests/unit -p 'test_agent_v2_*.py'
   test-context-and-qq:
     runs-on: ubuntu-latest
     steps:
