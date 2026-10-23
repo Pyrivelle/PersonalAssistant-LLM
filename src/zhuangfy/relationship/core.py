@@ -46,6 +46,9 @@ class RelationshipSnapshot:
     tone: str
     auto_growth: bool
     frozen: bool
+    lock_familiarity: bool
+    lock_trust: bool
+    lock_closeness: bool
 
     def prompt_hint(self) -> str:
         """Bounded host-authored advice; never grants tool/send/identity rights."""
@@ -106,6 +109,9 @@ class RelationshipCore:
                     enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
                     auto_growth INTEGER NOT NULL DEFAULT 1 CHECK(auto_growth IN (0,1)),
                     frozen INTEGER NOT NULL DEFAULT 0 CHECK(frozen IN (0,1)),
+                    lock_familiarity INTEGER NOT NULL DEFAULT 0 CHECK(lock_familiarity IN (0,1)),
+                    lock_trust INTEGER NOT NULL DEFAULT 0 CHECK(lock_trust IN (0,1)),
+                    lock_closeness INTEGER NOT NULL DEFAULT 0 CHECK(lock_closeness IN (0,1)),
                     familiarity INTEGER NOT NULL CHECK(familiarity BETWEEN 0 AND 100),
                     trust INTEGER NOT NULL CHECK(trust BETWEEN 0 AND 100),
                     closeness INTEGER NOT NULL CHECK(closeness BETWEEN 0 AND 100),
@@ -164,6 +170,9 @@ class RelationshipCore:
             tier_ceiling=row["tier_ceiling"], allow_affection=bool(row["allow_affection"]),
             avoid_nicknames=bool(row["avoid_nicknames"]), tone=row["tone"],
             auto_growth=bool(row["auto_growth"]), frozen=bool(row["frozen"]),
+            lock_familiarity=bool(row["lock_familiarity"]),
+            lock_trust=bool(row["lock_trust"]),
+            lock_closeness=bool(row["lock_closeness"]),
         )
 
     @staticmethod
@@ -216,7 +225,10 @@ class RelationshipCore:
                 closeness: int | None = None, tier_ceiling: str | None = None,
                 allow_affection: bool | None = None, avoid_nicknames: bool | None = None,
                 tone: str | None = None, auto_growth: bool | None = None,
-                frozen: bool | None = None, enabled: bool | None = None) -> RelationshipSnapshot:
+                frozen: bool | None = None, enabled: bool | None = None,
+                lock_familiarity: bool | None = None,
+                lock_trust: bool | None = None,
+                lock_closeness: bool | None = None) -> RelationshipSnapshot:
         """Manual correction from trusted UI; optimistic lock defeats stale updates."""
         agent_id = _nonempty(agent_id, "agent_id")
         if type(expected_version) is not int or expected_version < 1:
@@ -228,7 +240,10 @@ class RelationshipCore:
         for name, value in (("allow_affection", allow_affection),
                             ("avoid_nicknames", avoid_nicknames),
                             ("auto_growth", auto_growth), ("frozen", frozen),
-                            ("enabled", enabled)):
+                            ("enabled", enabled),
+                            ("lock_familiarity", lock_familiarity),
+                            ("lock_trust", lock_trust),
+                            ("lock_closeness", lock_closeness)):
             if value is not None:
                 if type(value) is not bool:
                     raise ValueError(f"{name} must be bool")
@@ -258,8 +273,11 @@ class RelationshipCore:
                            (v, agent_id, person_id))
             db.execute("UPDATE relationship_profiles SET version=version+1 WHERE agent_id=? AND person_id=?",
                        (agent_id, person_id))
+            details = json.dumps({name: {"before": row[name], "after": value}
+                                  for name, value in meaningful.items()}, ensure_ascii=False,
+                                 sort_keys=True)
             self._audit(db, agent_id, person_id, "manual_correction", "policy", None, None,
-                        None, ",".join(sorted(meaningful.keys())), int(time.time()))
+                        None, details[:1400], int(time.time()))
             return self._snapshot(self._profile(db, agent_id, person_id))
 
     def observe(self, *, agent_id: str, identity: ChannelIdentity, event_kind: str,
@@ -327,6 +345,8 @@ class RelationshipCore:
                   AND occurred_at>? LIMIT 1
             """, (agent_id, person_id, event_kind, now - cooldown)).fetchone()
             if recent:
+                return self._snapshot(row)
+            if row["lock_" + dimension]:
                 return self._snapshot(row)
             if event_kind == "affection_signal" and not row["allow_affection"]:
                 return self._snapshot(row)
