@@ -26,6 +26,7 @@ from .vector import FastEmbedProvider
 MAX_REQUEST_BYTES = 18_000
 PUBLIC_ENDPOINTS = frozenset({
     "/v1/receive", "/v1/recall", "/v1/complete-reply", "/v1/erase-self",
+    "/v1/relationship/snapshot", "/v1/relationship/apply",
 })
 ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/create-person", "/v1/admin/link", "/v1/admin/consent",
@@ -34,6 +35,7 @@ ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/evidence", "/v1/admin/correct", "/v1/admin/forget-memory",
     "/v1/admin/forget-person", "/v1/admin/link-episodes",
     "/v1/admin/list-jobs", "/v1/admin/retry-job",
+    "/v1/admin/relationship/enroll", "/v1/admin/relationship/correct",
 })
 
 
@@ -97,6 +99,14 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.complete_reply(**payload)
                 elif path == "/v1/erase-self":
                     result = core.erase_self(**payload)
+                elif path == "/v1/relationship/snapshot":
+                    result = core.relationship_snapshot(**payload)
+                elif path == "/v1/relationship/apply":
+                    result = core.relationship_apply(**payload)
+                elif path == "/v1/admin/relationship/enroll":
+                    result = core.admin_relationship_enroll(**payload)
+                elif path == "/v1/admin/relationship/correct":
+                    result = core.admin_relationship_correct(**payload)
                 elif path == "/v1/admin/create-person":
                     result = core.admin_create_person(**payload)
                 elif path == "/v1/admin/link":
