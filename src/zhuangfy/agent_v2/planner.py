@@ -157,7 +157,9 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
                  user_text: str, *, allow_voice: bool = False,
                  visual_context: str = "", trace_id: str = "",
                  tool_feedback: str = "", available_tools: tuple[str, ...] = (),
-                 tool_catalog: str = "") -> PlanDecision:
+                 tool_catalog: str = "",
+                 character_core_v2: bool = False,
+                 character_channel: str = "qq_private") -> PlanDecision:
     """Use existing stage routing; caller handles errors and default fallback."""
     from model_routes import invoke_stage
 
@@ -166,6 +168,14 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
         # Character persona is background for behavior, not a replacement for
         # the planner's role or an excuse to imitate a human's actual past.
         prompt += "\n【角色人格参考】\n" + settings.system_prompt[:1500]
+    if character_core_v2:
+        from zhuangfy.persona.character_core_v2 import character_behavior
+        cue = character_behavior(settings.system_prompt, user_text,
+                                 channel=character_channel)
+        if cue.guidance:
+            # Values guide the *decision* too (not only surface wording).
+            # May not override host authorization or wait/silence policy.
+            prompt += "\n【角色行为判断准则（不赋予执行权限）】\n" + cue.guidance[:1100]
     names = [name for name in available_tools[:12]
              if isinstance(name, str) and 0 < len(name) <= 80
              and all(char.isascii() and (char.isalnum() or char in "._-") for char in name)]
