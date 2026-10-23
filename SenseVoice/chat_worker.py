@@ -12,6 +12,7 @@ from llm import ROOT, LlmSettings
 from model_routes import invoke_stage
 from uuid import uuid4
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
+from zhuangfy.agent_v2.planner import plan_turn_v2, PlanDecision
 from emotion import EmotionState
 from fangyi_skill import guidance as fangyi_guidance
 from activity_log import log_event, set_current_turn
@@ -138,9 +139,19 @@ class ChatWorker(QThread):
             planner_config = PlannerSettings()
             try:
                 planner_config = PlannerSettings.load(ROOT / "cognition_settings.json")
-                plan = plan_turn(self.settings, self.key, self.history, self.message, planner_config)
-                log_event(self.source, "思考", f"语气：{plan.tone}；关注：{plan.attention or '当前话题'}；置信度：{plan.confidence:.2f}"
-                          if planner_config.enabled else "可选思考阶段未启用，直接生成回复")
+                if planner_config.agent_v2_enabled:
+                    plan = plan_turn_v2(
+                        self.settings, self.key, self.history, self.message,
+                        allow_voice=False, visual_context=visual_context, trace_id=self.turn_id)
+                    # Desktop/voice UI expects a visible reply for every initiated
+                    # request. Wait/stop are enabled only in the QQ async scheduler.
+                    if isinstance(plan, PlanDecision) and plan.action != "reply":
+                        log_event(self.source, "思考V2", f"桌面直接消息不支持 {plan.action}，继续生成可见回复")
+                    log_event(self.source, "思考V2", f"意图：{plan.social_intent[:70]}；语气：{plan.tone}；置信度：{plan.confidence:.2f}")
+                else:
+                    plan = plan_turn(self.settings, self.key, self.history, self.message, planner_config)
+                    log_event(self.source, "思考", f"语气：{plan.tone}；关注：{plan.attention or '当前话题'}；置信度：{plan.confidence:.2f}"
+                              if planner_config.enabled else "可选思考阶段未启用，直接生成回复")
             except Exception as error:
                 self.memory_warning.emit(f"可选思考阶段跳过：{type(error).__name__}")
                 log_event(self.source, "思考", f"阶段跳过：{type(error).__name__}")

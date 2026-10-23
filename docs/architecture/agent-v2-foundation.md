@@ -25,3 +25,6 @@ PYTHONPATH=src python -m unittest -v tests.unit.test_agent_v2_foundation
 ```
 
 Follow-up: A3 Planner + reply/wait/stop, A4 Replyer, A5 group autonomy, A6 shared Focus with privacy scopes, A7 social intent for images/emoji, A8 tools and proactive behavior. End-to-end channel ACK, reconnect and interruption tests remain required before enabling by default.
+
+
+> 2026-10-23 update: the project subsequently adopted GPLv3 and directly imported two attributed Maisaka gate files. See `docs/development/third-party.md` and `docs/architecture/agent-v2-planner-replyer.md`; A0's earlier "no upstream source" statement documents the initial state only.

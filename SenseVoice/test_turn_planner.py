@@ -20,6 +20,28 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(parse_plan('{"tone":"自然","confidence":0.9,"delivery":"voice"}').delivery, "voice")
         self.assertEqual(parse_plan('{"tone":"自然","confidence":0.9,"delivery":"video"}').delivery, "text")
 
+    def test_agent_v2_explicit_flags_and_wait_bounds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            values = {
+                "agent_v2_enabled": True,
+                "agent_v2_allow_silence_group": True,
+                "agent_v2_wait_max_seconds": 7,
+            }
+            path.write_text(json.dumps(values), encoding="utf-8")
+            settings = PlannerSettings.load(path)
+            self.assertTrue(settings.agent_v2_enabled)
+            self.assertTrue(settings.agent_v2_allow_silence_group)
+            self.assertFalse(settings.agent_v2_allow_silence_private)
+            self.assertEqual(settings.agent_v2_wait_max_seconds, 7)
+            for bad in ({"agent_v2_enabled": "yes"},
+                        {"agent_v2_allow_silence_private": 1},
+                        {"agent_v2_wait_max_seconds": 0},
+                        {"agent_v2_wait_max_seconds": 50}):
+                path.write_text(json.dumps(bad), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    PlannerSettings.load(path)
+
     def test_optional_planner_is_off_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertFalse(PlannerSettings.load(Path(directory) / "missing.json").enabled)

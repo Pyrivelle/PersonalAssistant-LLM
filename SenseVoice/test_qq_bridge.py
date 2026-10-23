@@ -390,6 +390,72 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(state.context.history), 2)
         self.assertEqual(state.context.history[0]["content"], incoming.text)
 
+    async def test_agent_v2_planner_wait_then_reply_once(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       agent_v2_wait_max_seconds=1)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+        incoming = Incoming("private", 42, None, "v2-1", "还有一句")
+        state = Conversation(incoming, pending=["还有一句"])
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", return_value=PlanDecision(
+                 action="wait", confidence=0.9, wait_seconds=1)) as planner, \
+             patch.object(qq_bridge, "invoke_stage", return_value="嗯，我听着。") as model:
+            await bridge.process(state)
+        self.assertEqual(planner.call_count, 2)
+        self.assertEqual(model.call_count, 1)
+        bridge.send_reply.assert_awaited_once()
+        self.assertFalse(state.pending)
+        self.assertEqual(state.planner_waits, 0)
+
+    async def test_agent_v2_stop_requires_explicit_permission(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        for permitted in (False, True):
+            with self.subTest(permitted=permitted):
+                with patch.object(qq_bridge.PlannerSettings, "load",
+                                  return_value=PlannerSettings(agent_v2_enabled=True,
+                                                               agent_v2_allow_silence_group=permitted)):
+                    bridge = QqBridge(QqSettings(allowed_group_ids=frozenset({9}),
+                                                 group_cooldown_seconds=0, quiet_seconds=0))
+                current = Incoming("group", 42, 9, "v2-g", "我也想听听")
+                state = Conversation(current, pending=[current.text])
+                bridge.send_reply = AsyncMock(return_value=True)
+                with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+                     patch.object(qq_bridge, "load_key", return_value="test-key"), \
+                     patch.object(qq_bridge, "plan_turn_v2",
+                                  return_value=PlanDecision(action="stop", confidence=0.95)), \
+                     patch.object(qq_bridge, "invoke_stage", return_value="我也有想法。") as model:
+                    await bridge.process(state)
+                self.assertEqual(model.call_count, 0 if permitted else 1)
+                self.assertEqual(bridge.send_reply.await_count, 0 if permitted else 1)
+
+    async def test_agent_v2_replyer_receives_social_intent(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+        current = Incoming("private", 42, None, "v2-affection", "好喜欢")
+        state = Conversation(current, pending=[current.text])
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2",
+                          return_value=PlanDecision(
+                              action="reply", confidence=0.9,
+                              social_intent="对角色表达好感", reply_act="温柔接纳",
+                              reply_style="short", avoid=("不要罗列图片",))), \
+             patch.object(qq_bridge, "invoke_stage", return_value="我也很开心。") as model:
+            await bridge.process(state)
+        self.assertEqual(model.call_count, 1)
+        self.assertIn("对角色表达好感", model.call_args.kwargs["emotion_context"])
+        self.assertIn("不要罗列图片", model.call_args.kwargs["emotion_context"])
+        bridge.send_reply.assert_awaited_once()
+
     async def test_continuation_bubble_is_one_logical_rate_limit_slot(self):
         with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
             bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),

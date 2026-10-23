@@ -31,6 +31,7 @@ from emotion import EmotionState
 from llm import LlmSettings
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
 from zhuangfy.agent_v2 import MessageDebouncer, from_qq_incoming
+from zhuangfy.agent_v2.planner import plan_turn_v2, choose_action, PlanDecision
 from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
 
@@ -330,6 +331,8 @@ class Conversation:
     first_arrival: float = 0
     last_arrival: float = 0
     debouncer: MessageDebouncer | None = None
+    resume_after: float = 0.0
+    planner_waits: int = 0
     context: DialogueContext = field(default_factory=DialogueContext)
     last_failed_generation: str = ""
     last_failed_image: ImageReference | None = None
@@ -450,6 +453,9 @@ class QqBridge:
                   + (f" · {incoming.image_count} 张图片" if incoming.image else ""))
         state.pending = state.pending[-4:]
         state.last_arrival = now
+        if state.planner_waits and state.resume_after:
+            # A new user message is an explicit reason to reconsider early.
+            state.resume_after = 0.0
         if self.settings.message_debounce_mode != "off":
             if state.debouncer is None:
                 state.debouncer = MessageDebouncer(self.settings.message_debounce_mode)
@@ -473,11 +479,13 @@ class QqBridge:
                 else:
                     quiet = min(self.settings.quiet_seconds - (now - state.last_arrival),
                                 4 - (now - state.first_arrival))
+                quiet = max(quiet, state.resume_after - now)
                 if quiet <= 0:
                     break
                 await asyncio.sleep(min(quiet, 0.25))
             if state.debouncer is not None:
                 state.debouncer.clear_batch()
+            state.resume_after = 0.0
             command = state.pending[0].strip() if len(state.pending) == 1 and not state.pending_images else ""
             # A continuation of an already accepted logical reply must not
             # consume a NEW hourly quota slot. Erase/discard are never blocked
@@ -607,7 +615,47 @@ class QqBridge:
                         log_event("QQ", "识图", f"{current.scope} · 完成 · {len(visual_context)} 字")
                     candidate = state.context.observe(message)
                     plan = TurnPlan()
-                    if self.planner_settings.enabled:
+                    if self.planner_settings.agent_v2_enabled:
+                        try:
+                            plan = await asyncio.to_thread(
+                                plan_turn_v2, settings, key, state.context.history, message,
+                                allow_voice=(image_ref is None and current.kind == "private" and
+                                             current.user_id in self.settings.voice_private_ids),
+                                visual_context=visual_context, trace_id=turn_id)
+                            action = choose_action(
+                                plan,
+                                allow_silence=(self.planner_settings.agent_v2_allow_silence_group
+                                               if current.kind == "group"
+                                               else self.planner_settings.agent_v2_allow_silence_private),
+                                already_waited=bool(state.planner_waits) or image_ref is not None)
+                            log_event("QQ", "思考V2",
+                                      f"{current.scope} · 行为：{action} · 意图：{plan.social_intent[:70]} · "
+                                      f"语气：{plan.tone} · 置信度：{plan.confidence:.2f}")
+                            if action == "wait":
+                                # Requeue the original turn without sending or committing a
+                                # false assistant reply. Only one bounded wait per logical batch.
+                                state.planner_waits += 1
+                                state.pending = [message] + state.pending
+                                state.pending_images = images + state.pending_images
+                                state.first_arrival = state.last_arrival = time.monotonic()
+                                state.resume_after = state.last_arrival + min(
+                                    plan.wait_seconds, self.planner_settings.agent_v2_wait_max_seconds)
+                                log_event("QQ", "等待V2", f"{current.scope} · 最多等待 {plan.wait_seconds} 秒")
+                                continue
+                            if action == "stop":
+                                state.planner_waits = 0
+                                log_event("QQ", "静默V2", f"{current.scope} · 已授权不回复本批消息")
+                                continue
+                            # Unknown/unwired tool requests never execute. Replyer must
+                            # not claim a device action happened merely because it was planned.
+                            if isinstance(plan, PlanDecision) and plan.action == "tool":
+                                log_event("QQ", "工具V2", f"{current.scope} · 工具尚未接入，回退文字回复")
+                            state.planner_waits = 0
+                        except Exception as error:
+                            plan = PlanDecision()
+                            state.planner_waits = 0
+                            log_event("QQ", "思考V2", f"{current.scope} · 回退直接回复：{type(error).__name__}")
+                    elif self.planner_settings.enabled:
                         try:
                             plan = await asyncio.to_thread(
                                 plan_turn, settings, key, state.context.history, message,
@@ -673,8 +721,11 @@ class QqBridge:
                     log_event("QQ", "已生成", f"turn:{turn_id} · {current.scope}")
                 # Format only model output; system commands and status notices
                 # are never passed through role/stage-cue cleanup.
+                reply_parts_cap = self.settings.private_max_reply_parts
+                if isinstance(plan, PlanDecision) and plan.reply_parts:
+                    reply_parts_cap = min(reply_parts_cap, plan.reply_parts)
                 cleaned, parts = format_qq_reply(reply, private=current.kind == "private",
-                                                  max_parts=self.settings.private_max_reply_parts)
+                                                  max_parts=reply_parts_cap)
                 if not cleaned:
                     state.last_failed_generation = message
                     state.last_failed_image = image_ref
@@ -702,7 +753,7 @@ class QqBridge:
                     # For long voice-request replies, fall back to short text
                     # bubbles as usual rather than synthesizing partial audio.
                     cleaned, parts = format_qq_reply(cleaned, private=current.kind == "private",
-                                                  max_parts=self.settings.private_max_reply_parts)
+                                                  max_parts=reply_parts_cap)
                 delivery = PartialReply(
                     user_text=message, canonical_reply=cleaned, parts=tuple(parts),
                     delivered=0, emotion=candidate, settings=settings,

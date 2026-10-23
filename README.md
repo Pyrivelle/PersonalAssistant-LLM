@@ -23,6 +23,8 @@
 
 ## 贡献与许可证
 
+本项目由作者有权授权的代码以 **GNU GPL v3.0** 发布，详见 [LICENSE](LICENSE)。复用的第三方代码及独立资源分别保留原作者声明与许可；详见 [第三方来源与发布边界](docs/development/third-party.md)。如需再分发，请按 GPLv3 保留相应版权和许可证声明、提供对应源码；外部模型权重、素材以及独立程序不因本项目许可证自动获得授权。
+
 ## 正在开发：独立向量记忆库（实验阶段）
 
 新的 `src/zhuangfy/memory/` 已开始提供 SQLite + Qdrant Local 的人物隔离向量检索基础。**它还没有连接 QQ、语音或自动记忆提炼，也不会修改已有 Mem0 个人资料。**设计、安装与 Codex 后续开发目标见 [Memory Vector MVP](docs/architecture/memory-vector-mvp.md)。

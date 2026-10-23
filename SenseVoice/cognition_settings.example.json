@@ -4,5 +4,9 @@
   "persist_private_ids": [],
   "persist_desktop_context": false,
   "memory_private_ids": [],
-  "fangyi_scene_skill": true
+  "fangyi_scene_skill": true,
+  "agent_v2_enabled": false,
+  "agent_v2_allow_silence_private": false,
+  "agent_v2_allow_silence_group": false,
+  "agent_v2_wait_max_seconds": 8
 }
