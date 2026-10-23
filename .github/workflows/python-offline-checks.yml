@@ -180,3 +180,26 @@ jobs:
         run: python -m pip install "PySide6>=6.8,<6.12"
       - name: Offline memory manager UI smoke test
         run: python -m unittest -v tests.unit.test_memory_manager_gui
+
+  test-character-e1-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Character E1 synthetic dataset and reporting tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest -v tests.unit.test_agent_v2_character_e1
+      - name: Generate E1 reproducible demo report (NOT model performance)
+        run: |
+          python scripts/character_e1_report.py --out build/character-e1-report --require-full --fail-on-hard
+          cat build/character-e1-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload E1 human-review artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: character-e1-demo-report
+          path: build/character-e1-report/
+          retention-days: 30
+          if-no-files-found: error
