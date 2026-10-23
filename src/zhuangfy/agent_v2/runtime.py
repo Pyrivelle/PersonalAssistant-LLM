@@ -33,6 +33,8 @@ class ToolBinding:
     handler: Callable[[dict], Awaitable[str]]
     scopes: frozenset[str] = field(default_factory=lambda: frozenset({"private"}))
     mutating: bool = False
+    description: str = ""
+    parameters: dict = field(default_factory=dict)
 
 
 class AuthorizedToolRegistry:
@@ -53,12 +55,61 @@ class AuthorizedToolRegistry:
     def public_names(self, *, scope: str, allow_mutation: bool = False) -> tuple[str, ...]:
         return tuple(name for name in self._tools if self.available(name, scope=scope, allow_mutation=allow_mutation))
 
+    def prompt_catalog(self, *, scope: str, allow_mutation: bool = False) -> str:
+        """Only host-registered, authorized tool schemas are shown to the model."""
+        import json
+        lines = []
+        for name in self.public_names(scope=scope, allow_mutation=allow_mutation)[:12]:
+            tool = self._tools[name]
+            spec = json.dumps(tool.parameters, ensure_ascii=False, separators=(",", ":"))
+            lines.append(f"{name}：{tool.description[:150]}；参数 schema：{spec[:450]}")
+        return "\n".join(lines)[:2400]
+
+    @staticmethod
+    def _check_schema(arguments: dict, schema: dict) -> bool:
+        """Small no-dependency guard for host-declared top-level object fields."""
+        if not schema:
+            return True
+        if schema.get("type") != "object":
+            return False
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        if not isinstance(properties, dict) or not isinstance(required, list):
+            return False
+        if any(key not in arguments for key in required):
+            return False
+        if schema.get("additionalProperties") is False and any(
+                key not in properties for key in arguments):
+            return False
+        for key, value in arguments.items():
+            prop = properties.get(key, {})
+            if not isinstance(prop, dict):
+                return False
+            kind = prop.get("type")
+            if kind == "string":
+                if not isinstance(value, str) or len(value) > prop.get("maxLength", 1024):
+                    return False
+            elif kind == "integer":
+                if type(value) is not int:
+                    return False
+            elif kind == "number":
+                if type(value) not in (int, float):
+                    return False
+            elif kind == "boolean":
+                if type(value) is not bool:
+                    return False
+            elif kind is not None:
+                return False
+        return True
+
     async def invoke(self, name: str, arguments: dict, *, scope: str,
                      allow_mutation: bool = False, timeout: float = 6.0) -> ToolReceipt:
         if not self.available(name, scope=scope, allow_mutation=allow_mutation):
             return ToolReceipt(name, False, "工具未授权或不可用")
         if not isinstance(arguments, dict) or len(repr(arguments)) > 3000:
             return ToolReceipt(name, False, "工具参数不合法或过长")
+        if not self._check_schema(arguments, self._tools[name].parameters):
+            return ToolReceipt(name, False, "工具参数不符合已注册的 schema")
         try:
             output = await asyncio.wait_for(self._tools[name].handler(dict(arguments)),
                                             timeout=max(0.1, timeout))
