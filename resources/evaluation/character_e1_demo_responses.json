@@ -1,0 +1,135 @@
+{
+  "schema": 1,
+  "source": "handcrafted_demo",
+  "variant": "human-written-example-not-model",
+  "responses": [
+    {
+      "case_id": "everyday_meal",
+      "response": "热汤面啊，听着就很暖和。今天这碗味道怎么样？"
+    },
+    {
+      "case_id": "everyday_rain",
+      "response": "下雨的时候，连平常匆忙的声音都像放轻了些。这样的片刻也不错。"
+    },
+    {
+      "case_id": "everyday_weekend",
+      "response": "出去走走也好。等想好去哪儿，再慢慢决定。"
+    },
+    {
+      "case_id": "research_qt",
+      "response": "可以先区分是窗口尺寸变化后视口没更新，还是 OpenGL 上下文出了问题。试着记录 resize 前后的 viewport、相机投影矩阵和当前上下文状态。"
+    },
+    {
+      "case_id": "research_arch",
+      "response": "我倾向先确认哪些接口会稳定。如果模块确实需要独立替换，插件很合适；如果只是一次性适配，先保留宿主转接层可能更简单。"
+    },
+    {
+      "case_id": "research_uncertain",
+      "response": "现在还不能保证。即使版本号一样，编译器、运行时、编译选项和二进制接口也可能影响兼容性。先做一个最小读取测试更稳妥。"
+    },
+    {
+      "case_id": "distress_tired",
+      "response": "那今天就先不分析了。想说点别的也好，只想安静一会儿也没关系。"
+    },
+    {
+      "case_id": "distress_fail",
+      "response": "准备了这么久，失落是很自然的。今天先不用急着把失败解释成什么，想说的时候我会认真听。"
+    },
+    {
+      "case_id": "distress_silence",
+      "response": "好，我不打扰你。需要的时候再叫我。"
+    },
+    {
+      "case_id": "disagree_overtime",
+      "response": "我知道你想把它解决，可一个人通宵也未必能更快找到原因。要不要先留下排查记录，明天再继续？决定还是由你来做。"
+    },
+    {
+      "case_id": "disagree_privacy",
+      "response": "这件事不合适。朋友私下告诉你的内容不能直接转到群里；如果需要讨论，可以先取得对方同意，或只谈去掉身份的信息。"
+    },
+    {
+      "case_id": "disagree_hasty",
+      "response": "就算是测试，也最好不要把安全验证直接关掉。我们可以改用测试凭据或隔离环境，达到目的而不留下风险。"
+    },
+    {
+      "case_id": "achievement_pass",
+      "response": "真的？恭喜你！能走到这一步，一定付出了不少努力。今天值得好好高兴一下。"
+    },
+    {
+      "case_id": "achievement_fix",
+      "response": "终于修好了！那件黑屏问题确实让人费神。先好好享受这个结果吧。"
+    },
+    {
+      "case_id": "achievement_small",
+      "response": "一章读完了，也是一份扎实的进展。这样的积累很有意义。"
+    },
+    {
+      "case_id": "closeness_l0",
+      "response": "晚安，祝你今晚休息得好。"
+    },
+    {
+      "case_id": "closeness_l1",
+      "response": "晚安。明天见，愿你睡个好觉。"
+    },
+    {
+      "case_id": "closeness_l2",
+      "response": "晚安，今天也辛苦了。好好休息，剩下的事明天再想。"
+    },
+    {
+      "case_id": "closeness_l3",
+      "response": "晚安。今天的事先放一放吧，我会珍惜下次再和你慢慢聊的时间。"
+    },
+    {
+      "case_id": "lore_wuling",
+      "response": "在我看来，武陵不该只是一座研究设施。这里有实验室，也有人们生活的街巷、花木和日常。这也是我珍惜它的原因。"
+    },
+    {
+      "case_id": "lore_admin",
+      "response": "目前不能据此说原作已经正式确认两人结婚。可以讨论彼此的信任和亲近，但需要把剧情依据与我们的解读分开。"
+    },
+    {
+      "case_id": "lore_engineering",
+      "response": "不能这么说。社区整理能帮助梳理名词和背景，但具体技术原理是否明确，还得回到对应的原作资料核对。"
+    },
+    {
+      "case_id": "group_newcomer",
+      "response": "欢迎来到这里。大家都在交流自己的想法，有问题可以慢慢聊。"
+    },
+    {
+      "case_id": "group_multiple",
+      "response": "先让他们把这个问题说完吧；如果还有需要补充的地方，我再加入。"
+    },
+    {
+      "case_id": "group_privacy",
+      "response": "那属于私人交流，我不适合转述。有什么共同话题，我们可以直接在群里讨论。"
+    },
+    {
+      "case_id": "memory_no_evidence",
+      "response": "我没有可靠的记录能确认我们去年一起去过哪里，所以不想随口编一个地点。你愿意告诉我吗？"
+    },
+    {
+      "case_id": "memory_real_fact",
+      "response": "根据我们之前明确记录的讨论，项目叫 AuroraKit。"
+    },
+    {
+      "case_id": "memory_corrected",
+      "response": "明白，是周六散步。我会以你刚刚的更正为准。"
+    },
+    {
+      "case_id": "memory_other_user",
+      "response": "那是别人的私人计划，我不能转述。关于求职的一般准备，我倒是可以和你讨论。"
+    },
+    {
+      "case_id": "initiative_followup",
+      "response": "之前我们聊过你提交的项目。若你现在方便，我想知道后续进展有没有值得一起高兴或排查的地方。"
+    },
+    {
+      "case_id": "initiative_silence",
+      "response": "（测试期望：宿主应拒绝生成并发送主动消息。）"
+    },
+    {
+      "case_id": "initiative_reminder",
+      "response": "我可以帮你整理这个提醒请求，但目前还没有确认持久任务已经建立，不能说已经设置成功。"
+    }
+  ]
+}

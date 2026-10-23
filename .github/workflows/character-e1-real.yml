@@ -1,0 +1,103 @@
+name: Character E1 - Real Model (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Cloud API provider (same service as ZhuangFY)
+        type: choice
+        required: true
+        default: siliconflow
+        options:
+          - siliconflow
+          - deepseek
+          - kimi_cn
+          - kimi_global
+          - hachimi
+      model:
+        description: Exact model ID from your ZhuangFY LLM settings
+        type: string
+        required: true
+      variant:
+        description: Character behavior / lore version to evaluate
+        type: choice
+        required: true
+        default: ccv2_ckv1
+        options:
+          - v1
+          - ccv2
+          - ccv2_ckv1
+      cases:
+        description: Number of synthetic cases (3 = low-cost smoke test)
+        type: choice
+        required: true
+        default: "3"
+        options:
+          - "3"
+          - "10"
+          - "32"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: character-e1-live-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  character-e1-real:
+    # Real requests are never run on normal push / pull_request events.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    env:
+      E1_PROVIDER: ${{ inputs.provider }}
+      E1_MODEL: ${{ inputs.model }}
+      E1_VARIANT: ${{ inputs.variant }}
+      E1_CASES: ${{ inputs.cases }}
+      ZHUANGFY_E1_API_KEY: ${{ secrets.ZHUANGFY_E1_API_KEY }}
+    steps:
+      - name: Checkout trusted repository code
+        uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check cloud API secret is configured
+        shell: bash
+        run: |
+          if [[ -z "$ZHUANGFY_E1_API_KEY" ]]; then
+            echo "::error::Missing Actions repository secret ZHUANGFY_E1_API_KEY"
+            exit 1
+          fi
+      - name: Capture actual cloud model responses (billable)
+        shell: bash
+        run: |
+          mkdir -p build/e1-real-report
+          python scripts/character_e1_capture.py \
+            --variant "$E1_VARIANT" \
+            --max-cases "$E1_CASES" \
+            --cloud-provider "$E1_PROVIDER" \
+            --cloud-model "$E1_MODEL" \
+            --out build/e1-real-report/model-capture.json \
+            --allow-network
+      - name: Generate human-reviewable HTML, Markdown and JSON
+        if: always()
+        shell: bash
+        run: |
+          if [[ -s build/e1-real-report/model-capture.json ]]; then
+            python scripts/character_e1_report.py \
+              --responses build/e1-real-report/model-capture.json \
+              --out build/e1-real-report
+            cat build/e1-real-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Model capture did not produce any responses." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload actual model evaluation files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: character-e1-real-report
+          path: build/e1-real-report/
+          if-no-files-found: warn
+          retention-days: 14
