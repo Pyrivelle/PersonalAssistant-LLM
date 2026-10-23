@@ -32,6 +32,10 @@ from llm import LlmSettings
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
 from zhuangfy.agent_v2 import MessageDebouncer, from_qq_incoming
 from zhuangfy.agent_v2.planner import plan_turn_v2, choose_action, PlanDecision
+from zhuangfy.agent_v2.runtime import AgentCycleEngine
+from zhuangfy.agent_v2.scheduler import UnifiedTurnScheduler, SchedulerConfig
+from zhuangfy.agent_v2.turn_trigger import TurnEvent
+from zhuangfy.agent_v2.tools import build_builtin_registry
 from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
 
@@ -79,6 +83,8 @@ class QqSettings:
     voice_private_ids: frozenset[int] = frozenset()
     private_max_reply_parts: int = 3
     message_debounce_mode: str = "off"  # optional V2; preserve legacy by default
+    passive_group_ids: frozenset[int] = frozenset()  # explicit group opt-in
+    group_reply_frequency: float = 0.45
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "QqSettings":
@@ -109,12 +115,20 @@ class QqSettings:
         mode = raw.get("message_debounce_mode", "off")
         if mode not in ("off", "fast", "natural", "steady"):
             raise ValueError("message_debounce_mode 必须是 off/fast/natural/steady")
+        passive_ids = _ids(raw.get("passive_group_ids", []))
+        groups = _ids(raw.get("allowed_group_ids", []))
+        if not passive_ids.issubset(groups):
+            raise ValueError("passive_group_ids 必须属于群白名单")
+        frequency = raw.get("group_reply_frequency", 0.45)
+        if type(frequency) not in (float, int) or not math.isfinite(frequency) or not 0 <= frequency <= 1:
+            raise ValueError("group_reply_frequency 必须为 0–1 的有限数字")
         private_ids = _ids(raw.get("allowed_private_ids", []))
         voice_ids = _ids(raw.get("voice_private_ids", []))
         if not voice_ids.issubset(private_ids):
             raise ValueError("QQ 语音回复账号必须包含在私聊白名单内")
-        return cls(url, private_ids, _ids(raw.get("allowed_group_ids", [])),
-                   voice_private_ids=voice_ids, message_debounce_mode=mode, **values)
+        return cls(url, private_ids, groups,
+                   voice_private_ids=voice_ids, message_debounce_mode=mode,
+                   passive_group_ids=passive_ids, group_reply_frequency=float(frequency), **values)
 
 
 MAX_VOICE_CHARS = 160
@@ -211,6 +225,7 @@ class Incoming:
     text: str
     image: ImageReference | None = None
     image_count: int = 0
+    directed: bool = True  # group @; private always direct
 
     @property
     def scope(self) -> str:
@@ -271,12 +286,14 @@ def parse_message(event: dict, bot_id: int, settings: QqSettings) -> Incoming | 
         text = CQ_CODE.sub("", message).strip()
     else:
         return None
-    if kind == "group" and not mentioned:
+    if kind == "group" and not mentioned and (
+            group_id not in settings.passive_group_ids):
         return None
     if not text and image is None:
         return None
     return Incoming(kind, user_id, group_id, str(event.get("message_id", "")),
-                    text[:1500] or IMAGE_ONLY_PROMPT, image, image_count)
+                    text[:1500] or IMAGE_ONLY_PROMPT, image, image_count,
+                    directed=kind == "private" or mentioned)
 
 
 class ReplyLimiter:
@@ -333,6 +350,9 @@ class Conversation:
     debouncer: MessageDebouncer | None = None
     resume_after: float = 0.0
     planner_waits: int = 0
+    pending_event_ids: list[str] = field(default_factory=list)
+    pending_directed: bool = False
+    group_recent: deque[str] = field(default_factory=lambda: deque(maxlen=8))
     context: DialogueContext = field(default_factory=DialogueContext)
     last_failed_generation: str = ""
     last_failed_image: ImageReference | None = None
@@ -350,6 +370,9 @@ class QqBridge:
         self.conversations: dict[str, Conversation] = {}
         self.seen: dict[str, float] = {}
         self.limiter = ReplyLimiter(settings)
+        self.turn_scheduler = UnifiedTurnScheduler(
+            SchedulerConfig(group_frequency=settings.group_reply_frequency))
+        self.tool_registry = build_builtin_registry()
         self.generation_lock = asyncio.Lock()
         self.send_lock = asyncio.Lock()
         self.next_send_at = 0.0
@@ -433,7 +456,9 @@ class QqBridge:
             self.seen[key] = now
             if len(self.seen) > 2048:
                 self.seen = {item: seen_at for item, seen_at in self.seen.items() if now - seen_at < 3600}
-        identity_scope = f"bot:{self.bot_id}:{incoming.scope}"
+        identity_scope = (f"bot:{self.bot_id}:group:{incoming.group_id}"
+                          if incoming.kind == "group"
+                          else f"bot:{self.bot_id}:{incoming.scope}")
         state = self.conversations.get(identity_scope)
         if state is None:
             context = (self.context_store.load(identity_scope)
@@ -445,13 +470,18 @@ class QqBridge:
         state.incoming = incoming
         if not state.pending:
             state.first_arrival = now
-        state.pending.append(incoming.text)
+        state.pending.append(
+            f"群友[{incoming.user_id}]：{incoming.text}"
+            if incoming.kind == "group" else incoming.text)
+        state.pending_directed = state.pending_directed or incoming.directed
+        state.pending_event_ids.append(incoming.message_id or uuid.uuid4().hex)
         if incoming.image is not None:
             state.pending_images.extend([incoming.image] * min(incoming.image_count, 2))
             state.pending_images = state.pending_images[-2:]
         log_event("QQ", "收到", f"{incoming.scope} · {incoming.text}"
                   + (f" · {incoming.image_count} 张图片" if incoming.image else ""))
         state.pending = state.pending[-4:]
+        state.pending_event_ids = state.pending_event_ids[-4:]
         state.last_arrival = now
         if state.planner_waits and state.resume_after:
             # A new user message is an explicit reason to reconsider early.
@@ -464,7 +494,7 @@ class QqBridge:
             state.debouncer.observe(author=normalized.sender_id, now=now,
                                     is_bare_image=normalized.is_bare_image,
                                     is_pure_emoji=normalized.is_pure_emoji,
-                                    mentioned=(incoming.kind == "group"))
+                                    mentioned=(incoming.kind == "group" and incoming.directed))
         if state.task is None or state.task.done():
             state.task = asyncio.create_task(self.process(state))
         print("已接收白名单私聊" if incoming.kind == "private" else "已接收白名单群 @", flush=True)
