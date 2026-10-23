@@ -106,7 +106,7 @@ jobs:
           PYTHONPATH: src
         run: |
           python -m compileall -q src/zhuangfy/relationship
-          python -m unittest -v tests.unit.test_relationship_core_r1b
+          python -m unittest -v tests.unit.test_relationship_core_r1b tests.unit.test_relationship_evolution_r1c
 
   test-memory-identity-timeline:
     runs-on: ubuntu-latest
