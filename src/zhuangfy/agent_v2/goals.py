@@ -8,6 +8,7 @@ non-idempotent physical actions MUST NOT use this queue.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 import time
@@ -32,11 +33,15 @@ class GoalStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
+    @contextmanager
     def _connect(self):
         connection = sqlite3.connect(self.path, timeout=8, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout=8000")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout=8000")
+            yield connection
+        finally:
+            connection.close()
 
     def _init_db(self):
         with self._connect() as db:
