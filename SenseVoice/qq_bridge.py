@@ -1243,7 +1243,8 @@ class QqBridge:
                                 message = await asyncio.to_thread(
                                     render_proactive_reply, settings, key,
                                     approved_draft=message, topic=topic,
-                                    trace_id=f"ccv2-outreach-{uuid.uuid4().hex[:10]}")
+                                    trace_id=f"ccv2-outreach-{uuid.uuid4().hex[:10]}",
+                                    knowledge_enabled=self.planner_settings.character_knowledge_v1_enabled)
                                 log_event("QQ", "角色V2主动表达", f"{source} · 已通过 Replyer")
                             except Exception as error:
                                 # A temporary Replyer/API failure should not
