@@ -122,3 +122,27 @@ E1 中的 L0–L3 **是合成的评估条件**，不是自动计算出来的用�
 - 报告不自动生成“模型还原度得分”。\`hard_failures\` 只检测题目声明的禁用字面串；自然程度与人物性格需通过 \`review-template.json\` 完成独立人工评阅。
 - 每次真实评测要注意产生的模型调用成本与时间。工作流只手动执行，含 3/10/32 三种明确上限，最大运行时限 65 分钟。保存的报告 Artifact 默认保留 14 天。
 
+
+
+## E1.1：长推理模型超时、逐题恢复与备用 API
+
+2026-10-23 实际运行中，DSV4 Pro 在第 4 个案例发生两次单次 25 秒超时，使 32 题任务中断。E1.1 为评测**独立**设置超时（默认 75 秒，可选 45 / 75 / 105 秒），不更改 QQ 的普通回复时限。
+
+- **失败隔离**：一题 API 失败记录为 \`api_failed\`、\`timeout/network/rate_limited/auth/service_unavailable/invalid_reply\` 等固定代码；继续后续题目。即使一题都没有成功，仍会持久保存 \`model-capture.json\`，生成反映实际失败情况的报告。存在 API 失败则采集步骤返回非 0，但 \`always()\` 报告、Artifact 步骤仍执行。这表示评测没有完整成功，不是模型人格质量不合格。
+- **断点续跑**：Actions 手动运行增加 \`resume_run_id\`（默认 \`0\`）。填之前 \`Character E1 - Real Model (manual)\` 测试的 GitHub **Run ID**（不是 Artifact ID），工作流自动取其 \`character-e1-real-report\` 中的 \`model-capture.json\`，复用已经成功的案例，仅运行未成功和未执行的案例。允许从 3 题扩展到 32 题。更改模型、服务商、角色 Prompt、评估集、人格版本或备用服务配置时**拒绝复用**，防止不同基线混合。历史的 3/32 捕获也可以恢复（如果元数据满足校验）。
+- **备用 API 可选，默认关闭**：在 GitHub Actions Secret 中单独添加 \`ZHUANGFY_E1_BACKUP_API_KEY\`（仅在希望启用备用时需要）。然后在手动运行中填写 \`backup_provider\` 与 \`backup_model\`；当主 API 的请求阶段因**超时、网络失败或 429 限流**失败时，才尝试备用 API。认证失败不调用备用。两个 Secret 都不会被输出到结果文件或日志。
+- **真实性与可比性**：每条捕获回答现在显式记录 \`origin: primary|backup\`、\`provider\` 和 \`model\`。一份报告可能混合不同模型回答，**混合报告不应直接当作主模型在 32 题上的角色质量成绩**，而需要分别人工评阅、或者关闭备用模式补测主模型。E1.1 不自动将备用模型分数计算为主模型分数。
+- **真实回答原样保留**：例如开头 \`（看着窗外……）\` 现在会被 E1 标记为 \`stage_direction_opening\`，以便后续优化角色 Prompt/显示处理；E1 不悄悄修改原始回答，也不会仅凭动作旁白存在就宣称整体人格失败。
+- **警告修复**：报告 Markdown 中错误的反斜杠反引号转义已清理，不再触发该项 \`SyntaxWarning\`。
+
+### 推荐第一次验证
+
+GitHub Actions → \`Character E1 - Real Model (manual)\` → Run workflow：
+
+- \`provider: siliconflow\`，\`model\` 填**硅基流动当前实际的完整模型 ID**；
+- \`variant: ccv2_ckv1\`、\`cases: 3\`，\`reply_timeout: 75\`，\`backup_provider: none\`，\`resume_run_id: 0\`；
+- 小规模运行成功后选择 \`cases: 32\`；
+- 如果新的运行也有超时或不足 32 题，下次按同样模型配置填写该次 \`Run ID\` 到 \`resume_run_id\`，即可接着测试；如果你更换了主模型或新启用备用模型，必须新开一次评测，不从旧结果续跑。
+
+只需在 GitHub Secrets 中保存 API Key；**不要把密钥发进 ChatGPT 或 PR**。GitHub 托管的 Runner 需要能够访问该供应商的 HTTPS API。备用服务商现阶段仍限定已经支持的固定官方端点，不支持任意用户输入网址，以降低 API Key 泄露风险。
+
