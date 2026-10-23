@@ -448,6 +448,10 @@ class QqBridge:
         incoming = parse_message(event, self.bot_id, self.settings)
         if incoming is None:
             return False
+        # Never admit passive group traffic through the old always-reply path.
+        if (incoming.kind == "group" and not incoming.directed
+                and not self.planner_settings.agent_v2_enabled):
+            return False
         now = time.monotonic()
         if incoming.message_id:
             key = f"bot:{self.bot_id}:{incoming.scope}:{incoming.message_id}"
