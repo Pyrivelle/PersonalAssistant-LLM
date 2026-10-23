@@ -159,7 +159,8 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
                  tool_feedback: str = "", available_tools: tuple[str, ...] = (),
                  tool_catalog: str = "",
                  character_core_v2: bool = False,
-                 character_channel: str = "qq_private") -> PlanDecision:
+                 character_channel: str = "qq_private",
+                 relationship_behavior_r1: bool = False) -> PlanDecision:
     """Use existing stage routing; caller handles errors and default fallback."""
     from model_routes import invoke_stage
 
@@ -176,6 +177,11 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
             # Values guide the *decision* too (not only surface wording).
             # May not override host authorization or wait/silence policy.
             prompt += "\n【角色行为判断准则（不赋予执行权限）】\n" + cue.guidance[:1100]
+    if relationship_behavior_r1:
+        from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
+        r1 = behavior_r1(settings.system_prompt, user_text, channel=character_channel)
+        if r1.guidance:
+            prompt += "\n【R1-A 实际行为约束（非执行许可）】\n" + r1.guidance[:1250]
     names = [name for name in available_tools[:12]
              if isinstance(name, str) and 0 < len(name) <= 80
              and all(char.isascii() and (char.isalnum() or char in "._-") for char in name)]
