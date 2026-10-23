@@ -463,6 +463,7 @@ class QqBridge:
                              if self.planner_settings.memory_private_ids
                              and legacy_memory_allowed("qq") else None)
         self.reflection_tasks: dict[MemberKey, asyncio.Task] = {}
+        self.relationship_tasks: dict[int, asyncio.Task] = {}
         self.reflection_retry_at: dict[MemberKey, float] = {}
         self.reflection_lock = asyncio.Semaphore(1)
         # Explicit opt-in; identity must be pre-verified by the Memory Service.
@@ -725,6 +726,11 @@ class QqBridge:
                     log_event("QQ", "手动重试", f"{current.scope} · 重新提交上次生成失败的文字")
                 if (image_ref is None and current.kind == "private" and
                         message.strip() in {"/forget_me", "/删除我的记忆"}):
+                    # Cancel relationship review before erasure; backend consent
+                    # verification also guards against late writes.
+                    related_task = self.relationship_tasks.pop(current.user_id, None)
+                    if related_task is not None:
+                        related_task.cancel()
                     # Wait for pending background writes before erasing. Otherwise
                     # a late reflection could recreate deleted personal records.
                     if current.user_id in self.planner_settings.memory_private_ids:
@@ -1123,6 +1129,7 @@ class QqBridge:
                 state.group_recent.clear()
                 state.group_activity.append((time.monotonic(), True))
         # Only ALL acknowledged QQ bubbles count as a delivered shared turn.
+        relationship_receipt = False
         if self.memory_client is not None and delivery.memory_ref is not None:
             try:
                 claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
@@ -1131,8 +1138,42 @@ class QqBridge:
                     conversation_id=delivery.memory_ref["conversation_id"],
                     entry_id=delivery.memory_ref["entry_id"],
                     reply_id=delivery.turn_id, content=delivery.canonical_reply)
+                relationship_receipt = True
             except Exception as error:
                 log_event("记忆", "送达记录失败", f"新记忆服务写入失败：{type(error).__name__}")
+        # Model event inference is optional and must not hold the QQ turn lock.
+        if (relationship_receipt and self.planner_settings.relationship_behavior_r1_enabled
+                and self.planner_settings.relationship_evolution_r1_enabled
+                and current.kind == "private"):
+            previous = self.relationship_tasks.get(current.user_id)
+            if previous is None or previous.done():
+                task = asyncio.create_task(self._review_relationship_after_delivery(current, delivery))
+                self.relationship_tasks[current.user_id] = task
+                def _release(finished, user_id=current.user_id):
+                    if self.relationship_tasks.get(user_id) is finished:
+                        self.relationship_tasks.pop(user_id, None)
+                task.add_done_callback(_release)
+        if (self.context_store and current.kind == "private"
+                and current.user_id in self.planner_settings.persist_private_ids):
+            try:
+                self.context_store.save(f"bot:{self.bot_id}:{current.scope}", state.context)
+            except Exception as error:
+                print(f"QQ 会话上下文保存失败：{type(error).__name__}")
+        if delivery.member_key is not None:
+            try:
+                count = await asyncio.to_thread(self.member_store.record_turn,
+                                                delivery.member_key,
+                                                delivery.user_text, delivery.canonical_reply)
+                if count >= REFLECT_AFTER_TURNS:
+                    log_event("记忆", "排队",
+                              f"{current.scope} · 已完成 {count} 轮，准备后台反思")
+                    self.queue_member_reflection(delivery.member_key,
+                                                 delivery.settings, delivery.api_key)
+            except Exception as error:
+                print(f"QQ 用户记忆排队失败：{type(error).__name__}")
+
+    async def _review_relationship_after_delivery(self, current: Incoming,
+                                               delivery: PartialReply) -> None:
         # R1-C only evaluates an actually delivered private turn. This is
         # separately opt-in and cannot grant permissions or write facts.
         if (self.planner_settings.relationship_behavior_r1_enabled
@@ -1170,24 +1211,6 @@ class QqBridge:
             except Exception as error:
                 # Evaluation errors never affect delivered messages or permissions.
                 log_event("关系R1", "候选审核跳过", type(error).__name__)
-        if (self.context_store and current.kind == "private"
-                and current.user_id in self.planner_settings.persist_private_ids):
-            try:
-                self.context_store.save(f"bot:{self.bot_id}:{current.scope}", state.context)
-            except Exception as error:
-                print(f"QQ 会话上下文保存失败：{type(error).__name__}")
-        if delivery.member_key is not None:
-            try:
-                count = await asyncio.to_thread(self.member_store.record_turn,
-                                                delivery.member_key,
-                                                delivery.user_text, delivery.canonical_reply)
-                if count >= REFLECT_AFTER_TURNS:
-                    log_event("记忆", "排队",
-                              f"{current.scope} · 已完成 {count} 轮，准备后台反思")
-                    self.queue_member_reflection(delivery.member_key,
-                                                 delivery.settings, delivery.api_key)
-            except Exception as error:
-                print(f"QQ 用户记忆排队失败：{type(error).__name__}")
 
     def queue_member_reflection(self, identity: MemberKey, settings, api_key: str) -> None:
         previous = self.reflection_tasks.get(identity)
