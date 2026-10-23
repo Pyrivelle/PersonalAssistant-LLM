@@ -112,6 +112,18 @@ class MemoryClient:
             "evidence_quote": evidence_quote, "expected_version": expected_version,
         })
 
+    def relationship_get(self, identity: MemoryChannel) -> dict:
+        return self.request("/v1/admin/relationship/get", {
+            "identity": identity.as_payload()})
+
+    def relationship_events(self, identity: MemoryChannel, limit: int = 30) -> dict:
+        return self.request("/v1/admin/relationship/events", {
+            "identity": identity.as_payload(), "limit": limit})
+
+    def relationship_erase(self, identity: MemoryChannel) -> dict:
+        return self.request("/v1/admin/relationship/erase", {
+            "identity": identity.as_payload()})
+
     def relationship_enroll(self, identity: MemoryChannel, *,
                             initial_tier: str = "L0",
                             allow_affection: bool = False) -> dict:
