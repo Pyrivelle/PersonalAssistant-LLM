@@ -143,6 +143,8 @@ class QqSettings:
                 raise ValueError("Focus 组 id 不合法")
             if name in used_names or not isinstance(members, list) or not 1 <= len(members) <= 24:
                 raise ValueError("Focus 组重复或成员数不合法")
+            if any(not isinstance(member, str) for member in members):
+                raise ValueError("Focus 组会话必须为字符串")
             if len(set(members)) != len(members):
                 raise ValueError("Focus 组有重复成员")
             for member in members:
