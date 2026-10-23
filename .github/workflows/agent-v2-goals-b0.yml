@@ -1,0 +1,26 @@
+name: test_agent_v2_goals checks
+on:
+  pull_request:
+    paths:
+      - 'src/zhuangfy/agent_v2/goals.py'
+      - 'tests/unit/test_agent_v2_goals.py'
+  push:
+    branches: [main]
+    paths:
+      - 'src/zhuangfy/agent_v2/goals.py'
+      - 'tests/unit/test_agent_v2_goals.py'
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate module and offline tests
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m compileall -q src/zhuangfy/agent_v2
+          python -m unittest -v tests.unit.test_agent_v2_goals
