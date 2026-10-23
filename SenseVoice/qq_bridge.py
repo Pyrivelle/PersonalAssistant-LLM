@@ -986,6 +986,13 @@ class QqBridge:
                         state.context.history, message, emotion_context=emotion_prompt,
                         context_notes=notes, visual_context=visual_context, trace_id=turn_id)
                     log_event("QQ", "已生成", f"turn:{turn_id} · {current.scope}")
+                # R1 may remove an obvious opening stage cue in ordinary chat.
+                # This is presentation only; E1 preserves raw generated text.
+                if self.planner_settings.relationship_behavior_r1_enabled:
+                    from zhuangfy.persona.relationship_behavior_r1 import tidy_r1_reply
+                    reply = tidy_r1_reply(
+                        settings.system_prompt, message, reply,
+                        channel="qq_group" if current.kind == "group" else "qq_private")
                 # Format only model output; system commands and status notices
                 # are never passed through role/stage-cue cleanup.
                 reply_parts_cap = self.settings.private_max_reply_parts
