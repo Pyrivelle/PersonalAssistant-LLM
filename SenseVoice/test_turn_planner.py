@@ -54,6 +54,16 @@ class PlannerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     PlannerSettings.load(path)
 
+    def test_character_knowledge_v1_is_opt_in_and_validated(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "cognition.json"
+            self.assertFalse(PlannerSettings.load(path).character_knowledge_v1_enabled)
+            path.write_text(json.dumps({"character_knowledge_v1_enabled": True}), encoding="utf-8")
+            self.assertTrue(PlannerSettings.load(path).character_knowledge_v1_enabled)
+            path.write_text('{"character_knowledge_v1_enabled": "yes"}', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                PlannerSettings.load(path)
+
     def test_optional_planner_is_off_by_default(self):
         with tempfile.TemporaryDirectory() as directory:
             self.assertFalse(PlannerSettings.load(Path(directory) / "missing.json").enabled)
