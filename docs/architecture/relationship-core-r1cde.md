@@ -35,3 +35,17 @@ PowerShell 示例：
 ## 下一个独立工作：联网搜索 Skill
 
 搜索的权限、联网返回值的可信度、页面提示注入、事实引用、预算/超时和工具执行回执，应单独设计。不能将搜索网页内容直接当用户记忆或关系成长证据；Issue #30 的记忆/执行回执区分仍为重要待办。
+
+### 通过受信任的本地管理终端调整关系
+
+管理员应单独设置 ZHUANGFY_MEMORY_ADMIN_CLI=1、ZHUANGFY_MEMORY_ADMIN_TOKEN 与 ZHUANGFY_MEMORY_URL，并启动已验证身份的 Memory Service；不要在聊天中发送这些凭据。管理程序只连接 loopback，不会运行 LLM。
+
+例如以下命令中的 bot-id 和 qq-id 必须是已在身份服务中完成验证的真实渠道标识：
+
+    python scripts/relationship_admin.py --platform qq --account bot-id --user qq-id status
+    python scripts/relationship_admin.py --platform qq --account bot-id --user qq-id enroll --tier L1
+    python scripts/relationship_admin.py --platform qq --account bot-id --user qq-id events
+    python scripts/relationship_admin.py --platform qq --account bot-id --user qq-id correct --version 1 --set frozen=true
+    python scripts/relationship_admin.py --platform qq --account bot-id --user qq-id correct --version 2 --set lock_closeness=true --set tier_ceiling=L1
+
+删除画像需再次明确传入 erase --yes-erase；此操作不删除其它 Memory Core 数据。只有对应关系 Version 一致时人工纠正才会成功，避免旧指令覆盖新的自然成长。
