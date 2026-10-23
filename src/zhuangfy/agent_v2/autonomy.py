@@ -60,7 +60,7 @@ class BackgroundGoalRunner:
         if not 1 <= batch_size <= 5:
             raise ValueError("batch_size must be 1–5")
         if not all(math.isfinite(x) for x in (tool_timeout, lease_seconds)) or not (
-            0.1 <= tool_timeout + 0.1 < lease_seconds <= 300
+            0.1 <= tool_timeout and batch_size * (tool_timeout + 0.5) < lease_seconds <= 300
         ):
             raise ValueError("tool deadline must be smaller than the lease")
         if len({g.owner_scope for g in grants}) != len(grants):
@@ -115,12 +115,14 @@ class BackgroundGoalRunner:
             )
             drafted = False
             grant = self.inquiry_grants.get(event.owner_scope)
-            if receipt.success and committed and grant is not None and self.inbox is not None:
+            if (receipt.success and committed and grant is not None and
+                    self.inbox is not None and current["inquiry_allowed"] and
+                    current["inquiry_topic"]):
                 # A grounded *draft*, not permission to send or generate speech.
                 drafted = self.inbox.propose_from_goal(
                     goal_id=event.goal_id, source_event_id=event.source_event_id,
                     owner_scope=event.owner_scope, evidence=receipt.as_context(),
-                    now=finished_at, grant=grant)
+                    now=finished_at, grant=grant, topic=current["inquiry_topic"])
             results.append(BackgroundResult(
                 event.goal_id, event.event_id, receipt.success and committed,
                 committed, event.tool_name, receipt.as_context(), drafted,
