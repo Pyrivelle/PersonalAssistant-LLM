@@ -124,7 +124,7 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
             await self.runner().serve(asyncio.Event(), poll_seconds=0)
 
     async def test_inquiry_draft_requires_separate_optin(self):
-        self.add()
+        self.add(inquiry_allowed=True, inquiry_topic="项目的后续研究方向")
         inbox = InitiativeInbox(self.db)
         grants = (InitiativeGrant("qq:private:42", enabled=True),)
         result = await self.runner(inbox=inbox, inquiry_grants=grants).run_once()
@@ -132,10 +132,29 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         drafts = InitiativeInbox(self.db).list_drafts("qq:private:42")
         self.assertEqual(len(drafts), 1)
         self.assertEqual(drafts[0]["reason"], "completed_authorized_goal")
+        self.assertEqual(drafts[0]["topic"], "项目的后续研究方向")
         self.assertIn("35", drafts[0]["evidence_excerpt"])
         self.assertTrue(inbox.dismiss("math", "qq:private:42"))
         self.assertFalse(inbox.dismiss("math", "qq:private:42"))
         self.assertEqual(inbox.list_drafts("qq:private:42"), ())
+
+    async def test_inquiry_needs_goal_level_consent_even_with_owner_grant(self):
+        self.add("only_tool")
+        inbox = InitiativeInbox(self.db)
+        result = await self.runner(
+            inbox=inbox, inquiry_grants=(InitiativeGrant("qq:private:42", True),)
+        ).run_once()
+        self.assertTrue(result[0].success)
+        self.assertFalse(result[0].inquiry_drafted)
+        self.assertEqual(inbox.list_drafts("qq:private:42"), ())
+        with self.assertRaises(ValueError):
+            self.add("invalid_inquiry", inquiry_allowed=True, inquiry_topic="")
+        with self.assertRaises(ValueError):
+            self.add("invalid_topic", inquiry_topic="无授权内容")
+
+    async def test_claim_budget_must_cover_entire_sequential_batch(self):
+        with self.assertRaises(ValueError):
+            self.runner(batch_size=5, tool_timeout=6, lease_seconds=20)
 
     async def test_no_proactive_draft_for_group_or_without_grant(self):
         self.add("no-draft")
@@ -145,7 +164,7 @@ class BackgroundTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inbox.list_drafts("qq:private:42"), ())
         self.assertFalse(inbox.propose_from_goal(
             goal_id="g", source_event_id="user-ok", owner_scope="qq:group:9",
-            evidence="done", now=100, grant=InitiativeGrant("qq:group:9", True)))
+            evidence="done", now=100, topic="群聊话题", grant=InitiativeGrant("qq:group:9", True)))
 
 
 class InitiativeTests(unittest.TestCase):
@@ -153,7 +172,8 @@ class InitiativeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             inbox = InitiativeInbox(Path(d) / "goals.db")
             grant = InitiativeGrant("qq:private:42", enabled=True, daily_limit=1)
-            opts = dict(owner_scope="qq:private:42", evidence="observed: success", grant=grant)
+            opts = dict(owner_scope="qq:private:42", evidence="observed: success",
+                        topic="我们约定讨论的问题", grant=grant)
             self.assertFalse(inbox.propose_from_goal(
                 goal_id="x", source_event_id="e", now=100, **{
                     **opts, "grant": InitiativeGrant("qq:private:42", False)}))
@@ -209,6 +229,7 @@ class InitiativeTests(unittest.TestCase):
             store=GoalStore(path)
             self.assertEqual(store.inspect("old")["tool_name"], "")
             self.assertEqual(store.inspect("old")["tool_arguments_json"], "{}")
+            self.assertEqual(store.inspect("old")["inquiry_allowed"], 0)
 
 
 if __name__ == "__main__":
