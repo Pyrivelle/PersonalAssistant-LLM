@@ -99,9 +99,12 @@ def is_zhuangfangyi_prompt(prompt: str) -> bool:
     if re.search(r"你是\s*庄方宜", prompt):
         return True
     try:
-        from .packs import matching_pack
-        pack = matching_pack(prompt)
-        return pack is not None and pack.id.startswith("zhuang_fangyi")
+        from .packs import ZHUANG_FANGYI_V1
+        # QQ appends trusted channel formatting text after the saved pack.
+        # The exact pack prefix still counts as this persona.
+        stable_pack = ZHUANG_FANGYI_V1.prompt()
+        text = prompt.strip()
+        return text == stable_pack or text.startswith(stable_pack + "\n")
     except (OSError, ImportError, ValueError):
         return False
 
