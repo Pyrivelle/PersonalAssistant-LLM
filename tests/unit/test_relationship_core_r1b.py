@@ -108,6 +108,7 @@ class RelationshipCoreTests(unittest.TestCase):
     def test_cross_user_and_other_agent_sources_rejected(self):
         self.core.enroll(agent_id=AGENT, identity=self.a)
         self.core.enroll(agent_id=AGENT, identity=self.b)
+        self.identities.set_consent(self.bob.person_id, "timeline", True)
         message = self._received()
         with self.assertRaises(ValueError):
             self.core.observe(agent_id=AGENT, identity=self.b, event_kind="shared_topic",
@@ -132,9 +133,16 @@ class RelationshipCoreTests(unittest.TestCase):
         delivered = self.timeline.set_reply_state(
             conversation_id=self.chat.conversation_id, entry_id=draft.entry_id,
             new_state="delivered")
+        with self.assertRaises(ValueError):
+            self.core.observe(agent_id=AGENT, identity=self.a,
+                              event_kind="cooperative_exchange", timeline_entry_id=delivered.entry_id,
+                              expected_version=1)
+        user_followup = self.timeline.receive(
+            conversation_id=self.chat.conversation_id, identity=self.a,
+            source_message_id="reply-followup", content="谢谢，我们继续合作")
         changed = self.core.observe(agent_id=AGENT, identity=self.a,
                                     event_kind="cooperative_exchange",
-                                    timeline_entry_id=delivered.entry_id, expected_version=1)
+                                    timeline_entry_id=user_followup.entry_id, expected_version=1)
         self.assertEqual(changed.trust, 12)
         with self.assertRaises(ValueError):
             self.core.observe(agent_id=AGENT, identity=self.a,
