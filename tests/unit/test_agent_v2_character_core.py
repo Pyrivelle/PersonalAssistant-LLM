@@ -24,7 +24,7 @@ class CharacterCoreV2Tests(unittest.TestCase):
         from zhuangfy.persona.packs import ZHUANG_FANGYI_V1
         original = ZHUANG_FANGYI_V1.prompt()
         self.assertTrue(is_zhuangfangyi_prompt(original))
-        self.assertTrue(is_zhuangfangyi_prompt(original + "\\n你现在通过 QQ 聊天。"))
+        self.assertTrue(is_zhuangfangyi_prompt(original + "\n你现在通过 QQ 聊天。"))
         self.assertEqual(character_behavior("你是普通助手", "我很累").guidance, "")
         self.assertEqual(character_behavior(PERSONA, "我很累", enabled=False).guidance, "")
 
