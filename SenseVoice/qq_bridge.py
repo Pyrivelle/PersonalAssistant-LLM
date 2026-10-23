@@ -1144,7 +1144,9 @@ class QqBridge:
                 claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
                 state_now = await asyncio.to_thread(
                     self.memory_client.relationship_snapshot, claim)
-                if state_now.get("enabled") and type(state_now.get("version")) is int:
+                if (state_now.get("enabled") and state_now.get("auto_growth")
+                        and not state_now.get("frozen")
+                        and type(state_now.get("version")) is int):
                     src_id = delivery.memory_ref["entry_id"]
                     def _valid_relation_json(value):
                         try:
