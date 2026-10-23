@@ -85,7 +85,7 @@ class E1ReliabilityTests(unittest.TestCase):
     def test_resume_blocks_different_model_and_dataset_or_variant(self):
         with tempfile.TemporaryDirectory() as d:
             first = Path(d) / "first.json"
-            with patch.dict(os.environ, {"ZHUANGFY_E1_API_KEY": "test-secret"}), patch.dict(
+            with patch.dict(os.environ, {"ZHUANGFY_E1_API_KEY": "test-secret", "ZHUANGFY_E1_BACKUP_API_KEY": "test-backup"}), patch.dict(
                 sys.modules, {"model_routes":SimpleNamespace(invoke_stage=lambda *a, **k: "ok")}):
                 self.assertEqual(capture(args(first, count=2)), 0)
                 with self.assertRaises(ValueError):
