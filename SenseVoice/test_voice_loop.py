@@ -50,6 +50,9 @@ class FakeStream:
     def start(self):
         self.starts += 1
 
+    def close(self):
+        pass
+
 
 class FakeChatWorker(QObject):
     replied = Signal(str)
