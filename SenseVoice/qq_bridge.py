@@ -932,7 +932,8 @@ class QqBridge:
                         r1 = behavior_r1(settings.system_prompt, message,
                                          channel="qq_group" if current.kind == "group" else "qq_private")
                         if r1.guidance:
-                            emotion_prompt += "\n" + r1.guidance
+                            # Model client caps emotion_context: evidence guidance first.
+                            emotion_prompt = r1.guidance + "\n" + emotion_prompt
                     member_key = None
                     member_snapshot = ""
                     if (image_ref is None and self.member_store is not None and current.kind == "private"
