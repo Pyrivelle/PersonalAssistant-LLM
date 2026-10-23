@@ -96,6 +96,40 @@ class MemoryCore:
             candidate=candidate, expected_version=expected_version)
         return {"version": snap.version, "tier": snap.tier}
 
+    def admin_relationship_get(self, *, identity: dict) -> dict:
+        """Trusted administrator can inspect disabled profiles as well."""
+        import dataclasses
+        ident = self._identity(identity)
+        with self.database.connection() as db:
+            person_id = self.relationship._identity(db, ident)
+            row = db.execute("SELECT * FROM relationship_profiles WHERE agent_id=? AND person_id=?",
+                             (self.agent_id, person_id)).fetchone()
+            if row is None:
+                return {"enrolled": False}
+            snap = self.relationship._snapshot(row)
+            return {"enrolled": True, "enabled": bool(row["enabled"]),
+                    "profile": dataclasses.asdict(snap)}
+
+    def admin_relationship_events(self, *, identity: dict, limit: int = 30) -> dict:
+        import dataclasses
+        ident = self._identity(identity)
+        # All audit entries are identity and agent scoped; no private message body.
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Invalid limit")
+        with self.database.connection() as db:
+            person_id = self.relationship._identity(db, ident)
+            items = db.execute("""
+                SELECT event_id,kind,source_entry_id,dimension,old_value,new_value,
+                       occurred_at,detail FROM relationship_events
+                WHERE agent_id=? AND person_id=?
+                ORDER BY occurred_at DESC,event_id DESC LIMIT ?
+            """, (self.agent_id, person_id, limit)).fetchall()
+            return {"events": [dict(x) for x in items]}
+
+    def admin_relationship_erase(self, *, identity: dict) -> dict:
+        return {"erased": self.relationship.erase(
+            agent_id=self.agent_id, identity=self._identity(identity))}
+
     def admin_relationship_enroll(self, *, identity: dict, initial_tier: str = "L0",
                                   allow_affection: bool = False) -> dict:
         import dataclasses
