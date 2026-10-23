@@ -105,8 +105,8 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
-          python -m compileall -q src/zhuangfy/relationship
-          python -m unittest -v tests.unit.test_relationship_core_r1b tests.unit.test_relationship_evolution_r1c tests.unit.test_relationship_evaluation_r1e
+          python -m compileall -q src/zhuangfy/relationship scripts/relationship_admin.py scripts/character_e12_private_trace.py
+          python -m unittest -v tests.unit.test_relationship_core_r1b tests.unit.test_relationship_evolution_r1c tests.unit.test_relationship_evaluation_r1e tests.unit.test_relationship_admin_cli
 
   test-memory-identity-timeline:
     runs-on: ubuntu-latest
