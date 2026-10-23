@@ -202,6 +202,11 @@ class ChatWorker(QThread):
                 memories=memories, emotion_context=emotion_prompt,
                 context_notes=context_notes, visual_context=visual_context,
                 trace_id=self.turn_id)
+            if planner_config.relationship_behavior_r1_enabled:
+                from zhuangfy.persona.relationship_behavior_r1 import tidy_r1_reply
+                reply = tidy_r1_reply(self.settings.system_prompt, self.message, reply, channel="chat")
+                if not reply.strip():
+                    raise ValueError("R1 回答仅含舞台旁白，未生成可见对白")
             self.replied.emit(reply)
         except Exception as error:
             log_event(self.source, "失败", f"turn:{self.turn_id} · 对话失败：{type(error).__name__}: {error}")
