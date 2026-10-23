@@ -9,6 +9,7 @@ import argparse
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -30,6 +31,10 @@ def capture(argv: list[str] | None = None) -> int:
                         default=ROOT / "resources" / "evaluation" / "character_e1_cases.json")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--max-cases", type=int, default=300)
+    parser.add_argument("--cloud-provider", choices=(
+        "siliconflow", "deepseek", "kimi_cn", "kimi_global", "hachimi"
+    ), help="Use an official cloud API endpoint (for GitHub Actions)")
+    parser.add_argument("--cloud-model", help="Exact model ID on the cloud endpoint")
     args = parser.parse_args(argv)
     if not args.allow_network:
         parser.error("Model capture requires explicit --allow-network")
@@ -38,11 +43,35 @@ def capture(argv: list[str] | None = None) -> int:
     if args.out.resolve().is_relative_to((ROOT / "resources").resolve()):
         parser.error("Do not overwrite reviewed evaluation fixtures in resources/")
     # Imports are deliberately deferred: offline CI never contacts models.
-    from llm import load_key, load_settings
+    from llm import LlmSettings, PROVIDER_BASE_URLS, load_key, load_settings
     from model_routes import invoke_stage
     from fangyi_skill import guidance as fangyi_guidance
-    settings = load_settings()
-    key = load_key(settings.provider)
+    from zhuangfy.persona.packs import ZHUANG_FANGYI_V1
+    if bool(args.cloud_provider) != bool(args.cloud_model):
+        parser.error("--cloud-provider and --cloud-model must be provided together")
+    if args.cloud_provider:
+        # GitHub Actions does not have the developer's local llm_settings.json
+        # or .env.local. Use the versioned Fangyi pack and one precisely
+        # selected official endpoint, not an undeclared default/fallback.
+        if (not args.cloud_model.strip() or len(args.cloud_model) > 128
+                or any(ord(ch) < 32 for ch in args.cloud_model)):
+            parser.error("Invalid cloud model ID")
+        key = os.environ.get("ZHUANGFY_E1_API_KEY", "").strip()
+        if not key or "\\n" in key or "\\r" in key:
+            parser.error("Missing or invalid ZHUANGFY_E1_API_KEY GitHub Secret")
+        settings = LlmSettings(
+            provider=args.cloud_provider,
+            base_url=PROVIDER_BASE_URLS[args.cloud_provider],
+            model=args.cloud_model,
+            system_prompt=ZHUANG_FANGYI_V1.prompt(),
+            memory_enabled=False,
+        ).validated()
+        from zhuangfy.llm.routes import ModelRoutes
+        fixed_routes = ModelRoutes()  # no unrelated route configs/fallbacks
+    else:
+        settings = load_settings()
+        key = load_key(settings.provider)
+        fixed_routes = None
     examples = load_cases(args.cases)[:args.max_cases]
     output = {
         "schema": 1, "source": "model_capture", "variant": args.variant,
@@ -50,7 +79,9 @@ def capture(argv: list[str] | None = None) -> int:
             "configured_model": settings.model, "provider": settings.provider,
             "persona_sha256": hashlib.sha256(settings.system_prompt.encode("utf-8")).hexdigest(),
             "dataset_sha256": hashlib.sha256(args.cases.read_bytes()).hexdigest(),
-            "note": "User-initiated model capture; model routes may contain fallback candidates."
+            "note": ("GitHub manual dispatch: exact official cloud model, no fallback"
+                     if args.cloud_provider else
+                     "Local capture: existing configured model route may have fallbacks.")
         },
         "responses": []
     }
@@ -79,7 +110,7 @@ def capture(argv: list[str] | None = None) -> int:
         # simulate real-time focus, tool actions, memory retrieval or B2 gates.
         # Especially initiative_silence tests require a later action-trace E2.
         reply = invoke_stage(
-            "reply", settings, key, [], case.message,
+            "reply", settings, key, [], case.message, routes=fixed_routes,
             emotion_context=prompt, context_notes=context,
             trace_id=f"e1-{args.variant}-{case.id}")
         output["responses"].append({"case_id": case.id, "response": reply})
