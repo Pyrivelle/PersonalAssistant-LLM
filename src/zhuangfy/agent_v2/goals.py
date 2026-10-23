@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
 import time
+import math
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +76,10 @@ class GoalStore:
             raise ValueError("goal identity is missing or too long")
         if type(consent) is not bool:
             raise ValueError("consent must be bool")
-        if not 1 <= max_attempts <= 3 or not due_at < expires_at:
+        if (type(max_attempts) is not int or not 1 <= max_attempts <= 3
+                or not all(type(v) in (int, float) and math.isfinite(v)
+                           for v in (due_at, expires_at))
+                or not due_at < expires_at):
             raise ValueError("invalid goal deadline or attempt budget")
         now = time.time()
         with self._connect() as db:
@@ -95,6 +99,10 @@ class GoalStore:
             raise ValueError("invalid claim budget")
         if not owner_scopes:
             return ()
+        if len(owner_scopes) > 50 or any(not isinstance(x, str) or not x
+                                         for x in owner_scopes):
+            raise ValueError("invalid authorized owner scopes")
+        placeholders = ",".join("?" for _ in owner_scopes)
         claimed = []
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -107,14 +115,15 @@ class GoalStore:
                 db.execute("""UPDATE goals SET status='scheduled', lease_until=0
                    WHERE status='running' AND lease_until <= ?
                          AND attempts < max_attempts""", (now,))
-                rows = db.execute("""
+                db.execute("""UPDATE goals SET status='expired', lease_until=0
+                            WHERE status='scheduled' AND expires_at<=?""", (now,))
+                rows = db.execute(f"""
                   SELECT * FROM goals WHERE status='scheduled' AND consent=1
+                         AND owner_scope IN ({placeholders})
                          AND due_at<=? AND expires_at>?
                   ORDER BY due_at, created_at LIMIT ?
-                """, (now, now, max(20, limit * 8))).fetchall()
+                """, (*sorted(owner_scopes), now, now, limit)).fetchall()
                 for row in rows:
-                    if row["owner_scope"] not in owner_scopes:
-                        continue
                     n = row["attempts"] + 1
                     db.execute("""UPDATE goals SET status='running',
                                       attempts=?, lease_until=?
@@ -146,7 +155,8 @@ class GoalStore:
                 if (row is None or row["status"] != "running"
                         or row["attempts"] != event.attempt
                         or row["owner_scope"] != event.owner_scope
-                        or now > row["lease_until"]):
+                        or now > row["lease_until"]
+                        or now >= row["expires_at"]):
                     db.execute("ROLLBACK")
                     return False
                 next_status = ("done" if success else
