@@ -96,6 +96,8 @@ def main() -> None:
     add.add_argument("--due-at", type=float, required=True)
     add.add_argument("--expires-at", type=float, required=True)
     add.add_argument("--consent-confirmed", action="store_true", required=True)
+    add.add_argument("--allow-inquiry", action="store_true")
+    add.add_argument("--inquiry-topic", default="")
     commands.add_parser("once", help="run one tick, only if policy enabled")
     commands.add_parser("serve", help="run explicit background process, only if policy enabled")
     inspect = commands.add_parser("inspect", help="inspect goal and drafts without running code")
@@ -106,12 +108,18 @@ def main() -> None:
             parser.error("explicit consent confirmation required")
         if not args.policy:
             parser.error("--policy required to ensure owner/tool grants")
-        enabled, _, grants, _ = load_policy(args.policy)
+        enabled, _, grants, inquiry_grants = load_policy(args.policy)
         registry = build_builtin_registry()
         matching = next((g for g in grants if g.owner_scope == args.owner_scope), None)
         kind = "group" if ":group:" in args.owner_scope else "private"
         if not enabled or matching is None or args.tool_name not in matching.tool_names or not registry.available(args.tool_name, scope=kind, allow_mutation=False):
             parser.error("tool and owner must be explicitly granted, read-only and enabled")
+        if args.allow_inquiry:
+            grant = next((g for g in inquiry_grants if g.owner_scope == args.owner_scope), None)
+            if grant is None or not grant.enabled or kind != "private" or not args.inquiry_topic.strip():
+                parser.error("follow-up inquiry requires private owner grant and explicit topic")
+        elif args.inquiry_topic:
+            parser.error("inquiry topic requires --allow-inquiry")
         arguments = json.loads(args.arguments)
         if not isinstance(arguments, dict):
             parser.error("tool arguments must be a JSON object")
@@ -122,6 +130,7 @@ def main() -> None:
             source_event_id=args.source_event_id, due_at=args.due_at,
             expires_at=args.expires_at, consent=True,
             tool_name=args.tool_name, tool_arguments=arguments,
+            inquiry_allowed=args.allow_inquiry, inquiry_topic=args.inquiry_topic,
         )
         print("created" if created else "already exists")
     elif args.action == "inspect":
