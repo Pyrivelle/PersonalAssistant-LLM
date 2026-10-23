@@ -88,7 +88,7 @@ def _load_resume(path: Path, expected: dict, allowed_ids: set[str]) -> list[dict
 
 def capture(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="E1.1 real-model synthetic quality capture")
-    parser.add_argument("--variant", choices=("v1", "ccv2", "ccv2_ckv1"), required=True)
+    parser.add_argument("--variant", choices=("v1", "ccv2", "ccv2_ckv1", "ccv2_ckv1_r1"), required=True)
     parser.add_argument("--allow-network", action="store_true")
     parser.add_argument("--cases", type=Path,
                         default=ROOT / "resources" / "evaluation" / "character_e1_cases.json")
@@ -196,13 +196,22 @@ def capture(argv: list[str] | None = None) -> int:
             channel = case.channel if case.channel in ("qq_private", "qq_group", "initiative") else "chat"
             prompt = character_behavior(
                 settings.system_prompt, case.message, channel=channel).guidance
-        if args.variant == "ccv2_ckv1":
+        if args.variant in ("ccv2_ckv1", "ccv2_ckv1_r1"):
             matches = retrieve_character_knowledge(
                 settings.system_prompt, case.message, enabled=True)
             extra = knowledge_context(matches) if matches else ""
             if extra and len(context) + len(extra) < 2500:
                 context += "\n" + extra
 
+        if args.variant == "ccv2_ckv1_r1":
+            from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
+            channel = case.channel if case.channel in ("qq_private", "qq_group", "initiative") else "chat"
+            # Synthetic L0-L3 labels are evaluation inputs ONLY; no production user
+            # relationship tier is guessed or persisted by this test harness.
+            r1 = behavior_r1(settings.system_prompt, case.message,
+                             channel=channel, tier=case.relation)
+            if r1.guidance:
+                prompt = r1.guidance + "\n" + prompt
         error_codes = []
         reply = None
         origin = None
