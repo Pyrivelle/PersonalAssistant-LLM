@@ -10,6 +10,20 @@ on:
       - feature/member-memory-fangyi-skill
 
 jobs:
+  test-agent-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile Agent V2 and legacy bridges
+        run: python -m compileall -q src/zhuangfy/agent_v2 SenseVoice/qq_bridge.py SenseVoice/chat_worker.py SenseVoice/turn_planner.py
+      - name: A1 through A4 offline agent tests
+        env:
+          PYTHONPATH: src
+        run: python -m unittest -v tests.unit.test_agent_v2_foundation tests.unit.test_agent_v2_planner_replyer
+
   test-context-and-qq:
     runs-on: ubuntu-latest
     steps:
