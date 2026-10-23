@@ -102,9 +102,10 @@ class VoiceTurnManager:
             raise ValueError("ASR timestamps must be monotonic")
         emitted: VoiceTurn | None = None
         if self.has_pending and self.deadline is not None and at >= self.deadline:
+            due = self.deadline
             reason = ("deadline" if self._first_at is not None and
-                      self._first_at + self.config.max_wait_seconds <= at else "quiet")
-            emitted = self._finish(reason, now=self.deadline)
+                      due >= self._first_at + self.config.max_wait_seconds else "quiet")
+            emitted = self._finish(reason, now=due)
         if self.has_pending and (len(self._segments) >= self.config.max_segments or
                                  len(" ".join(self._segments)) + 1 + len(text) > self.config.max_chars):
             # Flush previous turn before appending to prevent unbounded batches.
