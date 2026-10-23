@@ -15,6 +15,7 @@ from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from zhuangfy.agent_v2.planner import plan_turn_v2, PlanDecision
 from emotion import EmotionState
 from fangyi_skill import guidance as fangyi_guidance
+from zhuangfy.persona.character_core_v2 import character_behavior
 from activity_log import log_event, set_current_turn
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
 from zhuangfy.memory.routing import legacy_memory_allowed, new_memory_selected
@@ -142,7 +143,9 @@ class ChatWorker(QThread):
                 if planner_config.agent_v2_enabled:
                     plan = plan_turn_v2(
                         self.settings, self.key, self.history, self.message,
-                        allow_voice=False, visual_context=visual_context, trace_id=self.turn_id)
+                        allow_voice=False, visual_context=visual_context, trace_id=self.turn_id,
+                        character_core_v2=planner_config.character_core_v2_enabled,
+                        character_channel="chat")
                     # Desktop/voice UI expects a visible reply for every initiated
                     # request. Wait/stop are enabled only in the QQ async scheduler.
                     if isinstance(plan, PlanDecision) and plan.action != "reply":
@@ -158,8 +161,15 @@ class ChatWorker(QThread):
             emotion_prompt = self.emotion_candidate.to_prompt() if self.emotion_candidate else ""
             if plan.prompt():
                 emotion_prompt += "\n" + plan.prompt()
-            skill_hint = fangyi_guidance(self.settings.system_prompt, self.message,
-                                         enabled=planner_config.fangyi_scene_skill)
+            if planner_config.character_core_v2_enabled:
+                # CCV2 replaces the V1 scene overlay but does not change the
+                # locally customized, saved system persona.
+                behavior = character_behavior(self.settings.system_prompt, self.message,
+                                              channel="chat")
+                skill_hint = behavior.guidance
+            else:
+                skill_hint = fangyi_guidance(self.settings.system_prompt, self.message,
+                                             enabled=planner_config.fangyi_scene_skill)
             if skill_hint:
                 emotion_prompt += "\n" + skill_hint
                 log_event(self.source, "角色场景", skill_hint)

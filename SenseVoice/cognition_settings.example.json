@@ -11,5 +11,6 @@
   "agent_v2_wait_max_seconds": 8,
   "agent_v2_tools_enabled": false,
   "agent_v2_max_rounds": 4,
-  "agent_v2_max_tools": 2
+  "agent_v2_max_tools": 2,
+  "character_core_v2_enabled": false
 }

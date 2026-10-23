@@ -25,6 +25,8 @@ from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
 from fangyi_skill import guidance as fangyi_guidance
+from zhuangfy.persona.character_core_v2 import character_behavior, is_zhuangfangyi_prompt
+from zhuangfy.agent_v2.character_delivery import render_proactive_reply
 from gpt_sovits import load_settings as load_speech_settings
 from qq_reply_formatter import format_qq_reply
 from emotion import EmotionState
@@ -467,6 +469,7 @@ class QqBridge:
         self.proactive_config = ProactiveConfig.load(ROOT / "proactive_settings.json")
         self.proactive_store = ProactiveStore(ROOT.parent / "data" / "proactive.db")
         self.initiative_inbox = InitiativeInbox(ROOT.parent / "data" / "agent-v2-background.db")
+        self.ccv2_render_retry_after: dict[str, float] = {}
         if self.proactive_config.enabled:
             if self.proactive_config.recipient_id not in settings.allowed_private_ids:
                 log_event("QQ", "主动互动关闭", "收件人不在当前私聊白名单中")
@@ -818,7 +821,9 @@ class QqBridge:
                                         trace_id=turn_id, tool_feedback=feedback,
                                         available_tools=names,
                                         tool_catalog=self.tool_registry.prompt_catalog(
-                                            scope=current.kind))
+                                            scope=current.kind),
+                                        character_core_v2=self.planner_settings.character_core_v2_enabled,
+                                        character_channel="qq_group" if current.kind == "group" else "qq_private")
                                 result = await AgentCycleEngine(
                                     max_rounds=self.planner_settings.agent_v2_max_rounds,
                                     max_tools=self.planner_settings.agent_v2_max_tools,
@@ -836,7 +841,9 @@ class QqBridge:
                                 plan = await asyncio.to_thread(
                                     plan_turn_v2, settings, key, state.context.history, message,
                                     allow_voice=allow_voice,
-                                    visual_context=visual_context, trace_id=turn_id)
+                                    visual_context=visual_context, trace_id=turn_id,
+                                    character_core_v2=self.planner_settings.character_core_v2_enabled,
+                                    character_channel="qq_group" if current.kind == "group" else "qq_private")
                                 action = choose_action(
                                     plan, allow_silence=allow_silence,
                                     already_waited=bool(state.planner_waits) or image_ref is not None)
@@ -906,8 +913,14 @@ class QqBridge:
                         emotion_prompt += ("\n本轮回复会直接作为语音内容播放。只输出你真正要对用户说的话，"
                                            "不要写‘发语音了’、‘轻声说’等动作、语气或发送方式的旁白；"
                                            "不用括号、角色名、Markdown 或表情符号，尽量不超过 160 字。")
-                    scene = fangyi_guidance(settings.system_prompt, message,
-                                            enabled=self.planner_settings.fangyi_scene_skill)
+                    if self.planner_settings.character_core_v2_enabled:
+                        scene = character_behavior(
+                            settings.system_prompt, message,
+                            channel="qq_group" if current.kind == "group" else "qq_private",
+                        ).guidance
+                    else:
+                        scene = fangyi_guidance(settings.system_prompt, message,
+                                                enabled=self.planner_settings.fangyi_scene_skill)
                     if scene:
                         emotion_prompt += "\n" + scene
                         log_event("QQ", "角色场景", f"{current.scope} · {scene}")
@@ -1187,22 +1200,42 @@ class QqBridge:
                     candidate = None
                     for review in self.initiative_inbox.actionable_reviews(policy.owner_scope, now - 86400):
                         source = f"goal:{review['goal_id']}"
-                        if not self.proactive_store.already_reserved(source):
-                            candidate = (source, review["proposed_text"])
+                        if (not self.proactive_store.already_reserved(source)
+                                and not self.proactive_store.already_considered(source)
+                                and now >= self.ccv2_render_retry_after.get(source, 0)):
+                            candidate = (source, review["proposed_text"], review["topic"])
                             break
                     if candidate is None and config.daily_checkin:
                         source = f"checkin:{recipient}:{time.strftime('%Y-%m-%d', time.localtime(now))}"
                         if (not self.proactive_store.already_considered(source)
-                                and not self.proactive_store.already_reserved(source)):
+                                and not self.proactive_store.already_reserved(source)
+                                and now >= self.ccv2_render_retry_after.get(source, 0)):
                             choice = await asyncio.to_thread(
                                 plan_checkin, settings, key,
                                 trace_id=f"checkin-{uuid.uuid4().hex[:10]}")
                             if choice.action in ("ask", "share"):
-                                candidate = (source, choice.text_draft)
+                                candidate = (source, choice.text_draft, "日常近况")
                             else:
                                 self.proactive_store.mark_considered(source, time.time())
                     if candidate and candidate[1]:
-                        source, message = candidate
+                        source, message, topic = candidate
+                        if (self.planner_settings.character_core_v2_enabled
+                                and is_zhuangfangyi_prompt(settings.system_prompt)):
+                            # CCV2 uses the same persona-aware Replyer stage as
+                            # normal conversation; the host still owns send consent.
+                            try:
+                                message = await asyncio.to_thread(
+                                    render_proactive_reply, settings, key,
+                                    approved_draft=message, topic=topic,
+                                    trace_id=f"ccv2-outreach-{uuid.uuid4().hex[:10]}")
+                                log_event("QQ", "角色V2主动表达", f"{source} · 已通过 Replyer")
+                            except Exception as error:
+                                # A temporary Replyer/API failure should not
+                                # burn the approved goal or cause 60s retry spam.
+                                self.ccv2_render_retry_after[source] = time.time() + 600
+                                log_event("QQ", "角色V2主动表达失败",
+                                          f"{source} · {type(error).__name__} · 10分钟后可重试")
+                                continue
                         async with self.send_lock:
                             fresh = time.time()
                             busy = any(state.task and not state.task.done() or state.pending
