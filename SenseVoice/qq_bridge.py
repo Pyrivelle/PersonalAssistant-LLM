@@ -35,7 +35,7 @@ from zhuangfy.agent_v2.planner import plan_turn_v2, choose_action, PlanDecision
 from zhuangfy.agent_v2.runtime import AgentCycleEngine
 from zhuangfy.agent_v2.scheduler import UnifiedTurnScheduler, SchedulerConfig
 from zhuangfy.agent_v2.turn_trigger import TurnEvent
-from zhuangfy.agent_v2.tools import build_builtin_registry
+from zhuangfy.agent_v2.skills import build_skill_runtime
 from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
 
@@ -373,13 +373,21 @@ class QqBridge:
         self.limiter = ReplyLimiter(settings)
         self.turn_scheduler = UnifiedTurnScheduler(
             SchedulerConfig(group_frequency=settings.group_reply_frequency))
-        self.tool_registry = build_builtin_registry()
         self.generation_lock = asyncio.Lock()
         self.send_lock = asyncio.Lock()
         self.next_send_at = 0.0
         # Persistence is separate from Mem0 and only enabled for explicitly
         # selected, already-whitelisted private accounts. Groups never persist.
         self.planner_settings = PlannerSettings.load(ROOT / "cognition_settings.json")
+        self.tool_registry, self.skill_manager = build_skill_runtime(
+            ROOT / "skills", ROOT / "skills_settings.json",
+            activate=(self.planner_settings.agent_v2_enabled
+                      and self.planner_settings.agent_v2_tools_enabled))
+        for status in self.skill_manager.statuses:
+            if status.error:
+                log_event("技能", "加载失败", f"{status.id} · {status.error}")
+            elif status.loaded:
+                log_event("技能", "已启用", f"{status.id} · {', '.join(status.tools)}")
         if not settings.voice_private_ids.issubset(settings.allowed_private_ids):
             raise ValueError("QQ 语音回复账号必须包含在私聊白名单内")
         if not self.planner_settings.persist_private_ids.issubset(settings.allowed_private_ids):
