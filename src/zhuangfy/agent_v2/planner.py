@@ -5,7 +5,7 @@ sends messages, reads private storage directly, or runs arbitrary tools.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import re
 from typing import Literal
@@ -198,7 +198,19 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
         context_notes=feedback, trace_id=trace_id,
         response_validator=lambda text: _valid_plan_v2(text),
     )
-    return parse_plan_v2(raw, allow_voice=allow_voice)
+    decision = parse_plan_v2(raw, allow_voice=allow_voice)
+    if relationship_behavior_r1 and decision.action == "reply":
+        from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
+        context = behavior_r1(settings.system_prompt, user_text, channel=character_channel)
+        # Apply a small deterministic host-side style constraint rather than
+        # relying only on the LLM noticing a long prompt. Explicitly requested
+        # in-depth answers and creative writing are not shortened.
+        if context.guidance and decision.reply_style == "long":
+            if context.mode == "technical_concise":
+                decision = replace(decision, reply_style="normal")
+            elif context.mode == "conversation":
+                decision = replace(decision, reply_style="short")
+    return decision
 
 
 def _valid_plan_v2(raw: str) -> bool:
