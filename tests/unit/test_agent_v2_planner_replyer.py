@@ -23,12 +23,16 @@ class PlannerV2Tests(unittest.TestCase):
             "reply_act": "轻轻回应", "scene": "私聊分享图片", "tone": "温柔俏皮",
             "attention": "表达对象尚未完全明确", "reply_style": "short",
             "prefer": ["接纳好感", "轻松"], "avoid": ["罗列图片物件"],
-            "delivery": "voice",
+            "delivery": "voice", "reply_parts": 2,
+            "emotion": "欣喜", "emotion_intensity": 0.4,
         }
         raw = json.dumps(data, ensure_ascii=False)
         self.assertTrue(_valid_plan_v2(raw))
         plan = parse_plan_v2(raw)
         self.assertEqual(plan.action, "reply")
+        self.assertEqual(plan.reply_parts, 2)
+        self.assertEqual(plan.emotion, "欣喜")
+        self.assertAlmostEqual(plan.emotion_intensity, 0.4)
         self.assertEqual(plan.delivery, "text")  # no voice without channel opt-in
         self.assertEqual(parse_plan_v2(raw, allow_voice=True).delivery, "voice")
         hint = build_replyer_guidance(plan)
