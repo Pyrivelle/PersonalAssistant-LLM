@@ -57,7 +57,7 @@ def capture(argv: list[str] | None = None) -> int:
                 or any(ord(ch) < 32 for ch in args.cloud_model)):
             parser.error("Invalid cloud model ID")
         key = os.environ.get("ZHUANGFY_E1_API_KEY", "").strip()
-        if not key or "\\n" in key or "\\r" in key:
+        if not key or "\n" in key or "\r" in key:
             parser.error("Missing or invalid ZHUANGFY_E1_API_KEY GitHub Secret")
         settings = LlmSettings(
             provider=args.cloud_provider,
