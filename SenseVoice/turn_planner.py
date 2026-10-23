@@ -39,6 +39,7 @@ class PlannerSettings:
     character_core_v2_enabled: bool = False  # opt-in while V1 remains available
     character_knowledge_v1_enabled: bool = False  # independent opt-in
     relationship_behavior_r1_enabled: bool = False  # opt-in, no user tier inferred
+    relationship_evolution_r1_enabled: bool = False  # separate opt-in for LLM event proposals
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
@@ -73,12 +74,15 @@ class PlannerSettings:
         core_v2 = raw.get("character_core_v2_enabled", False)
         lore_v1 = raw.get("character_knowledge_v1_enabled", False)
         r1 = raw.get("relationship_behavior_r1_enabled", False)
+        r1_evolution = raw.get("relationship_evolution_r1_enabled", False)
         if type(core_v2) is not bool:
             raise ValueError("CCV2 开关必须是布尔值")
         if type(lore_v1) is not bool:
             raise ValueError("Character Knowledge V1 开关必须是布尔值")
         if type(r1) is not bool:
             raise ValueError("R1 行为开关必须是布尔值")
+        if type(r1_evolution) is not bool:
+            raise ValueError("R1 关系演化开关必须是布尔值")
         if any(type(item) is not bool for item in (v2_enabled, silent_private, silent_group, tools_enabled)):
             raise ValueError("Agent V2 开关必须是布尔值")
         if type(wait_max) is not int or not 1 <= wait_max <= 12:
@@ -90,7 +94,7 @@ class PlannerSettings:
         return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop,
                    frozenset(memory_ids), skill, v2_enabled, silent_private,
                    silent_group, wait_max, tools_enabled, max_rounds, max_tools,
-                   core_v2, lore_v1, r1)
+                   core_v2, lore_v1, r1, r1_evolution)
 
 
 @dataclass(frozen=True)
