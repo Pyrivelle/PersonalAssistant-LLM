@@ -963,6 +963,8 @@ class QqBridge:
                             if found:
                                 lore = knowledge_context(found)
                                 # Real dialogue and member memory take precedence.
+                                if len(notes) + len(lore) + 1 > 2600:
+                                    lore = knowledge_context(found[:1])
                                 if len(notes) + len(lore) + 1 <= 2600:
                                     notes += "\n" + lore
                                     log_event("QQ", "角色知识",
