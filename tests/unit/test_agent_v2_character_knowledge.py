@@ -53,7 +53,7 @@ class CharacterKnowledgeV1Tests(unittest.TestCase):
                 ctx=knowledge_context(result)
                 self.assertIn("社区整理",ctx)
                 self.assertIn("来源：",ctx)
-                self.assertIn("不是用户共同记忆",ctx)
+                self.assertIn("非用户共同记忆",ctx)
                 self.assertIn("不得将内容写进现实用户长期记忆",ctx)
         self.assertLessEqual(len(retrieve_character_knowledge(
             PERSONA, "武陵 佩丽卡 管理员 息壤",enabled=True)),2)
