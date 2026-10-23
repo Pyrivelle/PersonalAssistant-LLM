@@ -100,6 +100,33 @@ class MemoryClient:
             "reply_id": reply_id, "content": content,
         })
 
+    def relationship_snapshot(self, identity: MemoryChannel) -> dict:
+        return self.request("/v1/relationship/snapshot", {"identity": identity.as_payload()})
+
+    def relationship_apply(self, identity: MemoryChannel, *,
+                           source_entry_id: str, event_kind: str, confidence: float,
+                           evidence_quote: str, expected_version: int) -> dict:
+        return self.request("/v1/relationship/apply", {
+            "identity": identity.as_payload(), "source_entry_id": source_entry_id,
+            "event_kind": event_kind, "confidence": confidence,
+            "evidence_quote": evidence_quote, "expected_version": expected_version,
+        })
+
+    def relationship_enroll(self, identity: MemoryChannel, *,
+                            initial_tier: str = "L0",
+                            allow_affection: bool = False) -> dict:
+        return self.request("/v1/admin/relationship/enroll", {
+            "identity": identity.as_payload(), "initial_tier": initial_tier,
+            "allow_affection": allow_affection,
+        })
+
+    def relationship_correct(self, identity: MemoryChannel, *,
+                             expected_version: int, changes: dict) -> dict:
+        return self.request("/v1/admin/relationship/correct", {
+            "identity": identity.as_payload(), "expected_version": expected_version,
+            "changes": changes,
+        })
+
     def erase_self(self, identity: MemoryChannel) -> dict:
         return self.request("/v1/erase-self", {"identity": identity.as_payload()})
 
