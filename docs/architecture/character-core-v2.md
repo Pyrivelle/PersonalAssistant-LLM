@@ -51,7 +51,7 @@ B1 真实目标或单独许可的 daily_checkin
 
 若已经修改过 `resources/personas/zhuang_fangyi_v1/prompt.md` 或自己的提示词，**不会覆盖自定义内容**。默认包与 QQ 后附加的渠道规则可识别；无明确身份声明的完全自定义提示词可能不识别，此时应在自己的 system prompt 中明确写出「你是庄方宜」，而不是开启一个会覆盖其他角色的宽松关键词匹配。
 
-注意：CCV2 的主动消息会多一次 reply 阶段的模型调用，通常意味着额外延迟与 Token 开销。它不改变本地 `proactive_settings.json` 的开关、频率和安静时段。对于 Planner 决定 silence/defer 的情形不会进入主动 Replyer；生成失败会记录日志并跳过本次发送，不无限每分钟重复生成同一个候选。
+注意：CCV2 的主动消息会多一次 reply 阶段的模型调用，通常意味着额外延迟与 Token 开销。它不改变本地 `proactive_settings.json` 的开关、频率和安静时段。对于 Planner 决定 silence/defer 的情形不会进入主动 Replyer；生成失败会记录日志并跳过本次发送，当前进程对同一候选等待至少 10 分钟后再考虑；不无限每分钟重复生成，也不会因此丢弃已批准的后续话题。
 
 ## 固定评测基线（离线）
 
