@@ -146,7 +146,8 @@ class ChatWorker(QThread):
                         self.settings, self.key, self.history, self.message,
                         allow_voice=False, visual_context=visual_context, trace_id=self.turn_id,
                         character_core_v2=planner_config.character_core_v2_enabled,
-                        character_channel="chat")
+                        character_channel="chat",
+                        relationship_behavior_r1=planner_config.relationship_behavior_r1_enabled)
                     # Desktop/voice UI expects a visible reply for every initiated
                     # request. Wait/stop are enabled only in the QQ async scheduler.
                     if isinstance(plan, PlanDecision) and plan.action != "reply":
@@ -174,6 +175,11 @@ class ChatWorker(QThread):
             if skill_hint:
                 emotion_prompt += "\n" + skill_hint
                 log_event(self.source, "角色场景", skill_hint)
+            if planner_config.relationship_behavior_r1_enabled:
+                from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
+                guidance = behavior_r1(self.settings.system_prompt, self.message, channel="chat").guidance
+                if guidance:
+                    emotion_prompt += "\n" + guidance
             if planner_config.character_knowledge_v1_enabled:
                 try:
                     found = retrieve_character_knowledge(
