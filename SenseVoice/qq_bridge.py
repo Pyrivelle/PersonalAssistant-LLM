@@ -517,6 +517,42 @@ class QqBridge:
                 state.debouncer.clear_batch()
             state.resume_after = 0.0
             command = state.pending[0].strip() if len(state.pending) == 1 and not state.pending_images else ""
+            # The same scheduler adjudicates direct/private and opt-in passive
+            # group batches. Legacy mode keeps the original behavior.
+            batch_events = list(state.pending_event_ids)
+            batch_directed = state.pending_directed or state.incoming.directed
+            bypass_gate = command in {
+                "/continue", "/discard", "/retry", "/forget_me", "/删除我的记忆"
+            } or state.planner_waits > 0
+            if self.planner_settings.agent_v2_enabled and not bypass_gate:
+                session = (f"qq:{self.bot_id}:group:{state.incoming.group_id}"
+                           if state.incoming.kind == "group"
+                           else f"qq:{self.bot_id}:private:{state.incoming.user_id}")
+                while True:
+                    gate = self.turn_scheduler.decide(
+                        TurnEvent(session, batch_events[-1] if batch_events else uuid.uuid4().hex,
+                                  "message", state.incoming.kind,
+                                  text="\n".join(state.pending)[:1500],
+                                  directed=batch_directed,
+                                  pending_count=len(state.pending)),
+                        now=time.monotonic())
+                    if gate.decision != "delay":
+                        break
+                    await asyncio.sleep(min(0.25, max(0.01, gate.delay_seconds)))
+                    # The group batch may have received another @ while delayed.
+                    batch_directed = batch_directed or state.pending_directed
+                    batch_events = list(state.pending_event_ids)
+                if gate.decision in {"hold", "ignore"}:
+                    if state.incoming.kind == "group":
+                        state.group_recent.extend(state.pending[-4:])
+                    state.pending.clear()
+                    state.pending_images.clear()
+                    state.pending_event_ids.clear()
+                    state.pending_directed = False
+                    log_event("QQ", "调度V2", f"{session} · {gate.reason} · 未调用LLM")
+                    continue
+                log_event("QQ", "调度V2", f"{session} · {gate.reason} · 进入Planner")
+
             # A continuation of an already accepted logical reply must not
             # consume a NEW hourly quota slot. Erase/discard are never blocked
             # by reply quota, though their confirmation can still be rate-limited.
@@ -529,6 +565,8 @@ class QqBridge:
             if capped:
                 state.pending.clear()
                 state.pending_images.clear()
+                state.pending_event_ids.clear()
+                state.pending_directed = False
                 print(f"跳过 {state.incoming.scope}：本小时回复已达上限")
                 return
             if wait:
@@ -536,6 +574,10 @@ class QqBridge:
                 continue
             message = "\n".join(state.pending)
             state.pending.clear()
+            event_ids = list(state.pending_event_ids)
+            state.pending_event_ids.clear()
+            directed = state.pending_directed
+            state.pending_directed = False
             images = state.pending_images[:]
             state.pending_images.clear()
             image_ref = images[0] if images else None
@@ -666,6 +708,8 @@ class QqBridge:
                                 # false assistant reply. Only one bounded wait per logical batch.
                                 state.planner_waits += 1
                                 state.pending = [message] + state.pending
+                                state.pending_event_ids = event_ids + state.pending_event_ids
+                                state.pending_directed = directed or state.pending_directed
                                 state.pending_images = images + state.pending_images
                                 state.first_arrival = state.last_arrival = time.monotonic()
                                 state.resume_after = state.last_arrival + min(
