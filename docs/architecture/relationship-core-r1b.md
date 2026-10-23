@@ -22,8 +22,9 @@ RelationshipSnapshot 包含版本、三个维度、推导等级、表达许可/�
 
 ## 人工控制（均由已认证的 UI/宿主调用）
 
-- correct(..., expected_version=...)：显式更正熟悉/信任/亲近度、tier_ceiling、亲近表达、称呼、语气、自动成长、冻结和启停；乐观版本控制避免覆盖晚到的更正。
-- frozen=True：立即暂停自动成长，不抹去既有状态。
+- correct(..., expected_version=...)：显式更正熟悉/信任/亲近度、tier_ceiling、亲近表达、称呼、语气、自动成长、冻结和启停；乐观版本控制避免覆盖晚到的更正。人工更正记录字段前后值，便于审计。
+- frozen=True：立即暂停全部自动成长，不抹去既有状态。
+- lock_familiarity / lock_trust / lock_closeness：可只冻结某一个维度，其他维度仍可依据证据独立变化。
 - auto_growth=False：只保留人工设定，停用观察事件。
 - allow_affection=False：禁止系统使用亲密关系表现；即便已有高亲近度也不能显示为 L3。
 - tier_ceiling 可限制最高等级；若本人只允许自然朋友式交流，高熟悉/信任不会绕过。
