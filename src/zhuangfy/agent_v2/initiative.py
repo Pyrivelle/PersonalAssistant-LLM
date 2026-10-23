@@ -50,6 +50,15 @@ class InitiativeInbox:
             )""")
             db.execute("""CREATE INDEX IF NOT EXISTS idx_initiative_owner
                           ON initiative_drafts(owner_scope, created_at)""")
+            db.execute("""CREATE TABLE IF NOT EXISTS initiative_reviews (
+                goal_id TEXT PRIMARY KEY,
+                owner_scope TEXT NOT NULL,
+                action TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                proposed_text TEXT NOT NULL,
+                reviewed_at REAL NOT NULL,
+                reason TEXT NOT NULL
+            )""")
 
     @contextmanager
     def _connect(self):
@@ -123,3 +132,32 @@ class InitiativeInbox:
                    WHERE goal_id=? AND owner_scope=? AND status='draft'""",
                 (goal_id, owner_scope),
             ).rowcount == 1
+
+
+    def record_review(self, *, goal_id: str, owner_scope: str, action: str,
+                      confidence: float, proposed_text: str, reviewed_at: float,
+                      reason: str) -> bool:
+        """Durable once-only review; never implies permission to send."""
+        if action not in {"ask", "share", "defer", "silence"} or not 0 <= confidence <= 1:
+            raise ValueError("invalid review action")
+        if not goal_id or not owner_scope or len(proposed_text) > 220:
+            raise ValueError("invalid review target/text")
+        with self._connect() as db:
+            result = db.execute(
+                """INSERT OR IGNORE INTO initiative_reviews
+                   (goal_id,owner_scope,action,confidence,proposed_text,reviewed_at,reason)
+                   SELECT goal_id,owner_scope,?,?,?,?,?
+                   FROM initiative_drafts
+                   WHERE goal_id=? AND owner_scope=? AND status='draft'""",
+                (action, confidence, proposed_text, reviewed_at,
+                 reason[:120], goal_id, owner_scope),
+            )
+            return result.rowcount == 1
+
+    def get_review(self, goal_id: str, owner_scope: str) -> dict | None:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT * FROM initiative_reviews WHERE goal_id=? AND owner_scope=?""",
+                (goal_id, owner_scope),
+            ).fetchone()
+            return dict(row) if row else None
