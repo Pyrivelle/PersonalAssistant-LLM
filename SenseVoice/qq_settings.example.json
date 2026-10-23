@@ -13,5 +13,7 @@
   "passive_group_ids": [],
   "group_reply_frequency": 0.45,
   "focus_mode": "off",
-  "focus_groups": []
+  "focus_groups": [],
+  "focus_checkpoint_enabled": false,
+  "focus_checkpoint_account": ""
 }
