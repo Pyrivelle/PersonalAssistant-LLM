@@ -26,10 +26,10 @@ Copy the keys from `SenseVoice/cognition_settings.example.json` into your existi
 
 ## Planner contract
 
-`zhuangfy.agent_v2.planner` calls the existing `planner` stage of `model_routes.invoke_stage`, using its configured candidates and failure/retry rules. Expected JSON fields: `action` (reply/wait/stop/tool), `confidence`, `social_intent`, `reply_act`, `scene`, `tone`, `attention`, `reply_style`, `prefer`, `avoid`, `delivery`, and optional `wait_seconds`, `tool_name`, `tool_arguments`. Invalid or low-confidence plans degrade safely to reply. Avoid using planner output as a source of new user facts.
+`zhuangfy.agent_v2.planner` calls the existing `planner` stage of `model_routes.invoke_stage`, using its configured candidates and failure/retry rules. Expected JSON fields: `action` (reply/wait/stop/tool), `confidence`, `social_intent`, `reply_act`, `scene`, `tone`, `attention`, `reply_style`, `prefer`, `avoid`, `delivery`, and optional `reply_parts` (0 means sender decides; 1–3 caps QQ bubbles), `emotion`, `emotion_intensity` (0–1), `wait_seconds`, `tool_name`, `tool_arguments`. Invalid or low-confidence plans degrade safely to reply. Avoid using planner output as a source of new user facts.
 
 - `reply`: create one logical model reply; QQ's existing formatter may deliver it in up to three **physical** bubbles.
-- `wait`: in QQ, requeue the same messages and wait at most the configured number of seconds before reconsideration. Only one wait per logical batch; subsequent wait requests are treated as reply. Planner does not run an indefinite polling loop. No separate follow-up speech is generated after reply.
+- `wait`: in QQ, requeue the same messages and wait at most the configured number of seconds before reconsideration. Only one wait per logical batch; subsequent wait requests are treated as reply. New inbound messages can wake the pending wait early. For image-bearing turns, re-waiting is disabled to avoid repeating a costly vision request. Planner does not run an indefinite polling loop. No separate follow-up speech is generated after reply.
 - `stop`: explicitly opt-in per conversation type; no model reply is sent and no fictional assistant message is committed. Explicit commands (such as erase or retry) still follow their existing bridge paths.
 - `tool`: recorded as intent only. **No external action runs** until a separate authenticated Tool Runtime provides allowlisted execution and receipts (A8). When unsupported, fall back to a visible reply without claiming the action happened.
 
@@ -37,7 +37,7 @@ Qt desktop text and voice interfaces currently require an output for each initia
 
 ## Replyer
 
-`zhuangfy.agent_v2.replyer.build_replyer_guidance` builds bounded, non-authoritative style cues; the existing `reply` stage remains the actual generation model. It handles social intent, conversational act, context, uncertainty, tone, length, and preferred/avoided phrasing, while preserving the user's existing character/persona prompt and memory permissions.
+`zhuangfy.agent_v2.replyer.build_replyer_guidance` builds bounded, non-authoritative style cues; the existing `reply` stage remains the actual generation model. It handles social intent, conversational act, context, uncertainty, emotion intensity, tone, length, and preferred/avoided phrasing, while preserving the user's existing character/persona prompt and memory permissions.
 
 For a standalone affectionate sticker/photo the vision output is considered evidence of **visible content**, not proof that the user is giving a physical rose or confessing love. The Planner may hypothesize social intent; Replyer responds naturally without treating that hypothesis as certain.
 
