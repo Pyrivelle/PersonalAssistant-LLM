@@ -44,6 +44,24 @@ class QqParsingTests(unittest.TestCase):
         self.assertIsNone(parse_message({**group, "message": "没有艾特"}, 88, self.settings))
         self.assertEqual(parse_message({**group, "message": "[CQ:at,qq=88] 你好"}, 88, self.settings).text, "你好")
 
+    def test_optional_agent_v2_debounce_setting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            path.write_text(json.dumps({"message_debounce_mode": "natural"}), encoding="utf-8")
+            self.assertEqual(QqSettings.load(path).message_debounce_mode, "natural")
+            path.write_text(json.dumps({"message_debounce_mode": "unknown"}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "message_debounce_mode"):
+                QqSettings.load(path)
+
+    def test_agent_v2_debounce_is_opt_in(self):
+        from zhuangfy.agent_v2 import MessageDebouncer
+        with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
+            legacy = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+            enabled = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                           message_debounce_mode="natural"))
+        self.assertEqual(legacy.settings.message_debounce_mode, "off")
+        self.assertEqual(enabled.settings.message_debounce_mode, "natural")
+
     def test_rate_limit_is_per_private_chat_and_per_group(self):
         settings = QqSettings(private_cooldown_seconds=5, group_cooldown_seconds=12,
                               private_max_replies_per_hour=2, group_max_replies_per_hour=1)

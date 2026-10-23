@@ -8,5 +8,6 @@
   "private_max_replies_per_hour": 30,
   "group_max_replies_per_hour": 8,
   "quiet_seconds": 1.2,
-  "private_max_reply_parts": 3
+  "private_max_reply_parts": 3,
+  "message_debounce_mode": "off"
 }
