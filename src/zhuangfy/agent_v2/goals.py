@@ -177,11 +177,25 @@ class GoalStore:
                 raise
 
     def revoke(self, goal_id: str) -> bool:
-        """Immediately prevent later claims or successful receipts."""
+        """Immediately prevent later claims or successful receipts; audit withdrawal."""
         with self._connect() as db:
-            return db.execute("""UPDATE goals SET status='revoked', lease_until=0
-                                 WHERE goal_id=? AND status IN ('scheduled','running')""",
-                              (goal_id,)).rowcount == 1
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                changed = db.execute(
+                    """UPDATE goals SET status='revoked', lease_until=0
+                       WHERE goal_id=? AND status IN ('scheduled','running')""",
+                    (goal_id,)).rowcount == 1
+                if changed:
+                    db.execute("""INSERT OR IGNORE INTO goal_audit
+                                  (event_id, goal_id, action, at, summary)
+                                  VALUES (?,?,?,?,?)""",
+                               (f"goal:{goal_id}:revoke", goal_id, "revoked",
+                                time.time(), "授权被撤销"))
+                db.execute("COMMIT")
+                return changed
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
 
     def inspect(self, goal_id: str) -> dict | None:
         with self._connect() as db:
