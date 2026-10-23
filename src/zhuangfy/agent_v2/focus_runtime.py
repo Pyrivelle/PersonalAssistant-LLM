@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from .focus import FocusCoordinator, FocusGroup, FocusLease, FocusSignal
+from .focus_checkpoint import FocusCheckpointStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,13 +26,24 @@ class FocusDecision:
 
 class QqFocusRuntime:
     def __init__(self, mode: str = "off",
-                 groups: tuple[tuple[str, tuple[str, ...]], ...] = ()) -> None:
+                 groups: tuple[tuple[str, tuple[str, ...]], ...] = (),
+                 *, checkpoint_store: FocusCheckpointStore | None = None,
+                 instance_id: str = "") -> None:
         if mode not in ("off", "shadow", "active"):
             raise ValueError("invalid Focus mode")
         self.mode = mode
         self.coordinator = FocusCoordinator()
+        if checkpoint_store is not None and not instance_id:
+            raise ValueError("persistent Focus requires a channel/account identity")
+        self.checkpoint_store = checkpoint_store
+        self.instance_id = instance_id
         for name, sessions in groups:
             self.coordinator.register_group(FocusGroup(name, frozenset(sessions)))
+            if checkpoint_store is not None and mode == "active":
+                restored = checkpoint_store.read(instance_id, name, frozenset(sessions))
+                if restored is not None:
+                    state = self.coordinator._groups[name]
+                    state.last_session, state.streak = restored
         self._lock = asyncio.Lock()
         self._pending: dict[tuple[str, str], asyncio.Future] = {}
         self._decisions: list[FocusDecision] = []
@@ -95,6 +107,16 @@ class QqFocusRuntime:
                     lease = future.result()
                 if lease is not None:
                     self.coordinator.complete(lease)
+                    if self.checkpoint_store is not None:
+                        state = self.coordinator._groups[scope]
+                        try:
+                            self.checkpoint_store.write(
+                                self.instance_id, scope, state.group.sessions,
+                                state.last_session, state.streak)
+                        except (OSError, ValueError):
+                            # Failure to checkpoint must not permanently lock
+                            # Focus or drop the remaining session queue.
+                            pass
                 else:
                     self.coordinator.cancel(scope, session_id=session_id)
                     future.cancel()
