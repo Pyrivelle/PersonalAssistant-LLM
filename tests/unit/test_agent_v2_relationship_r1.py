@@ -10,7 +10,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
+from zhuangfy.persona.relationship_behavior_r1 import behavior_r1, tidy_r1_reply
 from zhuangfy.agent_v2.planner import plan_turn_v2
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,6 +89,35 @@ class R1BehaviorTests(unittest.TestCase):
         self.assertIn("R1-A", prompts[0])
         self.assertIn("技术话题但没有明确要求", prompts[0])
         self.assertNotIn("R1-A", prompts[1])
+
+    def test_display_cleanup_is_contextual_and_preserves_technical_parentheticals(self):
+        raw = "（看着窗外出了一会儿神，才慢慢敲键盘）\n雨天的安静难得。"
+        self.assertEqual(tidy_r1_reply(PERSONA, "下雨了", raw), "雨天的安静难得。")
+        self.assertEqual(tidy_r1_reply(PERSONA, "请演绎一段雨天的剧本", raw), raw)
+        self.assertEqual(tidy_r1_reply(PERSONA, "下雨了", raw, enabled=False), raw)
+        self.assertEqual(tidy_r1_reply("你是小明", "下雨了", raw), raw)
+        info = "（Windows 11）Qt 下启动没有问题。"
+        self.assertEqual(tidy_r1_reply(PERSONA, "Qt 异常", info), info)
+        self.assertEqual(tidy_r1_reply(PERSONA, "我需要安静", "</think>（她遵守了要求）"), "")
+
+    def test_planner_style_clamps_unrequested_lectures_not_explicit_tutorials(self):
+        def invoke(*args, **kwargs):
+            return '{"action":"reply","confidence":0.93,"reply_style":"long"}'
+        with patch.dict(sys.modules, {"model_routes": SimpleNamespace(invoke_stage=invoke)}):
+            settings = SimpleNamespace(system_prompt=PERSONA)
+            quick = plan_turn_v2(settings, "key", [], "Qt OSG 黑屏怎么排查？",
+                                 relationship_behavior_r1=True)
+            elaborate = plan_turn_v2(settings, "key", [],
+                                     "详细分析 Qt OSG 黑屏并给出完整实现步骤",
+                                     relationship_behavior_r1=True)
+            regular = plan_turn_v2(settings, "key", [], "今天下雨了",
+                                   relationship_behavior_r1=True)
+            legacy = plan_turn_v2(settings, "key", [], "Qt OSG 黑屏",
+                                  relationship_behavior_r1=False)
+        self.assertEqual(quick.reply_style, "normal")
+        self.assertEqual(elaborate.reply_style, "long")
+        self.assertEqual(regular.reply_style, "short")
+        self.assertEqual(legacy.reply_style, "long")
 
     def test_settings_reject_non_bool_and_default_off(self):
         sys.path.insert(0, str(ROOT / "SenseVoice"))
