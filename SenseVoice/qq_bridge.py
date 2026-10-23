@@ -25,6 +25,7 @@ from dialogue_context import DialogueContext, DialogueStore
 from turn_planner import PlannerSettings, TurnPlan, plan_turn
 from member_memory import MemberKey, MemberMemoryStore, REFLECT_AFTER_TURNS, reflect_member
 from fangyi_skill import guidance as fangyi_guidance
+from zhuangfy.persona.character_core_v2 import character_behavior
 from gpt_sovits import load_settings as load_speech_settings
 from qq_reply_formatter import format_qq_reply
 from emotion import EmotionState
@@ -818,7 +819,9 @@ class QqBridge:
                                         trace_id=turn_id, tool_feedback=feedback,
                                         available_tools=names,
                                         tool_catalog=self.tool_registry.prompt_catalog(
-                                            scope=current.kind))
+                                            scope=current.kind),
+                                        character_core_v2=self.planner_settings.character_core_v2_enabled,
+                                        character_channel="qq_group" if current.kind == "group" else "qq_private")
                                 result = await AgentCycleEngine(
                                     max_rounds=self.planner_settings.agent_v2_max_rounds,
                                     max_tools=self.planner_settings.agent_v2_max_tools,
@@ -836,7 +839,9 @@ class QqBridge:
                                 plan = await asyncio.to_thread(
                                     plan_turn_v2, settings, key, state.context.history, message,
                                     allow_voice=allow_voice,
-                                    visual_context=visual_context, trace_id=turn_id)
+                                    visual_context=visual_context, trace_id=turn_id,
+                                    character_core_v2=self.planner_settings.character_core_v2_enabled,
+                                    character_channel="qq_group" if current.kind == "group" else "qq_private")
                                 action = choose_action(
                                     plan, allow_silence=allow_silence,
                                     already_waited=bool(state.planner_waits) or image_ref is not None)
@@ -906,8 +911,14 @@ class QqBridge:
                         emotion_prompt += ("\n本轮回复会直接作为语音内容播放。只输出你真正要对用户说的话，"
                                            "不要写‘发语音了’、‘轻声说’等动作、语气或发送方式的旁白；"
                                            "不用括号、角色名、Markdown 或表情符号，尽量不超过 160 字。")
-                    scene = fangyi_guidance(settings.system_prompt, message,
-                                            enabled=self.planner_settings.fangyi_scene_skill)
+                    if self.planner_settings.character_core_v2_enabled:
+                        scene = character_behavior(
+                            settings.system_prompt, message,
+                            channel="qq_group" if current.kind == "group" else "qq_private",
+                        ).guidance
+                    else:
+                        scene = fangyi_guidance(settings.system_prompt, message,
+                                                enabled=self.planner_settings.fangyi_scene_skill)
                     if scene:
                         emotion_prompt += "\n" + scene
                         log_event("QQ", "角色场景", f"{current.scope} · {scene}")
