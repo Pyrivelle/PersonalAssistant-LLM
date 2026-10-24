@@ -164,7 +164,8 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
                  relationship_behavior_r1: bool = False,
                  routes=None, trusted_context_notes: str = "",
                  relationship_tier: str = "unassigned",
-                 relationship_hint: str = "") -> PlanDecision:
+                 relationship_hint: str = "",
+                 protocol_v3: bool = False) -> PlanDecision:
     """Use existing stage routing; caller handles errors and default fallback."""
     from model_routes import invoke_stage
 
