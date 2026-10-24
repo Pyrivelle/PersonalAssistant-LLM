@@ -48,6 +48,16 @@ class EvidenceStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 db.erase_conversation("")
 
+    def test_recall_budget_preserves_newest_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db = EvidenceStore(Path(temp) / "evidence.db")
+            db.save("scope", "t1", "vision", "older " * 120)
+            db.save("scope", "t2", "tool", "latest-search-result")
+            context = db.recent("scope", max_chars=220)
+            self.assertLessEqual(len(context), 220)
+            self.assertIn("latest-search-result", context)
+
+
 
 if __name__ == "__main__":
     unittest.main()
