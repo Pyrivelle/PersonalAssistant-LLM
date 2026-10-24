@@ -115,6 +115,7 @@ class TaskContinuity:
                   AND c.platform='qq' AND c.channel_account_id=?
                   AND c.external_conversation_id=?
                   AND e.speaker_role='user' AND e.state='received'
+                  AND e.entry_id<>?
                 ORDER BY e.sequence DESC LIMIT 200
             """, (person_id, agent_id, identity.channel_account_id,
                   "private:" + identity.external_user_id)).fetchall() if selected else []
