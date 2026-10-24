@@ -371,7 +371,14 @@ def invoke_stage(
                                 emotion_context=emotion_context,
                                 context_notes=context_notes,
                                 timeout=min(float(policy.timeout), remaining), stage=label,
-                                force_json=selected_settings.provider == "siliconflow",
+                                force_json=selected_settings.provider == "siliconflow"
+                                and item.planner_format != "prompt",
+                                **({"structured_format": {
+                                    "type": "json_schema",
+                                    "json_schema": {"name": "planner_decision_v3",
+                                                    "strict": True, "schema": planner_schema},
+                                }} if planner_schema is not None
+                                and item.planner_format == "json_schema" else {}),
                                 **({"thinking": item.thinking} if item.thinking != "auto" else {}),
                                 **({"visual_context": visual_context} if visual_context else {}))
                             if response_validator(repaired):
