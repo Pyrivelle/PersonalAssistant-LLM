@@ -1104,7 +1104,8 @@ class QqBridge:
                             and current.kind == "private" and image_ref is None):
                         try:
                             continuity = await asyncio.to_thread(
-                                self.memory_client.task_recall, memory_claim, message, 1)
+                                self.memory_client.task_recall, memory_claim, message, 1,
+                                str(memory_ref.get("entry_id", "")))
                             shared_tasks = continuity.get("tasks", [])
                             if shared_tasks:
                                 related_task = shared_tasks[0]
