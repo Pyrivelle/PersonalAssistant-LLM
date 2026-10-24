@@ -947,6 +947,16 @@ class QqBridge:
                             tools_enabled = self.planner_settings.agent_v2_tools_enabled
                             names = (self.tool_registry.public_names(scope=current.kind)
                                      if tools_enabled else ())
+                            if tools_enabled and self.planner_settings.agent_v3_enabled:
+                                # No external retrieval and no loading disabled skills.
+                                # Expose only core tools and strongly matched, enabled
+                                # deferred skills; the executor rechecks scope/schema.
+                                discovery = SkillDiscovery(self.tool_registry).select(
+                                    message, scope=current.kind, allow_mutation=False)
+                                names = discovery.names
+                                log_event("技能", "按需发现",
+                                          f"{current.scope} · Core={len(discovery.core_names)} "
+                                          f"· Deferred={len(discovery.deferred_names)}")
                             if tools_enabled and names:
                                 # The tool results are passed back as untrusted context.
                                 # The model cannot register capabilities or mutate devices.
