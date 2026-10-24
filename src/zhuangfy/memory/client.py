@@ -84,6 +84,15 @@ class MemoryClient:
         except (URLError, TimeoutError, ConnectionError):
             raise MemoryClientError(503, "Memory service unavailable") from None
 
+    def onboard_qq(self, identity: MemoryChannel, display_name: str) -> dict:
+        """Register a QQ identity after a trusted OneBot private-message event.
+
+        This endpoint never grants consent to save conversation content.
+        """
+        return self.request("/v1/onboard-qq", {
+            "identity": identity.as_payload(), "display_name": display_name,
+        })
+
     def receive(self, identity: MemoryChannel, *, chat_id: str,
                 message_id: str, content: str) -> dict:
         return self.request("/v1/receive", {
