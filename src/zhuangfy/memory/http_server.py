@@ -93,6 +93,8 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                 payload = json.loads(self.rfile.read(size))
                 if not isinstance(payload, dict):
                     raise ValueError("JSON object required")
+                if path == "/v1/onboard-qq":
+                    result = core.onboard_qq(**payload)
                 if path == "/v1/receive":
                     result = core.receive(**payload)
                 elif path == "/v1/recall":
