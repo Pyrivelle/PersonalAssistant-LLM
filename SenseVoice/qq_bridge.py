@@ -969,7 +969,7 @@ class QqBridge:
                                         trace_id=turn_id, tool_feedback=feedback,
                                         available_tools=names,
                                         tool_catalog=self.tool_registry.prompt_catalog(
-                                            scope=current.kind),
+                                            scope=current.kind, names=names),
                                         character_core_v2=self.planner_settings.character_core_v2_enabled,
                                         character_channel="qq_group" if current.kind == "group" else "qq_private",
                                         relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled,
