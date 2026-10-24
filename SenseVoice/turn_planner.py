@@ -40,6 +40,7 @@ class PlannerSettings:
     character_knowledge_v1_enabled: bool = False  # independent opt-in
     relationship_behavior_r1_enabled: bool = False  # opt-in, no user tier inferred
     relationship_evolution_r1_enabled: bool = False  # separate opt-in for LLM event proposals
+    agent_v3_enabled: bool = False  # opt-in structured decisions and deferred discovery
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
