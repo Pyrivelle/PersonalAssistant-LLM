@@ -38,6 +38,8 @@ class SkillManifest:
     def read(cls, directory: Path) -> "SkillManifest":
         if directory.is_symlink() or not directory.is_dir() or not _SKILL_ID.fullmatch(directory.name):
             raise ValueError("invalid skill directory")
+        if directory.name in {"memory", "task_memory"}:
+            raise ValueError("host-owned memory tool namespace is reserved")
         path = directory / "skill.json"
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MANIFEST_LIMIT:
             raise ValueError("missing or oversized skill.json")

@@ -49,6 +49,19 @@ class DiscoveryTests(unittest.TestCase):
             (directory / "skill.json").write_text('{"id":"../bad"}', encoding="utf-8")
             self.assertTrue(mgr.discover()[0].error)
 
+    def test_host_owned_memory_namespace_is_reserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skills"
+            root.mkdir()
+            write_skill(root, "memory")
+            write_skill(root, "task_memory")
+            statuses = SkillManager(root, {
+                "memory": SkillPolicy(enabled=True),
+                "task_memory": SkillPolicy(enabled=True),
+            }).discover()
+            self.assertEqual(len(statuses), 2)
+            self.assertTrue(all("reserved" in s.error for s in statuses))
+
     def test_explicit_settings_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "skills_settings.json"

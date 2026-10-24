@@ -676,6 +676,84 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         bridge.send_reply.assert_awaited_once()
         self.assertEqual(state.context.history[-1]["content"], "结果是 25。")
 
+    async def test_v3_calls_memory_only_when_planner_chooses(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(
+                              agent_v2_enabled=True, agent_v2_tools_enabled=True,
+                              agent_v3_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+        bridge.bot_id = 88
+        incoming = Incoming("private", 42, None, "mem-001",
+                            "方宜，还记得之前的 OSG 项目吗？")
+        state = Conversation(incoming, pending=[incoming.text],
+                             pending_event_ids=["mem-001"])
+        captured = asyncio.get_running_loop().create_future()
+        captured.set_result({"entry_id": "entry-001", "conversation_id": "conv-001"})
+        bridge._memory_capture_tasks[(88, 42, "mem-001")] = captured
+        bridge.memory_client = Mock()
+        bridge.memory_client.task_recall.return_value = {"tasks": [{
+            "task_id": "goal-osg",
+            "origin": {"excerpt": "我们讨论过 OSG 港口性能优化"},
+            "reported_progress": {"state": "active", "status_basis": "user_report"},
+            "history": [],
+        }]}
+        bridge.send_reply = AsyncMock(return_value=True)
+        decisions = []
+        def planner(*args, **kwargs):
+            decisions.append(kwargs)
+            if not kwargs.get("tool_feedback"):
+                return PlanDecision(action="tool", confidence=.98,
+                                    tool_name="task_memory.search",
+                                    tool_arguments={"query": "OSG 港口优化"})
+            return PlanDecision(action="reply", confidence=.95,
+                                social_intent="回忆曾经讨论的项目")
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v3", side_effect=planner), \
+             patch.object(qq_bridge, "invoke_stage", return_value="当然记得，我们之前讨论过港口优化。"):
+            await bridge.process(state)
+        self.assertEqual(len(decisions), 2)
+        self.assertIn("task_memory.search", decisions[0]["available_tools"])
+        self.assertIn("query", decisions[0]["tool_catalog"])
+        self.assertIn("OSG 港口性能优化", decisions[1]["tool_feedback"])
+        self.assertEqual(bridge.memory_client.task_recall.call_count, 1)
+        passed_identity = bridge.memory_client.task_recall.call_args.args[0]
+        self.assertEqual(passed_identity.channel_account_id, "88")
+        self.assertEqual(passed_identity.external_user_id, "42")
+        # The V3 Skill is the only trigger. No eager recall of older memories.
+        bridge.memory_client.recall.assert_not_called()
+        self.assertIn("用户报告", decisions[1]["tool_feedback"])
+        bridge.send_reply.assert_awaited_once()
+
+    async def test_v3_social_reply_does_not_search_memory(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(
+                              agent_v2_enabled=True, agent_v2_tools_enabled=True,
+                              agent_v3_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+        bridge.bot_id = 88
+        incoming = Incoming("private", 42, None, "mem-002", "今天心情不错。")
+        state = Conversation(incoming, pending=[incoming.text],
+                             pending_event_ids=["mem-002"])
+        capture = asyncio.get_running_loop().create_future()
+        capture.set_result({"entry_id": "entry-002", "conversation_id": "conv-002"})
+        bridge._memory_capture_tasks[(88, 42, "mem-002")] = capture
+        bridge.memory_client = Mock()
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v3", return_value=PlanDecision(
+                 action="reply", confidence=.98, social_intent="开心分享")), \
+             patch.object(qq_bridge, "invoke_stage", return_value="听起来今天挺愉快呀。"):
+            await bridge.process(state)
+        bridge.memory_client.task_recall.assert_not_called()
+        bridge.memory_client.recall.assert_not_called()
+        bridge.send_reply.assert_awaited_once()
+
     async def test_v2_disabled_tools_never_execute_device_actions(self):
         from zhuangfy.agent_v2.planner import PlanDecision
         with patch.object(qq_bridge.PlannerSettings, "load",
