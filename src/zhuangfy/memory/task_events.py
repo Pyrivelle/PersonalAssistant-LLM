@@ -55,8 +55,6 @@ def extract_report(text: str) -> tuple[str, str, bool] | None:
             }[kind]
             cautious = bool(UNCERTAIN.search(text) or CORRECTION_CUES.search(text))
             return kind, state, cautious
-    if CORRECTION_CUES.search(text):
-        return "correction", "proposed", True
     return None
 
 
