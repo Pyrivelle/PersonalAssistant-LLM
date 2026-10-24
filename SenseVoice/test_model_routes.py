@@ -142,6 +142,41 @@ class ModelRoutesTests(unittest.TestCase):
         self.assertTrue(result.startswith("{"))
         self.assertTrue(request.call_args_list[2].kwargs["force_json"])
 
+    def test_planner_v3_siliconflow_json_first_and_strict_schema_opt_in(self):
+        from llm import SILICONFLOW_URL
+        schema = {"type": "object", "properties": {"schema_version": {
+            "type": "integer", "enum": [3]}}, "required": ["schema_version"],
+            "additionalProperties": False}
+        sf = ModelCandidate("planner_sf_v3", "siliconflow", SILICONFLOW_URL,
+                            "model-1")
+        config = ModelRoutes(planner=StagePolicy((sf,), retries=0))
+        with patch.object(model_routes, "chat", return_value='{"schema_version":3}') as chat_mock, \
+             patch.object(model_routes, "load_route_key", return_value="key"):
+            invoke_stage("planner", LlmSettings(), "", [], "你好", routes=config,
+                         planner_schema=schema,
+                         response_validator=lambda text: text.startswith("{"))
+        self.assertEqual(chat_mock.call_count, 1)
+        self.assertTrue(chat_mock.call_args.kwargs["force_json"])
+
+        forced = ModelCandidate("planner_schema", "siliconflow", SILICONFLOW_URL,
+                                "model-1", planner_format="json_schema")
+        config = ModelRoutes(planner=StagePolicy((forced,), retries=0))
+        with patch.object(model_routes, "chat", return_value='{"schema_version":3}') as chat_mock, \
+             patch.object(model_routes, "load_route_key", return_value="key"):
+            invoke_stage("planner", LlmSettings(), "", [], "你好", routes=config,
+                         planner_schema=schema,
+                         response_validator=lambda text: text.startswith("{"))
+        self.assertEqual(chat_mock.call_args.kwargs["structured_format"]["type"],
+                         "json_schema")
+        self.assertTrue(chat_mock.call_args.kwargs["structured_format"]["json_schema"]["strict"])
+        self.assertEqual(chat_mock.call_count, 1)
+
+    def test_planner_v3_json_format_configuration_is_validated(self):
+        from llm import SILICONFLOW_URL
+        with self.assertRaises(ValueError):
+            ModelCandidate("bad", "siliconflow", SILICONFLOW_URL,
+                           "model-1", planner_format="unknown").validated()
+
     def test_planner_invalid_correction_falls_back_to_next_api(self):
         routes = ModelRoutes(planner=StagePolicy(
             (candidate("planner_1"), candidate("planner_2")),
