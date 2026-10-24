@@ -963,7 +963,8 @@ class QqBridge:
                                 async def _next_plan(receipts):
                                     feedback = "\n".join(item.as_context() for item in receipts)[:1200]
                                     return await asyncio.to_thread(
-                                        plan_turn_v2, settings, key, state.context.history, message,
+                                        (plan_turn_v3 if self.planner_settings.agent_v3_enabled else plan_turn_v2),
+                                        settings, key, state.context.history, message,
                                         allow_voice=allow_voice, visual_context=visual_context,
                                         trace_id=turn_id, tool_feedback=feedback,
                                         available_tools=names,
