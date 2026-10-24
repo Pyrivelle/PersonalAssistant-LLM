@@ -89,13 +89,17 @@ class IdentityRepository:
                        (person.person_id, person.display_name, person.created_at))
         return person
 
-    def ensure_qq_person(self, identity: ChannelIdentity, display_name: str) -> tuple[Person, bool]:
+    def ensure_qq_person(self, identity: ChannelIdentity, display_name: str, *,
+                         initial_timeline: bool = False) -> tuple[Person, bool]:
         """Provision an empty person only for a trusted inbound QQ private identity.
 
         A caller must have authenticated the QQ transport and admitted the
-        message. This method never grants Timeline/Curator consent, merges
-        people by nickname, or reassigns a previously linked account.
+        message. For a NEW identity only, an explicit trusted-host capture
+        policy may grant local Timeline retention, but never curation.
+        This never re-enables revoked consent or merges by nickname.
         """
+        if type(initial_timeline) is not bool:
+            raise ValueError("initial_timeline must be boolean")
         if identity.platform != "qq":
             raise ValueError("Automatic onboarding is restricted to QQ")
         bot_id = _nonempty(identity.channel_account_id, "channel_account_id")
@@ -128,6 +132,10 @@ class IdentityRepository:
                 VALUES(?,?,?,?,?,?,?)""",
                 ("qq", bot_id, user_id, person.person_id, "authenticated_channel",
                  "trusted_qq_private_message", int(time.time())))
+            if initial_timeline:
+                db.execute("""INSERT INTO memory_consents
+                    (person_id,purpose,granted_at,revoked_at) VALUES(?,?,?,NULL)""",
+                    (person.person_id, "timeline", int(time.time())))
         return person, True
 
     def get_person(self, person_id: str) -> Person | None:
