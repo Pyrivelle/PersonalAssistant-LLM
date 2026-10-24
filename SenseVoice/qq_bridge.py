@@ -997,7 +997,7 @@ class QqBridge:
                                     max_tools=self.planner_settings.agent_v2_max_tools,
                                     total_timeout=90.0,
                                 ).run(_next_plan, scope=current.kind,
-                                      registry=self.tool_registry,
+                                      registry=turn_registry,
                                       allow_tools=True, allow_mutation=False,
                                       allow_silence=allow_silence,
                                       already_waited=bool(state.planner_waits) or image_ref is not None)
