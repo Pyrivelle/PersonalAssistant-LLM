@@ -1005,6 +1005,13 @@ class QqBridge:
                                     log_event("QQ", "识图缓存", f"保存跳过 · {type(error).__name__}")
                         if image_meaning_store is not None and digest:
                             try:
+                                image_meaning_store.record_image(
+                                    image_meaning_scope, str(current.user_id),
+                                    stable_message_id, digest)
+                            except (OSError, sqlite3.Error, ValueError):
+                                pass
+                        if image_meaning_store is not None and digest:
+                            try:
                                 clarified = image_meaning_store.lookup(image_meaning_scope, digest)
                                 if clarified:
                                     visual_context += (
@@ -1246,18 +1253,17 @@ class QqBridge:
                         meaning = explicit_image_meaning(message)
                         if meaning:
                             try:
-                                visual_scope = image_meaning_scope + ":"
-                                cache = VisionDescriptionStore(
-                                    PROJECT_DATA / "vision" / "descriptions.sqlite3")
-                                signature = (f"{settings.provider}:{settings.model}:"
-                                             f"{hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:12]}")
-                                previous_images = cache.recent(visual_scope, signature, 1)
-                                if previous_images:
+                                target_digest = image_meaning_store.latest_unambiguous(
+                                    image_meaning_scope, str(current.user_id))
+                                if target_digest:
                                     image_meaning_store.save(
-                                        image_meaning_scope, previous_images[-1].image_hash,
+                                        image_meaning_scope, target_digest,
                                         meaning, str(event_ids[0]) if event_ids else turn_id)
                                     log_event("QQ", "图片含义关联",
-                                              f"{current.scope} · 用户明确解释已关联最近图片")
+                                              f"{current.scope} · 明确解释关联到唯一近期图片")
+                                else:
+                                    log_event("QQ", "图片含义关联",
+                                              f"{current.scope} · 无唯一近期图片，跳过自动关联")
                             except (OSError, sqlite3.Error) as error:
                                 log_event("QQ", "图片含义关联", f"跳过 · {type(error).__name__}")
                     notes = state.context.prompt()
