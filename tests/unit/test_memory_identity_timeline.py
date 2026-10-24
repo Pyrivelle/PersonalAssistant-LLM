@@ -38,6 +38,45 @@ class IdentityTimelineTests(unittest.TestCase):
             external_conversation_id="private:account-01",
         )
 
+    def test_auto_qq_onboarding_is_idempotent_and_does_not_grant_consent(self):
+        source = ChannelIdentity("qq", "10001", "20002")
+        other = ChannelIdentity("qq", "10001", "20003")
+        other_bot = ChannelIdentity("qq", "10002", "20002")
+        first, created = self.people.ensure_qq_person(source, "梨愿")
+        self.assertTrue(created)
+        self.assertEqual(first.display_name, "梨愿")
+        again, created = self.people.ensure_qq_person(source, "改过的昵称")
+        self.assertFalse(created)
+        self.assertEqual(first.person_id, again.person_id)
+        self.assertEqual(again.display_name, "梨愿")
+        second, _ = self.people.ensure_qq_person(other, "梨愿")
+        third, _ = self.people.ensure_qq_person(other_bot, "梨愿")
+        self.assertEqual(len({first.person_id, second.person_id, third.person_id}), 3)
+        self.assertEqual(self.people.resolve(source), first.person_id)
+        self.assertFalse(self.people.has_consent(first.person_id, "timeline"))
+        self.assertFalse(self.people.has_consent(first.person_id, "curation"))
+        with self.assertRaises(PermissionError):
+            self.timeline.open_private(
+                agent_id="zhuangfy-main", identity=source,
+                external_conversation_id="private:20002")
+
+    def test_auto_qq_onboarding_rejects_non_qq_or_forged_ids(self):
+        for claim in (
+            ChannelIdentity("desktop", "local", "member"),
+            ChannelIdentity("qq", "00", "100"),
+            ChannelIdentity("qq", "100", "100"),
+            ChannelIdentity("qq", "100", "-5"),
+        ):
+            with self.assertRaises(ValueError):
+                self.people.ensure_qq_person(claim, "同名")
+        existing = self.people.create_person("管理员指定姓名")
+        trusted = ChannelIdentity("qq", "200", "300")
+        self.people.link_verified(existing.person_id, trusted, PROOF)
+        reused, created = self.people.ensure_qq_person(trusted, "不同昵称")
+        self.assertFalse(created)
+        self.assertEqual(reused.person_id, existing.person_id)
+        self.assertEqual(reused.display_name, "管理员指定姓名")
+
     def test_names_are_not_person_id_and_unknown_identities_are_not_auto_merged(self):
         self.assertNotEqual(self.alice.person_id, self.bob.person_id)
         self.assertEqual(self.people.get_person(self.alice.person_id).display_name, "同名")
