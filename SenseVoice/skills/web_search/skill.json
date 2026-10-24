@@ -1,6 +1,6 @@
 {
   "id": "web_search",
-  "name": "联网搜索（Brave）",
+  "name": "联网搜索（DeepSeek）",
   "version": "0.1.0",
   "description": "按需搜索公开网页，返回来源标题、链接和简短摘要；不打开任意网页，也不访问用户本地资料。",
   "api_version": 1,
