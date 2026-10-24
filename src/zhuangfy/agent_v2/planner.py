@@ -223,7 +223,7 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
         routes=routes, system_prompt=prompt, visual_context=visual_context[:1500],
         context_notes=feedback, trace_id=trace_id,
         response_validator=validator,
-        planner_schema=DECISION_SCHEMA,
+        **({"planner_schema": DECISION_SCHEMA} if protocol_v3 else {}),
     )
     decision = (parse_plan_v3(raw, allow_voice=allow_voice, allowed_tools=tuple(names))
                 if protocol_v3 else parse_plan_v2(raw, allow_voice=allow_voice))
