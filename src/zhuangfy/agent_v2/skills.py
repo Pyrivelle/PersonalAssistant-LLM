@@ -31,6 +31,8 @@ class SkillManifest:
     root: Path
     entry: str = "skill.py"
     api_version: int = 1
+    core_tool: bool = False
+    keywords: tuple[str, ...] = ()
 
     @classmethod
     def read(cls, directory: Path) -> "SkillManifest":
