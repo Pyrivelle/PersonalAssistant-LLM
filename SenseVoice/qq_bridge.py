@@ -1089,6 +1089,11 @@ class QqBridge:
                                       on_event=_agent_event)
                                 plan, action = result.plan, result.action
                                 tool_feedback = result.tool_feedback()
+                                audit = result.decision
+                                log_event("Agent", "行为审计",
+                                          f"{current.scope} · 请求={audit.requested_action} · "
+                                          f"执行={audit.executed_action} · 原因={audit.reason_code} · "
+                                          f"结果={audit.outcome}")
                                 for search_number, receipt in enumerate(
                                     (item for item in result.receipts
                                      if item.name == "web_search.search"), start=1
