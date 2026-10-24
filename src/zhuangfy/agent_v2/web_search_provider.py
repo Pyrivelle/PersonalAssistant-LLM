@@ -40,11 +40,15 @@ def _safe_result_url(raw: object) -> str:
         return ""
     try:
         parts = urlsplit(raw)
+        # Parsing a malformed port may raise ValueError; never crash the
+        # whole search on a single untrusted result URL.
+        hostname = parts.hostname
+        port = parts.port
     except ValueError:
         return ""
     # Links are displayed to the user but never visited by this Skill.
-    if (parts.scheme != "https" or not parts.hostname or parts.username
-            or parts.password or parts.port not in (None, 443)
+    if (parts.scheme != "https" or not hostname or parts.username
+            or parts.password or port not in (None, 443)
             or parts.hostname in ("localhost", "127.0.0.1", "::1")
             or parts.hostname.endswith((".local", ".internal"))):
         return ""
