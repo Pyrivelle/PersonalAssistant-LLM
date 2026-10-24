@@ -252,6 +252,8 @@ class TaskEventStore:
                               person_id=person_id, scope=scope)
             source = self._source(db, task=task, identity=identity,
                                   entry_id=source_entry_id)
+            if source is None or not CORRECTION_CUES.search(source["content"]):
+                raise ValueError("Correction needs an explicit user correction statement")
             prior = db.execute("""
                 SELECT ev.event_id,e.sequence FROM task_progress_events ev
                 JOIN timeline_entries e ON e.entry_id=ev.source_entry_id
