@@ -6,11 +6,11 @@
 
 配置要求：agent_v2_enabled=true、agent_v2_tools_enabled=true、agent_v3_enabled=true；Memory Service 和 QQ Bridge 已启用，并成功保存了当轮 QQ 私聊用户的原始文本。
 
-- QQ Bridge 先使用可信入站事件中的 Bot QQ ID 与用户 QQ ID 建立当前轮 SkillPrincipal。只有已经成功获得 Memory Service 写入回执才临时注册 task_memory.search。
+- QQ Bridge 先使用可信入站事件中的 Bot QQ ID 与用户 QQ ID 建立当前轮 SkillPrincipal。只有已经成功获得 Memory Service 写入回执才临时注册 task_memory.search 与 memory.search 两个独立只读能力。
 - 本轮独立注册表在已启用工具基础上追加临时 Memory 工具；全局共享 Registry 不持有当前人物，也不会因为其他 QQ 用户进入同一进程导致身份串线。
-- 新工具是 deferred：只有用户文本与上次、之前、记得、继续、项目进展等明显指向历史的关键词相关时才向 Planner 展示完整 Schema。即便展示也不代表必须调用，Planner 可以直接回复。
-- Skill 模型参数仅 query（2..240 字符）和可选 limit（1..2），不暴露可模型编辑的 person_id、sender_id、bot_id、device_id。
-- 调用端执行前做参数校验；Memory Service 再校验渠道身份与授权。实际读历史共同行动使用已有 task_recall，只找可信建立来源关联的任务，返回经过约束的起点、用户报告进展和候选历史片段。若尚没有任务关联，正常返回未发现，禁止编造。
+- 两个工具都是 deferred：只有用户文本与上次、之前、记得、继续、项目进展等明显指向历史的关键词相关时才向 Planner 展示完整 Schema。即便展示也不代表必须调用，Planner 可以直接回复。
+- Skill 模型参数仅 query（2..240 字符）和可选 limit（任务搜索 1..2；长期记忆搜索 1..3），不暴露可模型编辑的 person_id、sender_id、bot_id、device_id。
+- 调用端执行前做参数校验；Memory Service 再校验渠道身份与授权。任务技能使用已有 task_recall，只找可信建立来源关联的任务，返回经过约束的起点、用户报告进展和候选历史片段；长期记忆技能使用已有 recall，由 Memory Service 严格检查单独的 Curator 授权，未授权调用返回失败。没有命中时不编造过去经历。
 - V3 的 QQ Replyer 不再主动无条件查询 curated memory 和 task recall；只有 Planner 真正选择 Memory Skill 才执行查询。V2 沿用之前自动召回逻辑。
 - 由于仍然是旧的 ToolReceipt，输出截断为 450 字以内，供下一轮 Planner/Replyer 参考；不能把其内容当成新的系统指令，也不能凭用户自述的完成情况声称已经独立核实。
 
