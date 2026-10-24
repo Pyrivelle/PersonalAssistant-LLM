@@ -66,7 +66,14 @@ class AuthorizedToolRegistry:
     def public_names(self, *, scope: str, allow_mutation: bool = False) -> tuple[str, ...]:
         return tuple(name for name in self._tools if self.available(name, scope=scope, allow_mutation=allow_mutation))
 
-    def prompt_catalog(self, *, scope: str, allow_mutation: bool = False) -> str:
+    def discovery_bindings(self, *, scope: str,
+                           allow_mutation: bool = False) -> tuple[ToolBinding, ...]:
+        return tuple(binding for binding in self._tools.values()
+                     if self.available(binding.name, scope=scope,
+                                       allow_mutation=allow_mutation))
+
+    def prompt_catalog(self, *, scope: str, allow_mutation: bool = False,
+                       names: tuple[str, ...] | None = None) -> str:
         """Only host-registered, authorized tool schemas are shown to the model."""
         import json
         lines = []
