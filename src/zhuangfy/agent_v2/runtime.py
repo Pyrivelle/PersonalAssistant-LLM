@@ -35,6 +35,8 @@ class ToolBinding:
     mutating: bool = False
     description: str = ""
     parameters: dict = field(default_factory=dict)
+    visibility: Literal["core", "deferred"] = "core"
+    discovery_terms: tuple[str, ...] = ()
 
 
 class AuthorizedToolRegistry:
