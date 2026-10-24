@@ -879,6 +879,7 @@ class QqBridge:
                     # The newer derived stores also contain conversation-linked
                     # personal evidence; erasure must cover them as well.
                     evidence_scope = f"qq:{self.bot_id}:private:{current.user_id}"
+                    derived_erasure_failures = []
                     for store_name, store_path, erase_arg in (
                         ("证据摘要", PROJECT_DATA / "evidence" / "context.sqlite3",
                          evidence_scope),
@@ -899,6 +900,7 @@ class QqBridge:
                             else:
                                 VisionDescriptionStore(store_path).erase_conversation(erase_arg)
                         except (OSError, sqlite3.Error) as error:
+                            derived_erasure_failures.append(store_name)
                             log_event("QQ", "派生记忆清理失败",
                                       f"{store_name} · {type(error).__name__}")
                     state.context = DialogueContext()
@@ -948,7 +950,14 @@ class QqBridge:
                                       f"{store_type.__name__} · {type(error).__name__}")
                     if erase_failed:
                         remote_notice += " 注意：部分图片或工具证据未能确认清除，请在服务管理中检查。"
-                    await self.send_reply(current, "已清除这个 QQ 账号在本机器人中的会话与成员记忆。" + remote_notice)
+                    local_notice = (
+                        " 注意：部分派生证据（" + "、".join(derived_erasure_failures)
+                        + "）未能确认删除，请检查本地数据库。"
+                        if derived_erasure_failures else "")
+                    await self.send_reply(
+                        current,
+                        "已处理这个 QQ 账号在本机器人中的会话与成员记忆。"
+                        + local_notice + remote_notice)
                     continue
                 memory_ref = None
                 memory_claim = None
