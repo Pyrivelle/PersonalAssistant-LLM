@@ -334,6 +334,39 @@ class HttpMemoryTests(unittest.TestCase):
             self.client.task_recall(a, "OSG遮挡剔除")
         self.assertEqual(e.exception.status, 403)
 
+    def test_task_continuity_curated_candidates_require_separate_consent(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        self.core.auto_qq_timeline = True
+        identity = MemoryChannel("qq", "10001", "20007")
+        self.client.onboard_qq(identity, "交流者")
+        origin = self.client.receive(
+            identity, chat_id="private:20007", message_id="origin-cur",
+            content="之前研究过OSG港口的遮挡剔除优化")
+        self.admin.admin_bind_goal_origin(
+            identity, task_id="goal-cur", owner_scope="qq:10001:private:20007",
+            source_entry_id=origin["entry_id"])
+        person = self.admin.list_people()[0]
+        fabricated_hit = SimpleNamespace(memory=SimpleNamespace(
+            memory_id="some-curated-id", content="用户计划检查OSG遮挡剔除是否完成",
+            event_state="completed", source_entry_ids=(origin["entry_id"],)))
+        with patch.object(self.core.retriever, "search",
+                          return_value=[fabricated_hit]) as retrieve:
+            unapproved = self.client.task_recall(identity, "OSG遮挡剔除")
+            retrieve.assert_not_called()
+        self.assertEqual(unapproved["tasks"][0]["curated_candidates"], [])
+        self.admin.admin_consent(person["person_id"], "curation", True)
+        with patch.object(self.core.retriever, "search",
+                          return_value=[fabricated_hit]) as retrieve:
+            approved = self.client.task_recall(identity, "OSG遮挡剔除")
+            retrieve.assert_called_once()
+        item = approved["tasks"][0]
+        self.assertEqual(item["task_status"], "unverified")
+        self.assertEqual(item["curated_candidates"][0]["relation"],
+                         "semantic_candidate")
+        self.assertEqual(item["curated_candidates"][0]["event_state"], "completed")
+
     def test_task_continuity_does_not_auto_create_or_mark_complete(self):
         self.core.auto_qq_timeline = True
         claim = MemoryChannel("qq", "10001", "20006")
