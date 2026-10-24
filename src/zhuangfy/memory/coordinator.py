@@ -272,23 +272,66 @@ class MemoryCore:
         return self.curated.schedule_due()
 
     def list_people(self) -> list[dict]:
+        """Administrator account roster with local-retention and Curator status.
+
+        No raw transcript content or model prompts are returned by this view.
+        """
         with self.database.connection() as db:
             people = [dict(row) for row in db.execute(
                 "SELECT person_id,display_name,created_at FROM persons ORDER BY created_at,person_id").fetchall()]
             identities = db.execute(
                 "SELECT person_id,platform,channel_account_id,external_user_id "
                 "FROM identities ORDER BY platform,channel_account_id,external_user_id").fetchall()
+            consents = db.execute(
+                "SELECT person_id,purpose,granted_at,revoked_at FROM memory_consents").fetchall()
+            transcripts = db.execute("""
+                SELECT c.person_id, COUNT(*) AS message_count
+                FROM timeline_entries e
+                JOIN private_conversations c ON c.conversation_id=e.conversation_id
+                WHERE e.speaker_role='user' AND e.state='received'
+                GROUP BY c.person_id
+            """).fetchall()
+            memories = db.execute("""
+                SELECT person_id, COUNT(*) AS memory_count FROM curated_memories
+                WHERE agent_id=? AND status='active' GROUP BY person_id
+            """, (self.agent_id,)).fetchall()
+            jobs = db.execute("""
+                SELECT person_id, status, COUNT(*) AS total FROM reflection_jobs
+                WHERE agent_id=? GROUP BY person_id,status
+            """, (self.agent_id,)).fetchall()
         by_person = {person["person_id"]: person for person in people}
         for person in people:
             person["identities"] = []
-        for identity in identities:
-            person = by_person.get(identity["person_id"])
+            person["timeline_enabled"] = False
+            person["curation_enabled"] = False
+            person["timeline_revoked"] = False
+            person["message_count"] = 0
+            person["memory_count"] = 0
+            person["jobs"] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
+        for item in identities:
+            person = by_person.get(item["person_id"])
             if person is not None:
                 person["identities"].append({
-                    "platform": identity["platform"],
-                    "channel_account_id": identity["channel_account_id"],
-                    "external_user_id": identity["external_user_id"],
+                    "platform": item["platform"],
+                    "channel_account_id": item["channel_account_id"],
+                    "external_user_id": item["external_user_id"],
                 })
+        for consent in consents:
+            person = by_person.get(consent["person_id"])
+            if person is not None:
+                enabled = consent["granted_at"] is not None and consent["revoked_at"] is None
+                person[consent["purpose"] + "_enabled"] = enabled
+                if consent["purpose"] == "timeline":
+                    person["timeline_revoked"] = consent["revoked_at"] is not None
+        for row in transcripts:
+            if row["person_id"] in by_person:
+                by_person[row["person_id"]]["message_count"] = row["message_count"]
+        for row in memories:
+            if row["person_id"] in by_person:
+                by_person[row["person_id"]]["memory_count"] = row["memory_count"]
+        for row in jobs:
+            if row["person_id"] in by_person:
+                by_person[row["person_id"]]["jobs"][row["status"]] = row["total"]
         return people
 
     def admin_create_person(self, display_name: str) -> dict:

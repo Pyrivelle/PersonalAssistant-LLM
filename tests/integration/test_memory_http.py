@@ -147,6 +147,35 @@ class HttpMemoryTests(unittest.TestCase):
                                 message_id="m-2", content="删除后再次发消息")
         self.assertEqual(e.exception.status, 403)
 
+    def test_admin_roster_displays_per_person_capture_and_curator_policy(self):
+        self.core.auto_qq_timeline = True
+        channel = MemoryChannel("qq", "200", "300")
+        self.client.onboard_qq(channel, "测试用户")
+        roster = self.admin.list_people()
+        self.assertEqual(len(roster), 1)
+        person = roster[0]
+        self.assertEqual(person["display_name"], "测试用户")
+        self.assertTrue(person["timeline_enabled"])
+        self.assertFalse(person["timeline_revoked"])
+        self.assertFalse(person["curation_enabled"])
+        self.assertEqual(person["message_count"], 0)
+        self.assertEqual(person["memory_count"], 0)
+        self.assertEqual(person["jobs"]["pending"], 0)
+        self.client.receive(channel, chat_id="private:300",
+                            message_id="m1", content="你好")
+        roster = self.admin.list_people()[0]
+        self.assertEqual(roster["message_count"], 1)
+        self.assertFalse(roster["curation_enabled"])
+        self.admin.admin_consent(person["person_id"], "curation", True)
+        self.assertTrue(self.admin.list_people()[0]["curation_enabled"])
+        self.admin.admin_consent(person["person_id"], "curation", False)
+        self.admin.admin_consent(person["person_id"], "timeline", False)
+        self.client.onboard_qq(channel, "仍然是测试用户")
+        latest = self.admin.list_people()[0]
+        self.assertFalse(latest["timeline_enabled"])
+        self.assertTrue(latest["timeline_revoked"])
+        self.assertFalse(latest["curation_enabled"])
+
     def test_verified_channel_identity_and_historical_turn(self):
         a, aid = self._person("甲", "alice")
         b, bid = self._person("同名", "bob")

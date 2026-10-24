@@ -177,7 +177,7 @@ def main() -> None:
         "ZHUANGFY_MEMORY_DIR") else Path(__file__).resolve().parents[3] / "data" / "memory_core"
     port = int(os.environ.get("ZHUANGFY_MEMORY_PORT", "8769"))
     embedding = FastEmbedProvider(cache_dir=root / "embedding_cache")
-    auto_capture = os.environ.get("ZHUANGFY_MEMORY_QQ_AUTO_TIMELINE", "0")
+    auto_capture = os.environ.get("ZHUANGFY_MEMORY_QQ_AUTO_TIMELINE", "1")
     if auto_capture not in {"0", "1"}:
         raise ValueError("ZHUANGFY_MEMORY_QQ_AUTO_TIMELINE must be 0 or 1")
     core = MemoryCore(root, embedding=embedding, curator_model=configured_curator(),
