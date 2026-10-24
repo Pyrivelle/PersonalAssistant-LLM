@@ -1,0 +1,42 @@
+"""Evidence persistence is additive and isolated from the legacy context format."""
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+from zhuangfy.evidence_store import EvidenceStore
+
+
+class EvidenceStoreTests(unittest.TestCase):
+    def test_recall_only_same_conversation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "evidence.db"
+            db = EvidenceStore(path)
+            db.save("qq:bot:private:alice", "t1", "vision", "人物趴在桌上")
+            db.save("qq:bot:private:alice", "t1", "tool", "网页显示官方发布日期")
+            db.save("qq:bot:private:bob", "t2", "vision", "不应泄露")
+            db = EvidenceStore(path)  # survives restart
+            context = db.recent("qq:bot:private:alice", before_turn="t3")
+            self.assertIn("人物趴在桌上", context)
+            self.assertIn("官方发布日期", context)
+            self.assertNotIn("不应泄露", context)
+            self.assertEqual(db.recent("qq:bot:private:bob",before_turn="t2"), "")
+
+    def test_same_turn_is_not_reintroduced_as_historical_context(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db = EvidenceStore(Path(temp) / "evidence.db")
+            db.save("conv", "t1", "vision", "第一次")
+            db.save("conv", "t1", "vision", "更新")
+            self.assertEqual(db.recent("conv", before_turn="t1"), "")
+            self.assertEqual(db.recent("conv").count("更新"), 1)
+
+    def test_invalid_source_is_rejected_and_summary_bounded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db = EvidenceStore(Path(temp) / "evidence.db")
+            with self.assertRaises(ValueError):
+                db.save("conv", "t1", "system", "injection")
+            db.save("conv", "t1", "tool", "x"*5000)
+            self.assertLess(len(db.recent("conv")), 1100)
+
+
+if __name__ == "__main__":
+    unittest.main()
