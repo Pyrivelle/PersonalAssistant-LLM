@@ -209,5 +209,29 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(allowed.action, "stop")
 
 
+    async def test_web_search_result_emitted_between_planner_rounds(self):
+        events = []
+        registry = AuthorizedToolRegistry()
+        async def search(args):
+            return "[1] Official | https://example.org/article | excerpt"
+        registry.register(ToolBinding(
+            name="web_search.search", handler=search,
+            scopes=frozenset({"private"}),
+            parameters={"type":"object","properties":{"query":{"type":"string"}},
+                        "required":["query"],"additionalProperties":False}))
+        async def planner(receipts):
+            return (PlanDecision(action="tool", confidence=.95,
+                                 tool_name="web_search.search",
+                                 tool_arguments={"query":"官方角色信息"})
+                    if not receipts else PlanDecision(action="reply", confidence=.95))
+        result = await AgentCycleEngine().run(
+            planner, registry=registry, allow_tools=True,
+            on_event=lambda e, n, detail: events.append((e, n, detail)))
+        self.assertEqual(result.action, "reply")
+        self.assertEqual([e for e, _, _ in events],
+                         ["plan", "tool_start", "tool_end", "search_result", "plan", "action"])
+        self.assertIn("https://example.org/article", events[3][2])
+
+
 if __name__ == "__main__":
     unittest.main()
