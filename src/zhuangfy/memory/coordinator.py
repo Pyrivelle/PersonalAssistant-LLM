@@ -139,6 +139,18 @@ class MemoryCore:
         entry = self.timeline.receive(
             conversation_id=conv.conversation_id, identity=ident,
             source_message_id=message_id, content=content)
+        # Auto-extract only source-bound, self-reported progress. Do not fail
+        # an already-committed private Timeline write if extraction is broken.
+        if ident.platform == "qq":
+            try:
+                self.task_events.observe(
+                    agent_id=self.agent_id, identity=ident,
+                    source_entry_id=entry.entry_id)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Task progress extraction skipped (Timeline persisted)",
+                    exc_info=True)
         return {"conversation_id": conv.conversation_id, "entry_id": entry.entry_id}
 
     def relationship_snapshot(self, *, identity: dict) -> dict:
