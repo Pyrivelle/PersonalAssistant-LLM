@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     env = os.environ.copy()
     env["MAIBOT_INSTANCE_DIR"] = str(target)
     env["PYTHONPATH"] = str(SOURCE) + os.pathsep + env.get("PYTHONPATH", "")
-    cmd = [str(args.python), "-m", "src.cli.tool", args.command,
+    cmd = [str(args.python.expanduser().resolve()), "-m", "src.cli.tool", args.command,
            "--directory", str(target)]
     print("运行原版 MaiBot；仅使用隔离实例，不共享 ZhuangFY 的记忆与对话库。", flush=True)
     return subprocess.call(cmd, cwd=SOURCE, env=env)
