@@ -26,7 +26,11 @@ from .vector import EmbeddingProvider, QdrantLocalIndex, VectorIndex
 class MemoryCore:
     def __init__(self, root: Path, *, embedding: EmbeddingProvider,
                  index: VectorIndex | None = None, curator_model=None,
-                 agent_id: str = "zhuangfy-main") -> None:
+                 agent_id: str = "zhuangfy-main",
+                 auto_qq_timeline: bool = False) -> None:
+        if type(auto_qq_timeline) is not bool:
+            raise ValueError("auto_qq_timeline must be boolean")
+        self.auto_qq_timeline = auto_qq_timeline
         self.agent_id = agent_id
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -60,6 +64,22 @@ class MemoryCore:
         if person_id is None:
             raise PermissionError("Unknown or unverified identity")
         return person_id
+
+    def onboard_qq(self, *, identity: dict, display_name: str) -> dict:
+        """Trust-boundary call: only a QQ adapter with the client token may invoke.
+
+        An explicit service policy may allow local Timeline retention for newly
+        created QQ people. Curator permission always remains ungranted.
+        """
+        person, created = self.identities.ensure_qq_person(
+            self._identity(identity), display_name,
+            initial_timeline=self.auto_qq_timeline)
+        return {
+            "created": created,
+            "display_name": person.display_name,
+            "timeline_consent": self.identities.has_consent(person.person_id, "timeline"),
+            "curation_consent": self.identities.has_consent(person.person_id, "curation"),
+        }
 
     def receive(self, *, identity: dict, chat_id: str, message_id: str, content: str) -> dict:
         ident = self._identity(identity)

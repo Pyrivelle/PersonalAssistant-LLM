@@ -25,7 +25,7 @@ from .vector import FastEmbedProvider
 
 MAX_REQUEST_BYTES = 18_000
 PUBLIC_ENDPOINTS = frozenset({
-    "/v1/receive", "/v1/recall", "/v1/complete-reply", "/v1/erase-self",
+    "/v1/onboard-qq", "/v1/receive", "/v1/recall", "/v1/complete-reply", "/v1/erase-self",
     "/v1/relationship/snapshot", "/v1/relationship/apply",
 })
 ADMIN_ENDPOINTS = frozenset({
@@ -93,7 +93,9 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                 payload = json.loads(self.rfile.read(size))
                 if not isinstance(payload, dict):
                     raise ValueError("JSON object required")
-                if path == "/v1/receive":
+                if path == "/v1/onboard-qq":
+                    result = core.onboard_qq(**payload)
+                elif path == "/v1/receive":
                     result = core.receive(**payload)
                 elif path == "/v1/recall":
                     result = core.recall(**payload)
@@ -175,7 +177,11 @@ def main() -> None:
         "ZHUANGFY_MEMORY_DIR") else Path(__file__).resolve().parents[3] / "data" / "memory_core"
     port = int(os.environ.get("ZHUANGFY_MEMORY_PORT", "8769"))
     embedding = FastEmbedProvider(cache_dir=root / "embedding_cache")
-    core = MemoryCore(root, embedding=embedding, curator_model=configured_curator())
+    auto_capture = os.environ.get("ZHUANGFY_MEMORY_QQ_AUTO_TIMELINE", "0")
+    if auto_capture not in {"0", "1"}:
+        raise ValueError("ZHUANGFY_MEMORY_QQ_AUTO_TIMELINE must be 0 or 1")
+    core = MemoryCore(root, embedding=embedding, curator_model=configured_curator(),
+                      auto_qq_timeline=(auto_capture == "1"))
     stop_worker = threading.Event()
 
     def background() -> None:

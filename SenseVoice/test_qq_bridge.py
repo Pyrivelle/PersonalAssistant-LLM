@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
@@ -21,6 +21,52 @@ from turn_planner import PlannerSettings, TurnPlan
 from zhuangfy.channels.qq.images import ImageReference, _allowed_url, _encode_jpeg
 
 
+
+class QqMemoryCaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_each_private_text_event_has_its_own_memory_receipt(self):
+        # Calls the same function scheduled by accept() before debounce.
+        bridge = object.__new__(QqBridge)
+        bridge.memory_client = Mock()
+        bridge.memory_client.onboard_qq.return_value = {
+            "created": True, "timeline_consent": True,
+            "curation_consent": False,
+        }
+        bridge.memory_client.receive.side_effect = [
+            {"conversation_id": "conv", "entry_id": "entry-1"},
+            {"conversation_id": "conv", "entry_id": "entry-2"},
+        ]
+        bridge._memory_onboarded_accounts = set()
+        bridge._memory_timeline_accounts = set()
+        bridge._memory_capture_locks = {}
+        one = Incoming("private", 42, None, "m1", "第一句话", nickname="梨愿")
+        two = Incoming("private", 42, None, "m2", "第二句话", nickname="梨愿")
+        first, second = await asyncio.gather(
+            bridge._capture_private_message(one, bot_id=88),
+            bridge._capture_private_message(two, bot_id=88),
+        )
+        self.assertEqual(first["entry_id"], "entry-1")
+        self.assertEqual(second["entry_id"], "entry-2")
+        self.assertEqual(bridge.memory_client.onboard_qq.call_count, 1)
+        self.assertEqual([c.kwargs["message_id"] for c in
+                          bridge.memory_client.receive.call_args_list],
+                         ["m1", "m2"])
+
+    async def test_unconsented_private_member_is_created_but_not_captured(self):
+        bridge = object.__new__(QqBridge)
+        bridge.memory_client = Mock()
+        bridge.memory_client.onboard_qq.return_value = {
+            "created": True, "timeline_consent": False,
+            "curation_consent": False,
+        }
+        bridge._memory_onboarded_accounts = set()
+        bridge._memory_timeline_accounts = set()
+        bridge._memory_capture_locks = {}
+        msg = Incoming("private", 42, None, "m3", "不能存储", nickname="梨愿")
+        self.assertIsNone(await bridge._capture_private_message(msg, bot_id=88))
+        bridge.memory_client.receive.assert_not_called()
+
+
+
 class QqParsingTests(unittest.TestCase):
     def test_initial_l0_is_private_only_and_requires_allowlist(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -30,7 +76,7 @@ class QqParsingTests(unittest.TestCase):
             settings = QqSettings.load(path)
             self.assertEqual(starting_relationship_tier(settings, "private", 42), "L0")
             self.assertEqual(starting_relationship_tier(settings, "group", 42), "unassigned")
-            self.assertEqual(starting_relationship_tier(settings, "private", 43), "unassigned")
+            self.assertEqual(starting_relationship_tier(settings, "private", 43), "L0")
             path.write_text(json.dumps({"allowed_private_ids": [42],
                                         "initial_l0_private_ids": [43]}), encoding="utf-8")
             with self.assertRaises(ValueError):
@@ -45,6 +91,29 @@ class QqParsingTests(unittest.TestCase):
     def setUp(self):
         self.settings = QqSettings(allowed_private_ids=frozenset({42}),
                                    allowed_group_ids=frozenset({9}))
+
+    def test_open_private_access_is_explicit_and_preserves_qq_nickname(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            path.write_text(json.dumps({"allowed_private_ids": [],
+                                        "allow_all_private": True}), encoding="utf-8")
+            settings = QqSettings.load(path)
+        private = {"post_type": "message", "message_type": "private",
+                   "user_id": 42, "message_id": 123,
+                   "sender": {"nickname": "梨愿"},
+                   "message": [{"type": "text", "data": {"text": "你好"}}]}
+        incoming = parse_message(private, 88, settings)
+        self.assertIsNotNone(incoming)
+        self.assertEqual(incoming.nickname, "梨愿")
+        self.assertEqual(incoming.user_id, 42)
+        self.assertIsNone(parse_message({**private, "user_id": 88}, 88, settings))
+        self.assertIsNone(parse_message({**private, "message_type": "group",
+                                         "group_id": 7}, 88, settings))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            path.write_text(json.dumps({"allow_all_private": "yes"}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                QqSettings.load(path)
 
     def test_private_allowlist_and_group_mention(self):
         private = {"post_type": "message", "message_type": "private", "user_id": 42,

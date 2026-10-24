@@ -18,8 +18,8 @@ python -m zhuangfy.memory.http_server
 管理员客户端需要使用 `ZHUANGFY_MEMORY_ADMIN_TOKEN`。应用内管理界面、可信本地配置流程可以完成：
 
 1. `admin_create_person(display_name)` 创建内部 Person UUID。
-2. 人工核验账号归属后，`admin_link(person_id, MemoryChannel("qq", bot_id, qq_id), "审核凭据编号")` 关联 QQ 账号。
-3. 分别 `admin_consent(person_id, "timeline", True)`、`admin_consent(person_id, "curation", True)` 启用长期保存和整理。
+2. 对从可信 OneBot 接入的真实 QQ 私聊，Bridge 可用客户端令牌自动建 Person 并关联 QQ 身份；离线或其它渠道仍需人工核验账号归属后，使用 `admin_link(person_id, MemoryChannel("qq", bot_id, qq_id), "审核凭据编号")` 关联账号。
+3. 默认使用 `admin_consent(person_id, "timeline", True)` 显式启用聊天 Timeline；若管理员配置 QQ 自动留存，仅首次新建的 QQ 人物自动开启 Timeline。无论如何，`admin_consent(person_id, "curation", True)` 始终需要管理员逐人批准才可启用长期记忆提炼；修改授权后重启 QQ Bridge 刷新缓存。
 
 桌面语音需另行关联 `MemoryChannel("desktop", "local", ZHUANGFY_MEMORY_DESKTOP_USER_ID)` 到同一个 Person UUID。**昵称、用户名和自称都不能作为账户合并证明**；API 只能把通过可信客户端验证的 identity 绑定到 Person。
 
@@ -34,7 +34,7 @@ $env:ZHUANGFY_MEMORY_TOKEN = "与服务端一致的客户端令牌"
 $env:ZHUANGFY_MEMORY_QQ = "1"
 ```
 
-仅 QQ 白名单**私聊**、已验证账号、经授权人物可写入。单个有稳定 OneBot message ID 的真实消息写入 Timeline，合并的多段 QQ 输入不冒充某一条真实消息。只有 QQ 全部回复气泡成功确认发送后，助手回复才标记 delivered。群聊与尚未验明的人不会自动建档。设置 `ZHUANGFY_MEMORY_QQ=1` 后，QQ 桥接不再读取、写入或反思旧 `qq_members.sqlite3`；旧数据保留但尚未迁移。新服务临时离线时也不会回退到旧库。
+QQ **通过准入的私聊**首次发送消息时才会自动创建或复用 Person（不是加入白名单时）。昵称仅作首次展示名，唯一渠道身份为 `(qq, bot_id, qq_user_id)`；同名账号不合并。默认只建档，不自动保存 Timeline。如运行 Memory Service 的管理员设置 `ZHUANGFY_MEMORY_QQ_AUTO_TIMELINE=1`，**仅首次创建的新 QQ 人物**可同步开启本地私聊文本 Timeline 留存；既有账号不补授权限，曾撤销或执行 `/forget_me` 的人也绝不自动重授。原始私聊单条消息在准入后、消息防抖和回复限额前单独记录（图片二进制不包含在文本 Timeline 中），已确认发送的机器人回复同样按原回执记入。该设置需要服务运营者事先明确告知聊天者本地保存政策、提供删除入口，并保护本地数据库和备份。**Curator 长期记忆提炼仍须逐人管理员显式授权 `curation`，默认不启用**，即使有 Timeline 也不会自动消耗云端提炼 Token。QQ 自然交流默认使用保守 L0 表达参考，更高关系档位仍须经过原 R1 注册与授权。跨微信/桌面身份统一留待专门的验证流程。单个有稳定 OneBot message ID 的真实消息写入 Timeline，合并的多段 QQ 输入不冒充某一条真实消息。只有 QQ 全部回复气泡成功确认发送后，助手回复才标记 delivered。群聊与尚未验明的人不会自动建档。设置 `ZHUANGFY_MEMORY_QQ=1` 后，QQ 桥接不再读取、写入或反思旧 `qq_members.sqlite3`；旧数据保留但尚未迁移。新服务临时离线时也不会回退到旧库。
 
 桌面语音：
 

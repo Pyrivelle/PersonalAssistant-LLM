@@ -1,6 +1,7 @@
 {
   "ws_url": "ws://127.0.0.1:3001/",
   "allowed_private_ids": [],
+  "allow_all_private": false,
   "allowed_group_ids": [],
   "voice_private_ids": [],
   "initial_l0_private_ids": [],
