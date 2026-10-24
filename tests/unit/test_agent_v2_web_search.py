@@ -122,7 +122,7 @@ class SearchActivationTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_skill_activation_key_and_deferred_discovery(self):
         root = Path(__file__).resolve().parents[2] / "SenseVoice" / "skills"
         self.assertTrue((root / "web_search" / "skill.json").is_file())
-        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_SEARCH_API_KEY": ""}):
+        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_API_KEY": ""}):
             statuses = SkillManager(root, {"web_search": SkillPolicy(enabled=True)}).discover()
             entry = next(x for x in statuses if x.id == "web_search")
             self.assertTrue(entry.enabled)
@@ -133,7 +133,7 @@ class SearchActivationTests(unittest.IsolatedAsyncioTestCase):
             status = next(x for x in mgr.statuses if x.id == "web_search")
             self.assertFalse(status.loaded)
             self.assertNotIn("web_search.search", registry.public_names(scope="private"))
-        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_SEARCH_API_KEY": "mock-key-1234567890"}):
+        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_API_KEY": "mock-key-1234567890"}):
             registry = AuthorizedToolRegistry()
             mgr = SkillManager(root, {"web_search": SkillPolicy(enabled=True)})
             mgr.activate(registry)
