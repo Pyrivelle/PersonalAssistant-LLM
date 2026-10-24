@@ -1031,6 +1031,7 @@ class QqBridge:
                                         "action": "行为确定",
                                         "tool_start": "工具开始",
                                         "tool_end": "工具结束",
+                                        "search_result": "联网搜索结果",
                                         "finalize": "循环结束",
                                     }
                                     log_event("Agent", labels.get(event, event),
