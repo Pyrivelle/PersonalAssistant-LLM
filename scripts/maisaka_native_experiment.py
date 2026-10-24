@@ -49,7 +49,11 @@ def verify_source(source: Path = SOURCE, *, enforce_pin: bool = True) -> None:
 
 def safe_instance_path(root: Path, source: Path, instance: Path) -> Path:
     instance = instance.expanduser().resolve()
-    for forbidden in (root.resolve(), source.resolve(), root / "private_state",
+    # The default isolated instance intentionally lives under the repository.
+    # Protect the repository root itself and specifically sensitive subtrees.
+    if instance == root.resolve():
+        raise ValueError("实验实例不能直接使用 ZhuangFY 仓库根目录")
+    for forbidden in (source, root / "private_state",
                       root / "conversation_data", root / "project_data"):
         forbidden = forbidden.resolve()
         if instance == forbidden or forbidden in instance.parents:
