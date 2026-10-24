@@ -458,6 +458,9 @@ class PartialReply:
     uncertain: bool = False
     voice: bool = False
     memory_ref: dict | None = None
+    evidence_scope: str = ""
+    visual_evidence: str = ""
+    tool_evidence: str = ""
 
 
 @dataclass
@@ -1425,23 +1428,16 @@ class QqBridge:
                     user_text=message, canonical_reply=cleaned, parts=tuple(parts),
                     delivered=0, emotion=candidate, settings=settings,
                     api_key=key, member_key=member_key, turn_id=turn_id, voice=use_voice,
-                    memory_ref=memory_ref)
+                    memory_ref=memory_ref,
+                    evidence_scope=evidence_scope,
+                    visual_evidence=visual_context,
+                    tool_evidence=tool_feedback)
                 count, uncertain = await self._send_reply_parts(
                     current, delivery.parts, voice=delivery.voice)
                 delivery.delivered = count
                 delivery.uncertain = uncertain
                 if delivery.delivered == len(delivery.parts):
                     await self._finish_reply(state, current, delivery)
-                    # Only preserve external evidence after the assistant reply
-                    # has been accepted; do not store failed/unsent turns.
-                    if evidence_store is not None:
-                        try:
-                            if visual_context:
-                                evidence_store.save(evidence_scope, turn_id, "vision", visual_context)
-                            if tool_feedback:
-                                evidence_store.save(evidence_scope, turn_id, "tool", tool_feedback)
-                        except (OSError, sqlite3.Error) as error:
-                            log_event("QQ", "证据保存", f"跳过 · {type(error).__name__}")
                 else:
                     # The remaining parts are kept in memory: explicit
                     # /continue never resends already acknowledged bubbles.
@@ -1498,6 +1494,20 @@ class QqBridge:
         log_event("QQ", "已投递",
                   f"turn:{delivery.turn_id} · {current.scope} · {len(delivery.parts)} 段")
         state.context.commit(delivery.user_text, delivery.canonical_reply, delivery.emotion)
+        # The same delivery finalizer runs after initial ACK and /continue.
+        # Evidence is saved only once the whole logical response is acknowledged.
+        if delivery.evidence_scope and (delivery.visual_evidence or delivery.tool_evidence):
+            try:
+                from zhuangfy.evidence_store import EvidenceStore
+                evidence = EvidenceStore(PROJECT_DATA / "evidence" / "context.sqlite3")
+                if delivery.visual_evidence:
+                    evidence.save(delivery.evidence_scope, delivery.turn_id,
+                                  "vision", delivery.visual_evidence)
+                if delivery.tool_evidence:
+                    evidence.save(delivery.evidence_scope, delivery.turn_id,
+                                  "tool", delivery.tool_evidence)
+            except (OSError, sqlite3.Error, ValueError) as error:
+                log_event("QQ", "证据保存", f"跳过 · {type(error).__name__}")
         if self.planner_settings.agent_v2_enabled:
             session = (f"qq:{self.bot_id}:group:{current.group_id}"
                        if current.kind == "group"
