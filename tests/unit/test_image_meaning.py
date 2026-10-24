@@ -38,6 +38,20 @@ class ImageMeaningTests(unittest.TestCase):
             db.record_image("private", "alice", "msg-3", b)
             self.assertEqual(db.latest_unambiguous("private", "alice"), "")
 
+    def test_repeated_same_image_is_unambiguous_and_erasure_is_scoped(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = ImageMeaningStore(Path(folder) / "meanings.db")
+            a = "a"*64
+            db.record_image("a", "alice", "msg-1", a)
+            db.record_image("a", "alice", "msg-2", a)
+            self.assertEqual(db.latest_unambiguous("a", "alice"), a)
+            db.save("a", a, "之前用于表达好感", "msg-3")
+            db.save("b", a, "别人使用这图的意思", "msg-4")
+            db.erase_conversation("a")
+            self.assertEqual(db.lookup("a", a), "")
+            self.assertEqual(db.latest_unambiguous("a", "alice"), "")
+            self.assertEqual(db.lookup("b", a), "别人使用这图的意思")
+
 
 if __name__ == "__main__":
     unittest.main()
