@@ -220,8 +220,10 @@ def _search_relation(previous: str, proposed: str) -> str:
     old, new = _search_terms(previous), _search_terms(proposed)
     if not old or not new:
         return "unknown"
-    overlap = len(old & new) / min(len(old), len(new))
-    if overlap >= .85:
+    common = len(old & new)
+    overlap = common / min(len(old), len(new))
+    similarity = common / len(old | new)
+    if similarity >= .72:
         return "duplicate"
     if overlap < .18:
         return "topic_drift"
