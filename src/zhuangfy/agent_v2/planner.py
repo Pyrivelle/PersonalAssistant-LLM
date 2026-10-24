@@ -225,7 +225,8 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
         response_validator=validator,
         planner_schema=DECISION_SCHEMA,
     )
-    decision = parse_plan_v2(raw, allow_voice=allow_voice)
+    decision = (parse_plan_v3(raw, allow_voice=allow_voice, allowed_tools=tuple(names))
+                if protocol_v3 else parse_plan_v2(raw, allow_voice=allow_voice))
     if relationship_behavior_r1 and decision.action == "reply":
         from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
         context = behavior_r1(settings.system_prompt, user_text,
