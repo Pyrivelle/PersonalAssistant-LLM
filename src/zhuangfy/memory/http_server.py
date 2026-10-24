@@ -95,7 +95,7 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     raise ValueError("JSON object required")
                 if path == "/v1/onboard-qq":
                     result = core.onboard_qq(**payload)
-                if path == "/v1/receive":
+                elif path == "/v1/receive":
                     result = core.receive(**payload)
                 elif path == "/v1/recall":
                     result = core.recall(**payload)
