@@ -990,7 +990,8 @@ class QqBridge:
                                           f"{current.scope} · 轮数={result.rounds} · 工具={len(result.receipts)} · 结果={result.reason or '完成'}")
                             else:
                                 plan = await asyncio.to_thread(
-                                    plan_turn_v2, settings, key, state.context.history, message,
+                                    (plan_turn_v3 if self.planner_settings.agent_v3_enabled else plan_turn_v2),
+                                    settings, key, state.context.history, message,
                                     allow_voice=allow_voice,
                                     visual_context=visual_context, trace_id=turn_id,
                                     character_core_v2=self.planner_settings.character_core_v2_enabled,
