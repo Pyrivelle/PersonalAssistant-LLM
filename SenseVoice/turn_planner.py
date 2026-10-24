@@ -76,6 +76,9 @@ class PlannerSettings:
         lore_v1 = raw.get("character_knowledge_v1_enabled", False)
         r1 = raw.get("relationship_behavior_r1_enabled", False)
         r1_evolution = raw.get("relationship_evolution_r1_enabled", False)
+        v3_enabled = raw.get("agent_v3_enabled", False)
+        if type(v3_enabled) is not bool or (v3_enabled and not v2_enabled):
+            raise ValueError("Planner V3 requires enabled Agent V2")
         if type(core_v2) is not bool:
             raise ValueError("CCV2 开关必须是布尔值")
         if type(lore_v1) is not bool:
