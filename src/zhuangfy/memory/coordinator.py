@@ -28,6 +28,9 @@ class MemoryCore:
                  index: VectorIndex | None = None, curator_model=None,
                  agent_id: str = "zhuangfy-main",
                  auto_qq_timeline: bool = False) -> None:
+        if type(auto_qq_timeline) is not bool:
+            raise ValueError("auto_qq_timeline must be boolean")
+        self.auto_qq_timeline = auto_qq_timeline
         self.agent_id = agent_id
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
