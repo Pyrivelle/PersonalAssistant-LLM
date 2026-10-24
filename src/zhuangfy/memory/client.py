@@ -94,7 +94,7 @@ class MemoryClient:
         })
 
     def task_recall(self, identity: MemoryChannel, query: str,
-                    limit: int = 2) -> dict:
+                    limit: int = 2, exclude_entry_id: str = "") -> dict:
         return self.request("/v1/task-recall", {
             "identity": identity.as_payload(), "query": query, "limit": limit,
         })
