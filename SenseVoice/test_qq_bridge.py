@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
@@ -19,6 +19,52 @@ from qq_bridge import (Conversation, Incoming, QqBridge, QqSettings, ReplyLimite
                        parse_message, spoken_reply, starting_relationship_tier)
 from turn_planner import PlannerSettings, TurnPlan
 from zhuangfy.channels.qq.images import ImageReference, _allowed_url, _encode_jpeg
+
+
+
+class QqMemoryCaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_each_private_text_event_has_its_own_memory_receipt(self):
+        # Calls the same function scheduled by accept() before debounce.
+        bridge = object.__new__(QqBridge)
+        bridge.memory_client = Mock()
+        bridge.memory_client.onboard_qq.return_value = {
+            "created": True, "timeline_consent": True,
+            "curation_consent": False,
+        }
+        bridge.memory_client.receive.side_effect = [
+            {"conversation_id": "conv", "entry_id": "entry-1"},
+            {"conversation_id": "conv", "entry_id": "entry-2"},
+        ]
+        bridge._memory_onboarded_accounts = set()
+        bridge._memory_timeline_accounts = set()
+        bridge._memory_capture_locks = {}
+        one = Incoming("private", 42, None, "m1", "第一句话", nickname="梨愿")
+        two = Incoming("private", 42, None, "m2", "第二句话", nickname="梨愿")
+        first, second = await asyncio.gather(
+            bridge._capture_private_message(one, bot_id=88),
+            bridge._capture_private_message(two, bot_id=88),
+        )
+        self.assertEqual(first["entry_id"], "entry-1")
+        self.assertEqual(second["entry_id"], "entry-2")
+        self.assertEqual(bridge.memory_client.onboard_qq.call_count, 1)
+        self.assertEqual([c.kwargs["message_id"] for c in
+                          bridge.memory_client.receive.call_args_list],
+                         ["m1", "m2"])
+
+    async def test_unconsented_private_member_is_created_but_not_captured(self):
+        bridge = object.__new__(QqBridge)
+        bridge.memory_client = Mock()
+        bridge.memory_client.onboard_qq.return_value = {
+            "created": True, "timeline_consent": False,
+            "curation_consent": False,
+        }
+        bridge._memory_onboarded_accounts = set()
+        bridge._memory_timeline_accounts = set()
+        bridge._memory_capture_locks = {}
+        msg = Incoming("private", 42, None, "m3", "不能存储", nickname="梨愿")
+        self.assertIsNone(await bridge._capture_private_message(msg, bot_id=88))
+        bridge.memory_client.receive.assert_not_called()
+
 
 
 class QqParsingTests(unittest.TestCase):
