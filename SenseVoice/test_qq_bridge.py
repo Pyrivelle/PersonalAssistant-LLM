@@ -754,6 +754,95 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         bridge.memory_client.recall.assert_not_called()
         bridge.send_reply.assert_awaited_once()
 
+    async def test_v3_web_search_respects_exact_qq_grant(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        from zhuangfy.agent_v2.runtime import ToolBinding
+        for grant in ("88:42", "88:43", ""):
+            with self.subTest(grant=grant):
+                with patch.object(qq_bridge.PlannerSettings, "load",
+                                  return_value=PlannerSettings(
+                                      agent_v2_enabled=True, agent_v2_tools_enabled=True,
+                                      agent_v3_enabled=True)):
+                    bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                                 quiet_seconds=0,
+                                                 private_cooldown_seconds=0))
+                bridge.bot_id = 88
+                requested = []
+                async def fake_search(args):
+                    requested.append(args)
+                    return "公开来源 https://example.org/knowledge — 最新结果"
+                bridge.tool_registry.register(ToolBinding(
+                    "web_search.search", fake_search,
+                    scopes=frozenset({"private"}), mutating=False,
+                    visibility="deferred", discovery_terms=("联网", "搜索"),
+                    description="查询公开搜索结果",
+                    parameters={"type":"object","properties":{
+                        "query":{"type":"string","maxLength":220}},
+                        "required":["query"],"additionalProperties":False}))
+                current = Incoming("private", 42, None, "search-req",
+                                   "方宜，联网搜索一下 OSG 最近的发布")
+                state = Conversation(current, pending=[current.text])
+                bridge.send_reply = AsyncMock(return_value=True)
+                decisions = []
+                def planner(*args, **kwargs):
+                    decisions.append(kwargs)
+                    if not kwargs.get("tool_feedback"):
+                        return PlanDecision(action="tool", confidence=.98,
+                                            tool_name="web_search.search",
+                                            tool_arguments={"query":"OSG latest release"})
+                    return PlanDecision(action="reply", confidence=.98,
+                                        social_intent="使用搜索来源回答")
+                with patch.dict(os.environ, {
+                    "ZHUANGFY_WEB_SEARCH_ALLOWED_QQ": grant,
+                }), patch.object(qq_bridge, "load_settings",
+                                 return_value=LlmSettings()), \
+                     patch.object(qq_bridge, "load_key", return_value="test-key"), \
+                     patch.object(qq_bridge, "plan_turn_v3", side_effect=planner), \
+                     patch.object(qq_bridge, "invoke_stage",
+                                  return_value="根据来源，最近有一些 OSG 更新。"):
+                    await bridge.process(state)
+                if grant == "88:42":
+                    self.assertEqual(requested, [{"query": "OSG latest release"}])
+                    self.assertIn("web_search.search", decisions[0]["available_tools"])
+                    self.assertIn("https://example.org/knowledge",
+                                  decisions[1]["tool_feedback"])
+                else:
+                    self.assertEqual(requested, [])
+                    self.assertNotIn("web_search.search", decisions[0]["available_tools"])
+                bridge.send_reply.assert_awaited_once()
+
+    async def test_v3_web_search_plain_chat_is_not_invoked(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        from zhuangfy.agent_v2.runtime import ToolBinding
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(
+                              agent_v2_enabled=True, agent_v2_tools_enabled=True,
+                              agent_v3_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+        bridge.bot_id = 88
+        called = []
+        async def fake_search(args):
+            called.append(args)
+            return "searched"
+        bridge.tool_registry.register(ToolBinding(
+            "web_search.search", fake_search,
+            scopes=frozenset({"private"}), visibility="deferred",
+            discovery_terms=("搜索", "最新"), description="公开检索",
+            parameters={"type":"object","properties":{"query":{"type":"string"}}}))
+        current = Incoming("private", 42, None, "chat", "今天有点累。")
+        state = Conversation(current, pending=[current.text])
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.dict(os.environ, {"ZHUANGFY_WEB_SEARCH_ALLOWED_QQ":"88:42"}), \
+             patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v3", return_value=PlanDecision(
+                 action="reply", confidence=.98, social_intent="轻松聊天")), \
+             patch.object(qq_bridge, "invoke_stage", return_value="今天辛苦了。"):
+            await bridge.process(state)
+        self.assertEqual(called, [])
+        bridge.send_reply.assert_awaited_once()
+
     async def test_v2_disabled_tools_never_execute_device_actions(self):
         from zhuangfy.agent_v2.planner import PlanDecision
         with patch.object(qq_bridge.PlannerSettings, "load",

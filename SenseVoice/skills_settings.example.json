@@ -6,6 +6,13 @@
         "private"
       ],
       "allow_mutation": false
+    },
+    "web_search": {
+      "enabled": false,
+      "scopes": [
+        "private"
+      ],
+      "allow_mutation": false
     }
   }
 }

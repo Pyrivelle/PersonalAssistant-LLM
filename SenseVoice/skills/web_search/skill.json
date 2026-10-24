@@ -1,0 +1,28 @@
+{
+  "id": "web_search",
+  "name": "联网搜索（Brave）",
+  "version": "0.1.0",
+  "description": "按需搜索公开网页，返回来源标题、链接和简短摘要；不打开任意网页，也不访问用户本地资料。",
+  "api_version": 1,
+  "entry": "skill.py",
+  "core_tool": false,
+  "keywords": [
+    "联网",
+    "搜索",
+    "搜一下",
+    "查一下",
+    "查资料",
+    "找资料",
+    "最新",
+    "新闻",
+    "官网",
+    "事实核查",
+    "web search",
+    "search web",
+    "online search",
+    "天气",
+    "实时信息",
+    "发布了吗",
+    "什么时候发布"
+  ]
+}
