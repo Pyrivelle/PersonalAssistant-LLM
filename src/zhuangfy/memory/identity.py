@@ -121,6 +121,19 @@ class IdentityRepository:
                 WHERE i.platform=? AND i.channel_account_id=? AND i.external_user_id=?
             """, ("qq", bot_id, user_id)).fetchone()
             if existing is not None:
+                # Apply the server-wide QQ Timeline policy to previously linked
+                # accounts that were never asked about local retention. Never
+                # restore an explicitly revoked/erased Timeline permission.
+                if initial_timeline:
+                    consent = db.execute("""
+                        SELECT 1 FROM memory_consents
+                        WHERE person_id=? AND purpose='timeline'
+                    """, (existing["person_id"],)).fetchone()
+                    if consent is None:
+                        db.execute("""INSERT INTO memory_consents
+                            (person_id,purpose,granted_at,revoked_at)
+                            VALUES(?,'timeline',?,NULL)""",
+                            (existing["person_id"], int(time.time())))
                 # Preserve any administrator-chosen or previously verified name.
                 return Person(**dict(existing)), False
             person = Person(str(uuid4()), nickname, int(time.time()))
