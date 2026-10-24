@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .providers import ROOT, LlmSettings, load_settings
+from zhuangfy.paths import Paths
 from .routes import ModelCandidate, ModelRoutes, StagePolicy, STAGES, load_routes
 
 
 PROFILES_FILE = ROOT / "api_profiles.json"
-MEMORY_RUNTIME_FILE = ROOT.parent / "data" / "memory_runtime.json"
+MEMORY_RUNTIME_FILE = Paths.current().project_data_root / "memory_runtime.json"
 MAX_PROFILES = 12
 
 

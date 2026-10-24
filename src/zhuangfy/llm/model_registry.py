@@ -12,11 +12,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .providers import ENV_FILE, ROOT, LlmSettings, load_settings
+from zhuangfy.paths import Paths
 from .routes import (IDENTIFIER, MAX_ROUTES, STAGES, ModelCandidate,
                      ModelRoutes, StagePolicy, load_routes, save_routes)
 
 REGISTRY_FILE = ROOT / "model_registry.json"
-MEMORY_RUNTIME_FILE = ROOT.parent / "data" / "memory_runtime.json"
+MEMORY_RUNTIME_FILE = Paths.current().project_data_root / "memory_runtime.json"
 MAX_PROVIDERS = 12
 MAX_MODELS = 40
 

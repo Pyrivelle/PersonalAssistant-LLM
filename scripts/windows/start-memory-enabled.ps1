@@ -6,8 +6,23 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $legacyRoot = Join-Path $repoRoot 'SenseVoice'
-$runtimePath = Join-Path $repoRoot 'data\memory_runtime.json'
-$envPath = Join-Path $legacyRoot '.env.local'
+$locationFile = Join-Path $repoRoot 'storage_location.json'
+if (Test-Path -LiteralPath $locationFile) {
+    $location = Get-Content -LiteralPath $locationFile -Raw | ConvertFrom-Json
+    if ($location.version -ne 1 -or -not [IO.Path]::IsPathFullyQualified([string]$location.path)) {
+        throw 'Invalid storage location setting.'
+    }
+    $storageRoot = [IO.Path]::GetFullPath([string]$location.path)
+    $projectDataRoot = Join-Path $storageRoot 'data'
+    $legacyDataRoot = Join-Path $storageRoot 'legacy'
+    $env:ZHUANGFY_DATA_DIR = $legacyDataRoot
+} else {
+    $projectDataRoot = Join-Path $repoRoot 'data'
+    $legacyDataRoot = $legacyRoot
+    Remove-Item Env:ZHUANGFY_DATA_DIR -ErrorAction SilentlyContinue
+}
+$runtimePath = Join-Path $projectDataRoot 'memory_runtime.json'
+$envPath = Join-Path $legacyDataRoot '.env.local'
 $python = Join-Path $legacyRoot '.venv\Scripts\python.exe'
 $pythonw = Join-Path $legacyRoot '.venv\Scripts\pythonw.exe'
 $dashboard = Join-Path $legacyRoot 'dashboard.py'
@@ -42,6 +57,7 @@ $env:ZHUANGFY_MEMORY_ADMIN_UI = '1'
 $env:ZHUANGFY_MEMORY_QQ = if ($settings.qq_enabled) { '1' } else { '0' }
 $env:ZHUANGFY_MEMORY_DESKTOP = if ($settings.desktop_enabled) { '1' } else { '0' }
 $env:ZHUANGFY_MEMORY_DESKTOP_USER_ID = [string]$settings.desktop_user_id
+$env:ZHUANGFY_MEMORY_DIR = Join-Path $projectDataRoot 'memory_core'
 
 $listener = Get-NetTCPConnection -LocalPort 8769 -State Listen -ErrorAction SilentlyContinue
 if (-not $listener) {
@@ -88,14 +104,14 @@ if (-not $listener) {
     $env:ZHUANGFY_MEMORY_ALLOW_REMOTE = if ($settings.reflect_enabled) { '1' } else { '0' }
     Start-Process -FilePath $python -ArgumentList '-m', 'zhuangfy.memory.http_server' `
         -WorkingDirectory $repoRoot -WindowStyle Hidden `
-        -RedirectStandardOutput (Join-Path $repoRoot 'data\memory-service.out.log') `
-        -RedirectStandardError (Join-Path $repoRoot 'data\memory-service.err.log') | Out-Null
+        -RedirectStandardOutput (Join-Path $projectDataRoot 'memory-service.out.log') `
+        -RedirectStandardError (Join-Path $projectDataRoot 'memory-service.err.log') | Out-Null
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         Start-Sleep -Milliseconds 500
         $listener = Get-NetTCPConnection -LocalPort 8769 -State Listen -ErrorAction SilentlyContinue
         if ($listener) { break }
     }
-    if (-not $listener) { throw 'Memory Service did not open its loopback port; inspect data/memory-service.err.log.' }
+    if (-not $listener) { throw 'Memory Service did not open its loopback port; inspect memory-service.err.log.' }
 }
 
 Remove-Item Env:ZHUANGFY_MEMORY_LLM_API_KEY -ErrorAction SilentlyContinue
@@ -108,7 +124,7 @@ Remove-Item Env:ZHUANGFY_MEMORY_ALLOW_REMOTE -ErrorAction SilentlyContinue
 & $python -c "import os; from zhuangfy.memory.client import MemoryClient; MemoryClient(token=os.environ['ZHUANGFY_MEMORY_ADMIN_TOKEN']).list_people()"
 if ($LASTEXITCODE -ne 0) { throw 'Memory Service authentication failed.' }
 
-$autonomyPolicy = Join-Path $legacyRoot 'autonomy_settings.json'
+$autonomyPolicy = Join-Path $legacyDataRoot 'autonomy_settings.json'
 if (Test-Path -LiteralPath $autonomyPolicy) {
     $autonomySettings = Get-Content -LiteralPath $autonomyPolicy -Raw | ConvertFrom-Json
     if ($autonomySettings.enabled) {
@@ -119,11 +135,11 @@ if (Test-Path -LiteralPath $autonomyPolicy) {
         if (-not $runningAutonomy) {
             Start-Process -FilePath $python `
                 -ArgumentList '-m', $autonomyModule, '--database',
-                    (Join-Path $repoRoot 'data\agent-v2-background.db'),
+                    (Join-Path $projectDataRoot 'agent-v2-background.db'),
                     '--policy', $autonomyPolicy, 'serve' `
                 -WorkingDirectory $repoRoot -WindowStyle Hidden `
-                -RedirectStandardOutput (Join-Path $repoRoot 'data\agent-v2-background.out.log') `
-                -RedirectStandardError (Join-Path $repoRoot 'data\agent-v2-background.err.log') | Out-Null
+                -RedirectStandardOutput (Join-Path $projectDataRoot 'agent-v2-background.out.log') `
+                -RedirectStandardError (Join-Path $projectDataRoot 'agent-v2-background.err.log') | Out-Null
         }
     }
 }

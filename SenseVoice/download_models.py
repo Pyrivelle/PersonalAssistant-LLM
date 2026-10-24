@@ -75,7 +75,7 @@ def main() -> None:
     for name, (url, digest) in FILES.items():
         fetch(Paths.current().models_root / name, url, digest)
     if args.sample:
-        fetch(ROOT / "samples" / "zh.wav", *SAMPLE)
+        fetch(Paths.current().data_root / "samples" / "zh.wav", *SAMPLE)
     print("语音资源已就绪")
 
 

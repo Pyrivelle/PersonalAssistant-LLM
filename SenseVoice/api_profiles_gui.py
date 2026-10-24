@@ -14,6 +14,7 @@ from model_routes_gui import CandidateEditor
 from turn_planner import PlannerSettings
 from toggle_switch import ToggleSwitch
 from llm import ROOT, load_settings
+from zhuangfy.paths import Paths
 
 
 class ApiProfilesDialog(QDialog):
@@ -130,7 +131,7 @@ class ApiProfilesDialog(QDialog):
             memory = next((p for p in profiles if p.id == registry.memory), None)
             if memory and not (keys.get(memory.id) or load_route_key(memory.id, memory.provider, memory.base_url)):
                 raise ValueError("记忆整理模型需要已保存的 API Key")
-            runtime_file = ROOT.parent / "data" / "memory_runtime.json"
+            runtime_file = Paths.current().project_data_root / "memory_runtime.json"
             runtime = json.loads(runtime_file.read_text(encoding="utf-8")) if runtime_file.is_file() else {}
             if memory:
                 runtime.update(profile_id=memory.id, provider=memory.provider,

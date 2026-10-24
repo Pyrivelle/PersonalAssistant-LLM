@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from .coordinator import MemoryCore
 from .llm_provider import configured_curator
 from .vector import FastEmbedProvider
+from zhuangfy.paths import Paths
 
 MAX_REQUEST_BYTES = 18_000
 PUBLIC_ENDPOINTS = frozenset({
@@ -29,7 +30,7 @@ PUBLIC_ENDPOINTS = frozenset({
     "/v1/relationship/snapshot", "/v1/relationship/apply", "/v1/task-origin", "/v1/task-recall", "/v1/task-state",
 })
 ADMIN_ENDPOINTS = frozenset({
-    "/v1/admin/create-person", "/v1/admin/link", "/v1/admin/consent",
+    "/v1/admin/create-person", "/v1/admin/rename-person", "/v1/admin/link", "/v1/admin/consent",
     "/v1/admin/list-people", "/v1/admin/list-memories",
     "/v1/admin/sync-index", "/v1/admin/reflect-one",
     "/v1/admin/evidence", "/v1/admin/correct", "/v1/admin/forget-memory",
@@ -126,6 +127,8 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.admin_relationship_erase(**payload)
                 elif path == "/v1/admin/create-person":
                     result = core.admin_create_person(**payload)
+                elif path == "/v1/admin/rename-person":
+                    result = core.admin_rename_person(**payload)
                 elif path == "/v1/admin/link":
                     result = core.admin_link(**payload)
                 elif path == "/v1/admin/consent":
@@ -187,7 +190,7 @@ def main() -> None:
     client_token = _token("ZHUANGFY_MEMORY_TOKEN")
     admin_token = _token("ZHUANGFY_MEMORY_ADMIN_TOKEN")
     root = Path(os.environ.get("ZHUANGFY_MEMORY_DIR", "")).expanduser() if os.environ.get(
-        "ZHUANGFY_MEMORY_DIR") else Path(__file__).resolve().parents[3] / "data" / "memory_core"
+        "ZHUANGFY_MEMORY_DIR") else Paths.current().project_data_root / "memory_core"
     port = int(os.environ.get("ZHUANGFY_MEMORY_PORT", "8769"))
     embedding = FastEmbedProvider(cache_dir=root / "embedding_cache")
     auto_capture = os.environ.get("ZHUANGFY_MEMORY_QQ_AUTO_TIMELINE", "1")

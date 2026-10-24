@@ -156,6 +156,21 @@ class IdentityRepository:
             row = db.execute("SELECT * FROM persons WHERE person_id=?", (person_id,)).fetchone()
         return Person(**dict(row)) if row else None
 
+    def rename_person(self, person_id: str, display_name: str) -> Person:
+        """Change only the administrator-facing name, never the stable identity."""
+        name = _nonempty(display_name, "display_name", 160)
+        if any(not ch.isprintable() for ch in name):
+            raise ValueError("display_name must be printable")
+        with self.database.write() as db:
+            changed = db.execute(
+                "UPDATE persons SET display_name=? WHERE person_id=?",
+                (name, person_id),
+            )
+            if changed.rowcount != 1:
+                raise ValueError("Unknown person_id")
+            row = db.execute("SELECT * FROM persons WHERE person_id=?", (person_id,)).fetchone()
+        return Person(**dict(row))
+
     def resolve(self, identity: ChannelIdentity) -> str | None:
         platform = _nonempty(identity.platform, "platform", 64)
         account = _nonempty(identity.channel_account_id, "channel_account_id")

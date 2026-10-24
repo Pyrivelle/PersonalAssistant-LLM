@@ -201,6 +201,11 @@ class MemoryClient:
     def admin_create_person(self, display_name: str) -> dict:
         return self.request("/v1/admin/create-person", {"display_name": display_name})
 
+    def admin_rename_person(self, person_id: str, display_name: str) -> dict:
+        return self.request("/v1/admin/rename-person", {
+            "person_id": person_id, "display_name": display_name,
+        })
+
     def admin_link(self, person_id: str, identity: MemoryChannel,
                    verification_reference: str) -> dict:
         return self.request("/v1/admin/link", {

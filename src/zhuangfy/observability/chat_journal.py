@@ -8,7 +8,9 @@ from contextlib import closing
 from pathlib import Path
 
 
-DEFAULT_PATH = Path(__file__).resolve().parents[3] / "data" / "chat_stream.sqlite3"
+from zhuangfy.paths import Paths
+
+DEFAULT_PATH = Paths.current().project_data_root / "chat_stream.sqlite3"
 MAX_EVENTS = 5000
 _VISIBLE = {"消息", "思考V2", "思考", "等待V2", "静默V2",
             "回复", "语音回复", "失败", "模型全部失败", "识图"}

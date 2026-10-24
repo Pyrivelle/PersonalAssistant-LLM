@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from activity_log import format_event, log_event, receive_event, session_snapshot
 from branding import APP_NAME, app_icon
 from zhuangfy.paths import Paths
+from zhuangfy.storage import RESULT_FILE, estimated_bytes
 from zhuangfy.memory.routing import legacy_memory_allowed, new_memory_selected
 from llm import (
     DEFAULT_PROMPT, load_key, load_settings, save_settings,
@@ -52,6 +53,7 @@ from toggle_switch import ToggleSwitch
 
 
 ROOT = Path(__file__).resolve().parent
+DATA_ROOT = Paths.current().data_root
 SNOWLUMA_WEBUI = QUrl("http://127.0.0.1:5099/")
 SNOWLUMA_DIR = Paths.current().snowluma_root
 PAGE_HOME, PAGE_CHAT, PAGE_STREAM, PAGE_MEMORY, PAGE_PERSONA, PAGE_MODEL, PAGE_PLATFORM, PAGE_PLUGINS, PAGE_MONITOR, PAGE_SYSTEM, PAGE_VOICE = range(11)
@@ -104,7 +106,7 @@ def _save_snowluma_token(value: str) -> None:
     value = value.strip()
     if not value or "\n" in value or "\r" in value:
         raise ValueError("OneBot Token 不能为空，也不能包含换行")
-    path = ROOT / ".env.local"
+    path = DATA_ROOT / ".env.local"
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     lines = [line for line in lines if line.partition("=")[0].strip() != "SNOWLUMA_ACCESS_TOKEN"]
     lines.append(f"SNOWLUMA_ACCESS_TOKEN={value}")
@@ -298,6 +300,7 @@ class Dashboard(QMainWindow):
         self.pages.addWidget(self._system_page())
         self.pages.addWidget(self._home_voice_page())
         self.switch_page(PAGE_HOME)
+        QTimer.singleShot(0, self.show_storage_migration_result)
         self.setStyleSheet(STYLE)
         self.statusBar().showMessage("控制台就绪")
 
@@ -627,7 +630,7 @@ class Dashboard(QMainWindow):
         self.qq_feedback.setWordWrap(True)
         rules_layout.addWidget(self.qq_feedback)
         column.addWidget(rules)
-        proactive = ProactiveConfig.load(ROOT / "proactive_settings.json")
+        proactive = ProactiveConfig.load(DATA_ROOT / "proactive_settings.json")
         outreach, outreach_layout = _card(
             "主动互动", "经 B2 审阅的后台任务建议可主动发送；日常问候单独开关。默认安静时段 22:00–08:00，至少 30 分钟未交谈、每 8 小时至多一次、24 小时内至多一条。")
         outreach_form = QFormLayout()
@@ -678,7 +681,7 @@ class Dashboard(QMainWindow):
         return page
 
     def _system_page(self) -> QScrollArea:
-        page, column = self._page("系统设置", "调整控制台窗口大小。")
+        page, column = self._page("系统设置", "调整窗口与本地文件保存位置。")
         runtime, layout = _card("窗口大小")
         size_row = QHBoxLayout()
         self.window_size_preset = QComboBox()
@@ -693,8 +696,64 @@ class Dashboard(QMainWindow):
         layout.addLayout(size_row)
         self.window_size_preset.currentIndexChanged.connect(self.select_window_preset)
         column.addWidget(runtime)
+        storage, storage_layout = _card("文件保存", "配置、聊天记录、记忆库与本地语音模型存放在此。")
+        location_row = QHBoxLayout()
+        self.storage_address = QLineEdit(str(Paths.current().storage_root or Paths.current().project_root))
+        self.storage_address.setReadOnly(True)
+        location_row.addWidget(self.storage_address, 1)
+        location_row.addWidget(_button("更换", self.change_storage_location))
+        storage_layout.addLayout(location_row)
+        storage_layout.addWidget(QLabel("更换后程序会自动迁移并重启；原文件保留为备份。"))
+        column.addWidget(storage)
         column.addStretch()
         return page
+
+    def change_storage_location(self) -> None:
+        selected = QFileDialog.getExistingDirectory(self, "选择新的文件保存位置")
+        if not selected:
+            return
+        destination = Path(selected)
+        try:
+            required = estimated_bytes(Paths.current().project_root, destination)
+            if shutil.disk_usage(destination).free < required + 256 * 1024 * 1024:
+                raise ValueError("目标磁盘剩余空间不足")
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "无法更换位置", str(error))
+            return
+        if QMessageBox.question(
+            self, "迁移本地文件",
+            f"将本地配置、数据库、日志和语音模型复制到：\n{destination}\n\n"
+            "复制校验成功后自动切换并重启。旧文件会保留作备份。继续吗？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            subprocess.Popen(
+                [sys.executable, "-m", "zhuangfy.storage", "--project-root",
+                 str(Paths.current().project_root), "--target", str(destination),
+                 "--wait-pid", str(os.getpid())],
+                cwd=str(Paths.current().project_root),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                close_fds=True,
+            )
+        except OSError as error:
+            QMessageBox.warning(self, "迁移启动失败", str(error))
+            return
+        self.quit_app()
+
+    def show_storage_migration_result(self) -> None:
+        result_file = Paths.current().project_root / RESULT_FILE
+        if not result_file.is_file():
+            return
+        try:
+            result = json.loads(result_file.read_text(encoding="utf-8"))
+            result_file.unlink()
+        except (OSError, ValueError):
+            return
+        if result.get("ok"):
+            self.storage_address.setText(result["path"])
+            QMessageBox.information(self, "迁移完成", "本地文件已校验并切换到新地址。")
+        else:
+            QMessageBox.warning(self, "迁移未完成", result.get("error", "未知错误"))
 
     def apply_window_preferences(self, value: WindowPreferences) -> tuple[int, int]:
         screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen()
@@ -1274,7 +1333,7 @@ class Dashboard(QMainWindow):
             temporary.unlink(missing_ok=True)
 
     def save_proactive(self) -> bool:
-        path = ROOT / "proactive_settings.json"
+        path = DATA_ROOT / "proactive_settings.json"
         temporary = path.with_suffix(".tmp")
         try:
             raw_id = self.proactive_recipient.text().strip()
@@ -1451,7 +1510,7 @@ class Dashboard(QMainWindow):
         voice = self.voice_window
         voice_active = bool(voice is not None and
                             (voice.continuous_worker is not None or voice.stream is not None))
-        heartbeat = Paths.current().project_root / "data" / "voice_activity.json"
+        heartbeat = Paths.current().project_data_root / "voice_activity.json"
         try:
             heartbeat.write_text(json.dumps({"active": voice_active, "at": time.time()}), encoding="utf-8")
         except OSError:

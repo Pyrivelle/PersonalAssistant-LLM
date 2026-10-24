@@ -50,11 +50,14 @@ from zhuangfy.agent_v2.proactive_delivery import ProactiveConfig, ProactiveStore
 from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.relationship_review import DailyRelationshipReview
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
+from zhuangfy.paths import Paths
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
 LOCK_FILE = ROOT / ".qq_bridge.lock"
 IDENTITY_FILE = ROOT / "qq_identity.json"
+PROJECT_DATA = Paths.current().project_data_root
+CODE_ROOT = Paths.current().legacy_root
 CQ_CODE = re.compile(r"\[CQ:[^\]]+\]")
 CQ_AT = re.compile(r"\[CQ:at,qq=(\d+)(?:,[^\]]*)?\]")
 CQ_IMAGE = re.compile(r"\[CQ:image(?:,([^\]]*))?\]")
@@ -482,7 +485,7 @@ class QqBridge:
         # selected, already-whitelisted private accounts. Groups never persist.
         self.planner_settings = PlannerSettings.load(ROOT / "cognition_settings.json")
         self.tool_registry, self.skill_manager = build_skill_runtime(
-            ROOT / "skills", ROOT / "skills_settings.json",
+            CODE_ROOT / "skills", ROOT / "skills_settings.json",
             activate=(self.planner_settings.agent_v2_enabled
                       and self.planner_settings.agent_v2_tools_enabled))
         for status in self.skill_manager.statuses:
@@ -519,8 +522,8 @@ class QqBridge:
             if self.memory_client is not None
             and self.planner_settings.relationship_evolution_r1_enabled else None)
         self.proactive_config = ProactiveConfig.load(ROOT / "proactive_settings.json")
-        self.proactive_store = ProactiveStore(ROOT.parent / "data" / "proactive.db")
-        self.initiative_inbox = InitiativeInbox(ROOT.parent / "data" / "agent-v2-background.db")
+        self.proactive_store = ProactiveStore(PROJECT_DATA / "proactive.db")
+        self.initiative_inbox = InitiativeInbox(PROJECT_DATA / "agent-v2-background.db")
         self.ccv2_render_retry_after: dict[str, float] = {}
         if self.proactive_config.enabled:
             if self.proactive_config.recipient_id not in settings.allowed_private_ids:
@@ -1567,7 +1570,7 @@ class QqBridge:
     @staticmethod
     def _voice_active(now: float) -> bool:
         try:
-            raw = json.loads((ROOT.parent / "data" / "voice_activity.json").read_text(encoding="utf-8"))
+            raw = json.loads((PROJECT_DATA / "voice_activity.json").read_text(encoding="utf-8"))
             return bool(raw["active"] and 0 <= now - float(raw["at"]) < 15)
         except (OSError, ValueError, TypeError, KeyError):
             return False

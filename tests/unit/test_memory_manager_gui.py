@@ -58,6 +58,12 @@ class MemoryManagerGuiTests(unittest.TestCase):
                 win.revoke_curator()
                 request.assert_called_once_with("admin_consent", person_id,
                                                 "curation", False)
+            with patch("zhuangfy.ui.memory_manager.QInputDialog.getText",
+                       return_value=("新名称", True)), \
+                 patch.object(win, "_start") as request:
+                win.rename_person()
+                request.assert_called_once_with("admin_rename_person", person_id,
+                                                "新名称")
             win.client = None
             win.close()
 

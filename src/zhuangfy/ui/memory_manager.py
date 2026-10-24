@@ -68,6 +68,7 @@ class CuratedMemoryDialog(QDialog):
         for text, callback in [
             ("刷新", self.refresh_people),
             ("创建人物", self.create_person),
+            ("修改名称", self.rename_person),
             ("验证关联账号", self.link_identity),
             ("删除整个人物", self.erase_person),
         ]:
@@ -273,7 +274,7 @@ class CuratedMemoryDialog(QDialog):
                     f'{job["status"]} · 重试/尝试 {job["attempts"]} 次 · {job["job_id"][:8]}',
                     job["job_id"])
         elif action in {"correct_memory", "forget_memory", "forget_person",
-                        "admin_create_person", "admin_link", "admin_consent",
+                        "admin_create_person", "admin_rename_person", "admin_link", "admin_consent",
                         "link_episodes", "sync_index", "retry_job", "reflect_one"}:
             self.refresh_people()
 
@@ -432,6 +433,17 @@ class CuratedMemoryDialog(QDialog):
         name, ok = QInputDialog.getText(self, "创建人物", "展示名称（不用于身份自动合并）：")
         if ok:
             self._start("admin_create_person", name)
+
+    def rename_person(self):
+        person = self._selected_person_info()
+        if not person:
+            return
+        name, ok = QInputDialog.getText(
+            self, "修改人物名称", "展示名称（Person ID 与关联账号不变）：",
+            text=person["display_name"],
+        )
+        if ok and name.strip() and name.strip() != person["display_name"]:
+            self._start("admin_rename_person", person["person_id"], name.strip())
 
     def link_identity(self):
         person_id = self._person_id()

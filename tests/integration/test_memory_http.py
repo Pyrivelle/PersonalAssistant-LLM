@@ -94,6 +94,22 @@ class HttpMemoryTests(unittest.TestCase):
             self.admin.admin_consent(p["person_id"], purpose, True)
         return p["person_id"], identity
 
+    def test_admin_can_rename_person_without_changing_identity(self):
+        claim = MemoryChannel("qq", "10001", "20002")
+        self.client.onboard_qq(claim, "旧昵称")
+        person_id = self.admin.list_people()[0]["person_id"]
+        with self.assertRaises(MemoryClientError) as denied:
+            self.client.admin_rename_person(person_id, "新名称")
+        self.assertEqual(denied.exception.status, 401)
+        renamed = self.admin.admin_rename_person(person_id, "  新名称  ")
+        self.assertEqual(renamed, {"person_id": person_id, "display_name": "新名称"})
+        self.assertEqual(self.client.onboard_qq(claim, "又改 QQ 昵称")["display_name"], "新名称")
+        self.assertEqual(self.admin.list_people()[0]["person_id"], person_id)
+        with self.assertRaises(MemoryClientError) as invalid:
+            self.admin.admin_rename_person(person_id, " \n ")
+        self.assertEqual(invalid.exception.status, 400)
+        self.assertEqual(self.admin.list_people()[0]["display_name"], "新名称")
+
     def test_qq_auto_onboard_is_client_only_and_requires_separate_consent(self):
         claim = MemoryChannel("qq", "10001", "20002")
         created = self.client.onboard_qq(claim, "梨愿")

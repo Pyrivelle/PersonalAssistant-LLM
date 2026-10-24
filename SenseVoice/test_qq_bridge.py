@@ -216,6 +216,7 @@ class QqParsingTests(unittest.TestCase):
                 encoding="utf-8")
             flags = PlannerSettings(agent_v2_enabled=True, agent_v2_tools_enabled=True)
             with patch.object(qq_bridge, "ROOT", root), \
+                 patch.object(qq_bridge, "CODE_ROOT", root), \
                  patch.object(qq_bridge.PlannerSettings, "load", return_value=flags):
                 bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
                 self.assertIn("demo_skill.read",

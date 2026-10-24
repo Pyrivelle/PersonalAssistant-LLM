@@ -166,8 +166,8 @@ class MemoryService:
         with self._lock:
             self.close()
             target = DATA_DIR.resolve()
-            if target.parent != ROOT.resolve() or target.name != "memory_data":
-                raise RuntimeError("记忆目录不在项目内，拒绝删除")
+            if target != Paths.current().memory_root.resolve() or target.name != "memory_data":
+                raise RuntimeError("记忆目录与当前配置不符，拒绝删除")
             if target.exists():
                 shutil.rmtree(target)
 

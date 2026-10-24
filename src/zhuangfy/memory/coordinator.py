@@ -401,6 +401,10 @@ class MemoryCore:
         p = self.identities.create_person(display_name)
         return {"person_id": p.person_id, "display_name": p.display_name}
 
+    def admin_rename_person(self, *, person_id: str, display_name: str) -> dict:
+        p = self.identities.rename_person(person_id, display_name)
+        return {"person_id": p.person_id, "display_name": p.display_name}
+
     def admin_link(self, *, person_id: str, identity: dict,
                    verification_reference: str) -> dict:
         if not verification_reference.strip():
