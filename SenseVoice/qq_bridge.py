@@ -968,7 +968,7 @@ class QqBridge:
                                 # No external retrieval and no loading disabled skills.
                                 # Expose only core tools and strongly matched, enabled
                                 # deferred skills; the executor rechecks scope/schema.
-                                discovery = SkillDiscovery(self.tool_registry).select(
+                                discovery = SkillDiscovery(turn_registry).select(
                                     message, scope=current.kind, allow_mutation=False)
                                 names = discovery.names
                                 log_event("技能", "按需发现",
