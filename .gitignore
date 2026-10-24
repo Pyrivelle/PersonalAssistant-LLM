@@ -52,3 +52,6 @@ storage_migration_result.json
 **/private_state/
 **/background*.sqlite3*
 **/relationship_reviews.sqlite3*
+
+# Isolated native MaiBot experimental instance (may contain keys, chat and media)
+.maisaka-experiment/
