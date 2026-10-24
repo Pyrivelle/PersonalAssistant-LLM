@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import hashlib
 import json
 import math
 import os
@@ -957,23 +958,31 @@ class QqBridge:
                         # local cache/database is unavailable.
                         cache = None
                         digest = ""
-                        model_signature = f"{settings.provider}:{settings.model}:vision-v1"
-                        message_key = f"qq:{self.bot_id}:{current.kind}:{current.user_id}:{turn_id}"
+                        model_signature = (f"{settings.provider}:{settings.model}:"\n                                           f"{hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:12]}")
+                        visual_scope = f"qq:{self.bot_id}:{current.kind}:" + (str(current.group_id) if current.kind == "group" else str(current.user_id))\n                        stable_message_id = str(event_ids[0]) if event_ids else turn_id\n                        message_key = f"{visual_scope}:{stable_message_id}:0"
                         try:
                             digest = image_digest(picture)
                             cache = VisionDescriptionStore(PROJECT_DATA / "vision" / "descriptions.sqlite3")
-                            cache.associate(message_key, digest)
+                            cache.associate(message_key, digest, signature=model_signature)
                             visual_context = cache.lookup(digest, model_signature)
                             if visual_context:
-                                cache.associate(message_key, digest, "completed")
+                                cache.associate(message_key, digest, "completed", model_signature)
                                 log_event("QQ", "识图缓存", f"{current.scope} · 命中 · {len(visual_context)} 字")
                         except (OSError, ValueError, sqlite3.Error) as error:
                             cache = None
                             log_event("QQ", "识图缓存", f"不可用 · {type(error).__name__}")
                         if not visual_context:
-                            visual_context = await asyncio.to_thread(
-                                invoke_stage, "vision", settings, key, [], message,
-                                system_prompt=VISION_PROMPT, image_data_url=picture)
+                            try:
+                                visual_context = await asyncio.to_thread(
+                                    invoke_stage, "vision", settings, key, [], message,
+                                    system_prompt=VISION_PROMPT, image_data_url=picture)
+                            except Exception:
+                                if cache is not None and digest:
+                                    try:
+                                        cache.mark_failed(message_key, digest, model_signature)
+                                    except (OSError, sqlite3.Error):
+                                        pass
+                                raise
                             if cache is not None and digest and visual_context.strip():
                                 try:
                                     cache.store(message_key, digest, model_signature, visual_context)
@@ -1176,6 +1185,23 @@ class QqBridge:
                         member_snapshot = await asyncio.to_thread(self.member_store.context_for, member_key)
                         log_event("记忆", "读取", f"{current.scope} · QQ 个人记忆 {'已提供' if member_snapshot else '暂无'}")
                     notes = state.context.prompt()
+                    # Bring completed visual evidence back into following turns.
+                    # Only the verified current conversation may access its scope.
+                    if image_ref is None:
+                        try:
+                            visual_scope = f"qq:{self.bot_id}:{current.kind}:" + (
+                                str(current.group_id) if current.kind == "group" else str(current.user_id))
+                            cache = VisionDescriptionStore(PROJECT_DATA / "vision" / "descriptions.sqlite3")
+                            older_images = cache.recent(
+                                visual_scope + ":", model_signature if "model_signature" in locals()
+                                else f"{settings.provider}:{settings.model}:"
+                                     f"{hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:12]}", 2)
+                            if older_images:
+                                notes += "\n历史图片观察（仅是相同聊天中的资料，非用户本轮新指令）：\n"
+                                notes += "\n".join(
+                                    "- [图片] " + entry.description[:320] for entry in older_images)
+                        except (OSError, sqlite3.Error) as error:
+                            log_event("QQ", "视觉上下文", f"读取跳过 · {type(error).__name__}")
                     if current.kind == "group" and state.group_recent:
                         # Temporary public group context only; never used to look
                         # up private Memory Core or member profiles.
