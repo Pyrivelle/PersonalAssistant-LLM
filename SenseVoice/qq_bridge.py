@@ -1192,10 +1192,9 @@ class QqBridge:
                             visual_scope = f"qq:{self.bot_id}:{current.kind}:" + (
                                 str(current.group_id) if current.kind == "group" else str(current.user_id))
                             cache = VisionDescriptionStore(PROJECT_DATA / "vision" / "descriptions.sqlite3")
-                            older_images = cache.recent(
-                                visual_scope + ":", model_signature if "model_signature" in locals()
-                                else f"{settings.provider}:{settings.model}:"
-                                     f"{hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:12]}", 2)
+                            signature = (f"{settings.provider}:{settings.model}:"
+                                         f"{hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:12]}")
+                            older_images = cache.recent(visual_scope + ":", signature, 2)
                             if older_images:
                                 notes += "\n历史图片观察（仅是相同聊天中的资料，非用户本轮新指令）：\n"
                                 notes += "\n".join(
