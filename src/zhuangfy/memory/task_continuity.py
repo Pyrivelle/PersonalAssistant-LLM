@@ -69,6 +69,8 @@ class TaskContinuity:
         """
         if not isinstance(query, str) or not 1 <= len(query.strip()) <= MAX_QUERY_CHARS:
             raise ValueError("Query must be 1..500 characters")
+        if not isinstance(exclude_entry_id, str) or len(exclude_entry_id) > 128:
+            raise ValueError("Invalid excluded entry ID")
         if type(limit) is not int or not 1 <= limit <= 3:
             raise ValueError("Task recall limit must be 1..3")
         scope = self.links.owner_scope(identity)
