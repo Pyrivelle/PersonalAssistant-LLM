@@ -1115,6 +1115,19 @@ class QqBridge:
                                     "任务来源为真实旧聊天；是否仍在进行、是否完成均未经核实。",
                                     "最初讨论：" + str(origin.get("excerpt", ""))[:240],
                                 ]
+                                progress = related_task.get("reported_progress")
+                                if progress:
+                                    basis = progress.get("status_basis", "")
+                                    label = ("用户报告的当前进展"
+                                             if basis == "user_report"
+                                             else "任务起点；后续进展尚未知")
+                                    pieces.append(
+                                        label + "：" + str(progress.get("state", ""))[:45])
+                                    for event in progress.get("events", [])[-2:]:
+                                        if event.get("review_state") == "accepted":
+                                            pieces.append(
+                                                "有真实来源的用户进展陈述（不是客观验收）：" +
+                                                str(event.get("excerpt", ""))[:150])
                                 for clue in related_task.get("history", [])[:2]:
                                     pieces.append(
                                         "可能相关的过往讨论：" + str(clue.get("excerpt", ""))[:180])

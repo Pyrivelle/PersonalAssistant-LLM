@@ -21,6 +21,7 @@ from .retrieval import HybridMemoryRetriever
 from .timeline import TimelineRepository
 from .task_links import TaskMemoryLinks
 from .task_continuity import TaskContinuity
+from .task_events import TaskEventStore
 from zhuangfy.relationship import RelationshipCore, RelationshipEvolution, RelationshipCandidate
 from .vector import EmbeddingProvider, QdrantLocalIndex, VectorIndex
 
@@ -51,6 +52,9 @@ class MemoryCore:
         self.retriever = HybridMemoryRetriever(self.projector, self.curated, self.identities)
         self.task_continuity = TaskContinuity(
             self.database, self.identities, self.timeline, self.task_links, self.retriever)
+        self.task_events = TaskEventStore(
+            self.database, self.identities, self.timeline, self.task_links)
+        self.task_continuity.events = self.task_events
         self.admin = MemoryAdminStore(self.database, self.identities, self.curated)
         self.curator = MemoryCurator(self.curated, curator_model) if curator_model else None
         self._index_lock = threading.RLock()
@@ -107,6 +111,27 @@ class MemoryCore:
             agent_id=self.agent_id, identity=self._identity(identity),
             task_id=task_id)
 
+    def task_state(self, *, identity: dict, task_id: str, limit: int = 15) -> dict:
+        """User-report-based state, independent of GoalStore execution status."""
+        return self.task_events.snapshot(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            task_id=task_id, limit=limit)
+
+    def admin_task_event_review(self, *, identity: dict, event_id: str,
+                                action: str) -> dict:
+        return self.task_events.review(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            event_id=event_id, action=action)
+
+    def admin_task_event_correct(self, *, identity: dict, task_id: str,
+                                 source_entry_id: str, supersedes_event_id: str,
+                                 reported_state: str) -> dict:
+        return self.task_events.correct(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            task_id=task_id, source_entry_id=source_entry_id,
+            supersedes_event_id=supersedes_event_id,
+            reported_state=reported_state)
+
     def receive(self, *, identity: dict, chat_id: str, message_id: str, content: str) -> dict:
         ident = self._identity(identity)
         conv = self.timeline.open_private(
@@ -114,6 +139,18 @@ class MemoryCore:
         entry = self.timeline.receive(
             conversation_id=conv.conversation_id, identity=ident,
             source_message_id=message_id, content=content)
+        # Auto-extract only source-bound, self-reported progress. Do not fail
+        # an already-committed private Timeline write if extraction is broken.
+        if ident.platform == "qq":
+            try:
+                self.task_events.observe(
+                    agent_id=self.agent_id, identity=ident,
+                    source_entry_id=entry.entry_id)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Task progress extraction skipped (Timeline persisted)",
+                    exc_info=True)
         return {"conversation_id": conv.conversation_id, "entry_id": entry.entry_id}
 
     def relationship_snapshot(self, *, identity: dict) -> dict:

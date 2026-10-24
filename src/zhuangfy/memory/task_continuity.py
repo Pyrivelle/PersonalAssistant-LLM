@@ -156,6 +156,10 @@ class TaskContinuity:
                  "relation": "possible_related"}
                 for _, item in historical[:3]
             ]
+            progress = (self.events.snapshot(
+                agent_id=agent_id, identity=identity,
+                task_id=origin["task_id"], limit=5)
+                if getattr(self, "events", None) is not None else None)
             result.append({
                 "task_id": origin["task_id"],
                 "origin": {"entry_id": origin["origin_entry_id"],
@@ -166,6 +170,12 @@ class TaskContinuity:
                 "history": history,
                 "curated_candidates": curated[:2],
                 "task_status": "unverified",  # GoalStore resides in another DB.
+                "reported_progress": (
+                    {"state": progress["state"],
+                     "status_basis": progress["status_basis"],
+                     "last_reported_at": progress["last_reported_at"],
+                     "events": progress["events"][-3:]}
+                    if progress is not None else None),
             })
 
         # Re-check after embedding (a different thread may have revoked).

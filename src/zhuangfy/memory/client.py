@@ -100,6 +100,28 @@ class MemoryClient:
             "exclude_entry_id": exclude_entry_id,
         })
 
+    def task_state(self, identity: MemoryChannel, task_id: str,
+                   limit: int = 15) -> dict:
+        return self.request("/v1/task-state", {
+            "identity": identity.as_payload(), "task_id": task_id, "limit": limit,
+        })
+
+    def admin_task_event_review(self, identity: MemoryChannel, *,
+                                event_id: str, action: str) -> dict:
+        return self.request("/v1/admin/task-event-review", {
+            "identity": identity.as_payload(), "event_id": event_id, "action": action,
+        })
+
+    def admin_task_event_correct(self, identity: MemoryChannel, *,
+                                 task_id: str, source_entry_id: str,
+                                 supersedes_event_id: str, reported_state: str) -> dict:
+        return self.request("/v1/admin/task-event-correct", {
+            "identity": identity.as_payload(), "task_id": task_id,
+            "source_entry_id": source_entry_id,
+            "supersedes_event_id": supersedes_event_id,
+            "reported_state": reported_state,
+        })
+
     def task_origin(self, identity: MemoryChannel, task_id: str) -> dict:
         return self.request("/v1/task-origin", {
             "identity": identity.as_payload(), "task_id": task_id,

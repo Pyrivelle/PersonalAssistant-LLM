@@ -391,6 +391,146 @@ class HttpMemoryTests(unittest.TestCase):
             self.client.task_recall(claim, "港口模型", limit=100)
         self.assertEqual(err.exception.status, 400)
 
+    def test_task_progress_reports_reducer_and_append_only_correction(self):
+        self.core.auto_qq_timeline = True
+        owner = MemoryChannel("qq", "10001", "20101")
+        other = MemoryChannel("qq", "10001", "20102")
+        self.client.onboard_qq(owner, "研究者")
+        self.client.onboard_qq(other, "研究者")
+        origin = self.client.receive(owner, chat_id="private:20101",
+                                     message_id="start-task",
+                                     content="我们要研究OSG港口场景的软件遮挡剔除")
+        self.admin.admin_bind_goal_origin(
+            owner, task_id="goal-render", owner_scope="qq:10001:private:20101",
+            source_entry_id=origin["entry_id"])
+        self.assertEqual(self.client.task_state(owner, "goal-render")["state"], "proposed")
+        one = self.client.receive(owner, chat_id="private:20101", message_id="m-progress-1",
+                                  content="我已经开始研究OSG港口场景的软件遮挡剔除")
+        self.assertEqual(self.client.task_state(owner, "goal-render")["state"], "active")
+        # A replay of an existing source cannot double-apply task progress.
+        again = self.client.receive(owner, chat_id="private:20101",
+                                    message_id="m-progress-1",
+                                    content="我已经开始研究OSG港口场景的软件遮挡剔除")
+        self.assertEqual(one, again)
+        self.assertEqual(len(self.client.task_state(owner, "goal-render")["events"]), 1)
+        self.client.receive(owner, chat_id="private:20101", message_id="m-blocked",
+                            content="OSG港口场景的软件遮挡剔除遇到瓶颈")
+        self.assertEqual(self.client.task_state(owner, "goal-render")["state"], "blocked")
+        done = self.client.receive(owner, chat_id="private:20101",
+                                   message_id="m-done",
+                                   content="OSG港口场景的软件遮挡剔除已经完成了")
+        snapshot = self.client.task_state(owner, "goal-render")
+        self.assertEqual(snapshot["state"], "reported_completed")
+        self.assertEqual(snapshot["status_basis"], "user_report")
+        self.assertEqual(len(snapshot["events"]), 3)
+        completed = snapshot["events"][-1]
+        self.assertEqual(completed["kind"], "reported_completed")
+        self.assertEqual(completed["source"], "user_report")
+        self.assertEqual(completed["source_entry_id"], done["entry_id"])
+        # A hedged claim is only a candidate and cannot change the reducer.
+        self.client.receive(owner, chat_id="private:20101", message_id="m-hedged",
+                            content="OSG港口场景的软件遮挡剔除可能完成了")
+        snapshot = self.client.task_state(owner, "goal-render")
+        self.assertEqual(snapshot["state"], "reported_completed")
+        self.assertEqual(snapshot["events"][-1]["review_state"], "pending")
+        # The client is NOT an administrator and cannot approve uncertainty.
+        with self.assertRaises(MemoryClientError) as denied:
+            self.client.admin_task_event_review(
+                owner, event_id=snapshot["events"][-1]["event_id"], action="accept")
+        self.assertEqual(denied.exception.status, 401)
+        # A true follow-up correction is source-backed, append-only and scoped.
+        revised = self.client.receive(
+            owner, chat_id="private:20101", message_id="m-correction",
+            content="之前说OSG港口场景的软件遮挡剔除已经完成，其实没完成")
+        correction = self.admin.admin_task_event_correct(
+            owner, task_id="goal-render", source_entry_id=revised["entry_id"],
+            supersedes_event_id=completed["event_id"], reported_state="active")
+        self.assertTrue(correction["created"])
+        repeat = self.admin.admin_task_event_correct(
+            owner, task_id="goal-render", source_entry_id=revised["entry_id"],
+            supersedes_event_id=completed["event_id"], reported_state="active")
+        self.assertFalse(repeat["created"])
+        updated = self.client.task_state(owner, "goal-render")
+        self.assertEqual(updated["state"], "active")
+        self.assertEqual(updated["events"][-1]["kind"], "correction")
+        self.assertEqual(updated["events"][-1]["supersedes_event_id"],
+                         completed["event_id"])
+        with self.assertRaises(MemoryClientError) as denied:
+            self.admin.admin_task_event_correct(
+                other, task_id="goal-render", source_entry_id=revised["entry_id"],
+                supersedes_event_id=completed["event_id"], reported_state="blocked")
+        self.assertEqual(denied.exception.status, 403)
+        with self.assertRaises(MemoryClientError) as denied:
+            self.client.task_state(other, "goal-render")
+        self.assertEqual(denied.exception.status, 403)
+        # The phase-2 continuity read shows reported progress, never factual
+        # completion and never a GoalStore execution receipt.
+        recall = self.client.task_recall(owner, "OSG港口场景遮挡剔除")
+        self.assertEqual(recall["tasks"][0]["task_status"], "unverified")
+        self.assertEqual(recall["tasks"][0]["reported_progress"]["state"], "active")
+        self.assertEqual(recall["tasks"][0]["reported_progress"]["status_basis"],
+                         "user_report")
+        # Revocation blocks reading; erasure cleans up all task events.
+        person = next(p for p in self.admin.list_people() if any(
+            i["external_user_id"] == "20101" for i in p["identities"]))
+        self.admin.admin_consent(person["person_id"], "timeline", False)
+        with self.assertRaises(MemoryClientError) as denied:
+            self.client.task_state(owner, "goal-render")
+        self.assertEqual(denied.exception.status, 403)
+        self.admin.admin_consent(person["person_id"], "timeline", True)
+        self.client.erase_self(owner)
+        with self.core.database.connection() as db:
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM task_progress_events").fetchone()[0], 0)
+
+    def test_task_progress_rejects_vague_or_cross_task_inferences(self):
+        self.core.auto_qq_timeline = True
+        identity = MemoryChannel("qq", "10001", "20202")
+        self.client.onboard_qq(identity, "对话者")
+        first = self.client.receive(
+            identity, chat_id="private:20202", message_id="origin-a",
+            content="准备研究OSG港口场景软件遮挡剔除")
+        second = self.client.receive(
+            identity, chat_id="private:20202", message_id="origin-b",
+            content="准备研究OSG场景软件遮挡剔除")
+        self.admin.admin_bind_goal_origin(
+            identity, task_id="goal-a", owner_scope="qq:10001:private:20202",
+            source_entry_id=first["entry_id"])
+        self.admin.admin_bind_goal_origin(
+            identity, task_id="goal-b", owner_scope="qq:10001:private:20202",
+            source_entry_id=second["entry_id"])
+        # An unspecified "that thing" is not evidence of which task changed.
+        self.client.receive(identity, chat_id="private:20202",
+                            message_id="vague", content="那个问题终于解决了")
+        self.assertEqual(self.client.task_state(identity, "goal-a")["events"], [])
+        self.assertEqual(self.client.task_state(identity, "goal-b")["events"], [])
+        self.client.receive(identity, chat_id="private:20202",
+                            message_id="ambiguous",
+                            content="OSG场景软件遮挡剔除已经开始做了")
+        one = self.client.task_state(identity, "goal-a")
+        two = self.client.task_state(identity, "goal-b")
+        self.assertEqual(one["state"], "proposed")
+        self.assertEqual(two["state"], "proposed")
+        self.assertEqual(one["events"][-1]["review_state"], "pending")
+        self.assertEqual(two["events"][-1]["review_state"], "pending")
+        chosen = two["events"][-1]["event_id"]
+        reviewed = self.admin.admin_task_event_review(
+            identity, event_id=chosen, action="accept")
+        self.assertTrue(reviewed["changed"])
+        self.assertEqual(self.client.task_state(identity, "goal-b")["state"], "active")
+        self.assertEqual(self.client.task_state(identity, "goal-a")["state"], "proposed")
+        rejected = self.admin.admin_task_event_review(
+            identity, event_id=one["events"][-1]["event_id"], action="reject")
+        self.assertEqual(rejected["review_state"], "rejected")
+        with self.assertRaises(MemoryClientError) as error:
+            self.admin.admin_task_event_review(
+                identity, event_id=chosen, action="reject")
+        self.assertEqual(error.exception.status, 400)
+        # A message written after a goal does not automatically create a goal,
+        # and ungrounded planned intentions are not progress completions.
+        self.client.receive(identity, chat_id="private:20202", message_id="future",
+                            content="OSG软件遮挡剔除计划明天已经完成")
+        self.assertEqual(self.client.task_state(identity, "goal-b")["state"], "active")
     def test_task_origin_must_be_real_received_user_entry(self):
         self.core.auto_qq_timeline = True
         owner = MemoryChannel("qq", "10001", "20001")
