@@ -724,8 +724,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(passed_identity.external_user_id, "42")
         # The V3 Skill is the only trigger. No eager recall of older memories.
         bridge.memory_client.recall.assert_not_called()
-        self.assertIn("用户报告", state.context.history[-1]["content"]
-                      if False else decisions[1]["tool_feedback"])
+        self.assertIn("用户报告", decisions[1]["tool_feedback"])
         bridge.send_reply.assert_awaited_once()
 
     async def test_v3_social_reply_does_not_search_memory(self):
