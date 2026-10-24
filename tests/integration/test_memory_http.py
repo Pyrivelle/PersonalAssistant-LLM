@@ -277,6 +277,9 @@ class HttpMemoryTests(unittest.TestCase):
         continuation = self.client.receive(
             a, chat_id="private:20001", message_id="next-1",
             content="OSG遮挡剔除继续研究LOD简化细节")
+        current_turn = self.client.receive(
+            a, chat_id="private:20001", message_id="next-2",
+            content="OSG遮挡剔除这个事情今天继续聊")
         self.client.receive(
             b, chat_id="private:20002", message_id="b-1",
             content="OSG港口场景的遮挡剔除和性能优化")
@@ -291,7 +294,7 @@ class HttpMemoryTests(unittest.TestCase):
             source_entry_id=other_task["entry_id"])
         result = self.client.task_recall(
             a, "接着聊OSG遮挡剔除的做法", limit=2,
-            exclude_entry_id=continuation["entry_id"])
+            exclude_entry_id=current_turn["entry_id"])
         self.assertEqual([x["task_id"] for x in result["tasks"]], ["goal-osg"])
         item = result["tasks"][0]
         self.assertEqual(item["origin"]["relation"], "verified_origin")
@@ -301,6 +304,8 @@ class HttpMemoryTests(unittest.TestCase):
                             for h in item["history"]))
         self.assertTrue(all(h["relation"] == "possible_related"
                             for h in item["history"]))
+        self.assertFalse(any(h["entry_id"] == current_turn["entry_id"]
+                             for h in item["history"]))
         self.assertEqual(item["curated_candidates"], [])
         self.assertEqual(self.client.task_recall(
             a, "晚上吃饭", limit=2)["tasks"], [])
