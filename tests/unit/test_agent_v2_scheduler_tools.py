@@ -4,7 +4,7 @@ import unittest
 from zhuangfy.agent_v2.scheduler import SchedulerConfig, UnifiedTurnScheduler
 from zhuangfy.agent_v2.turn_trigger import TurnEvent
 from zhuangfy.agent_v2.tools import build_builtin_registry
-from zhuangfy.agent_v2.runtime import AgentCycleEngine
+from zhuangfy.agent_v2.runtime import AgentCycleEngine, AuthorizedToolRegistry, ToolBinding, _search_relation
 from zhuangfy.agent_v2.planner import PlanDecision
 
 
@@ -137,6 +137,39 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         result = await AgentCycleEngine().run(planner)
         self.assertEqual(result.plan.reply_act, "自然回复")
         self.assertEqual(result.tool_feedback(), "")
+
+
+    async def test_search_repetition_and_topic_drift_do_not_execute(self):
+        for second, reason in (
+            ("赛博朋克 边缘行者 第二季 剧情 角色", "duplicate_search"),
+            ("武陵 天气 文化活动 近期", "search_topic_drift"),
+        ):
+            with self.subTest(query=second):
+                calls = []
+                async def fake_search(args):
+                    calls.append(args["query"])
+                    return "已获得公开 HTTPS 搜索摘要"
+                registry = AuthorizedToolRegistry()
+                registry.register(ToolBinding(
+                    name="web_search.search", handler=fake_search,
+                    scopes=frozenset({"private"}),
+                    parameters={"type":"object","properties":{"query":{"type":"string"}},
+                                "required":["query"],"additionalProperties":False}))
+                async def planner(receipts):
+                    return PlanDecision(
+                        action="tool", confidence=.95, tool_name="web_search.search",
+                        tool_arguments={"query": "赛博朋克 边缘行者 第二季 剧情" if not receipts else second})
+                result = await AgentCycleEngine(max_tools=3).run(
+                    planner, registry=registry, allow_tools=True)
+                self.assertEqual(result.reason, reason)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(result.plan.action, "reply")
+                self.assertEqual(len(result.receipts), 1)
+
+    async def test_related_novel_search_is_allowed(self):
+        self.assertEqual(_search_relation(
+            "赛博朋克 边缘行者 第二季 剧情",
+            "赛博朋克 边缘行者 第二季 Netflix 官方人物介绍"), "related")
 
 
 if __name__ == "__main__":
