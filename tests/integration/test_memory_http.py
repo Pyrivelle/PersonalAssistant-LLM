@@ -94,6 +94,39 @@ class HttpMemoryTests(unittest.TestCase):
             self.admin.admin_consent(p["person_id"], purpose, True)
         return p["person_id"], identity
 
+    def test_qq_auto_onboard_is_client_only_and_requires_separate_consent(self):
+        claim = MemoryChannel("qq", "10001", "20002")
+        created = self.client.onboard_qq(claim, "梨愿")
+        self.assertTrue(created["created"])
+        self.assertEqual(created["display_name"], "梨愿")
+        self.assertFalse(created["timeline_consent"])
+        self.assertFalse(created["curation_consent"])
+        again = self.client.onboard_qq(claim, "新的 QQ 昵称")
+        self.assertFalse(again["created"])
+        self.assertEqual(again["display_name"], "梨愿")
+        same_name = self.client.onboard_qq(MemoryChannel("qq", "10001", "20003"), "梨愿")
+        self.assertTrue(same_name["created"])
+        same_user_different_bot = self.client.onboard_qq(MemoryChannel("qq", "10002", "20002"), "梨愿")
+        self.assertTrue(same_user_different_bot["created"])
+        people = self.admin.request("/v1/admin/list-people", {})["people"]
+        self.assertEqual(len({p["person_id"] for p in people}), 3)
+        with self.assertRaises(MemoryClientError) as blocked:
+            self.client.receive(claim, chat_id="private:20002", message_id="m1", content="你好")
+        self.assertEqual(blocked.exception.status, 403)
+        target = next(p for p in people if any(
+            item["channel_account_id"] == "10001" and item["external_user_id"] == "20002"
+            for item in p["identities"]))
+        self.admin.admin_consent(target["person_id"], "timeline", True)
+        accepted = self.client.receive(
+            claim, chat_id="private:20002", message_id="m1", content="你好")
+        self.assertTrue(accepted["entry_id"])
+        with self.assertRaises(MemoryClientError) as blocked:
+            self.client.onboard_qq(MemoryChannel("desktop", "local", "abc"), "伪造")
+        self.assertEqual(blocked.exception.status, 400)
+        with self.assertRaises(MemoryClientError) as blocked:
+            self.admin.onboard_qq(MemoryChannel("qq", "10001", "20004"), "冒充")
+        self.assertEqual(blocked.exception.status, 401)
+
     def test_verified_channel_identity_and_historical_turn(self):
         a, aid = self._person("甲", "alice")
         b, bid = self._person("同名", "bob")
