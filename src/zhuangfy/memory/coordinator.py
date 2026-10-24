@@ -72,7 +72,8 @@ class MemoryCore:
         created QQ people. Curator permission always remains ungranted.
         """
         person, created = self.identities.ensure_qq_person(
-            self._identity(identity), display_name)
+            self._identity(identity), display_name,
+            initial_timeline=self.auto_qq_timeline)
         return {
             "created": created,
             "display_name": person.display_name,
