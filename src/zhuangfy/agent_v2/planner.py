@@ -222,7 +222,8 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
         "planner", settings, api_key, history[-10:], user_text[:1500],
         routes=routes, system_prompt=prompt, visual_context=visual_context[:1500],
         context_notes=feedback, trace_id=trace_id,
-        response_validator=lambda text: _valid_plan_v2(text),
+        response_validator=validator,
+        planner_schema=DECISION_SCHEMA,
     )
     decision = parse_plan_v2(raw, allow_voice=allow_voice)
     if relationship_behavior_r1 and decision.action == "reply":
