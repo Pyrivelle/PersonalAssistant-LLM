@@ -61,7 +61,7 @@ class TaskContinuity:
         self.retriever = retriever
 
     def recall(self, *, agent_id: str, identity: ChannelIdentity,
-               query: str, limit: int = 2) -> dict:
+               query: str, limit: int = 2, exclude_entry_id: str = "") -> dict:
         """Return bounded candidate task histories, never new confirmed links.
 
         No matching model run and no mutation. Authorization and ownership
