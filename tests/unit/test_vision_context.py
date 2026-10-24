@@ -33,5 +33,45 @@ class VisionContextTests(unittest.TestCase):
             self.assertEqual(db.refresh("qq:msg:2", "vision-v1").status, "completed")
 
 
+    def test_model_versions_and_chat_scopes_are_isolated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = VisionDescriptionStore(Path(tmp) / "cache.sqlite3")
+            digest = "a" * 64
+            db.store("qq:1:private:2:evt:0", digest, "model-A", "A描述")
+            db.store("qq:1:private:3:evt:0", digest, "model-B", "B描述")
+            self.assertEqual(db.lookup(digest, "model-A"), "A描述")
+            self.assertEqual(db.lookup(digest, "model-B"), "B描述")
+            self.assertEqual(len(db.recent("qq:1:private:2:", "model-A")), 1)
+            self.assertEqual(db.recent("qq:1:private:3:", "model-A"), [])
+            self.assertEqual(db.recent("qq:1:private:2:", "model-B"), [])
+
+    def test_failed_then_retried_image_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = VisionDescriptionStore(Path(tmp) / "cache.sqlite3")
+            digest = "b" * 64
+            db.mark_failed("chat:m1", digest, "signature")
+            self.assertEqual(db.refresh("chat:m1", "signature").status, "failed")
+            db.store("chat:m1", digest, "signature", "可见物体")
+            self.assertEqual(db.refresh("chat:m1", "signature").status, "completed")
+
+    def test_legacy_schema_migrates_without_dropping_latest_description(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "old.sqlite3"
+            with sqlite3.connect(path) as con:
+                con.execute("""CREATE TABLE descriptions(
+                    image_hash TEXT PRIMARY KEY, description TEXT NOT NULL,
+                    model_signature TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+                con.execute("INSERT INTO descriptions(image_hash,description,model_signature) VALUES (?,?,?)",
+                            ("c"*64, "旧描述", "old"))
+                con.execute("""CREATE TABLE message_images(
+                    message_key TEXT PRIMARY KEY, image_hash TEXT NOT NULL, status TEXT NOT NULL)""")
+            db = VisionDescriptionStore(path)
+            self.assertEqual(db.lookup("c"*64, "old"), "旧描述")
+            db.store("m2", "c"*64, "new", "新描述")
+            self.assertEqual(db.lookup("c"*64, "new"), "新描述")
+            self.assertEqual(db.lookup("c"*64, "old"), "旧描述")
+
+
 if __name__ == "__main__":
     unittest.main()
