@@ -38,6 +38,7 @@ class MemoryCore:
         self.database = MemoryDatabase(self.root / "memory.sqlite3")
         self.identities = IdentityRepository(self.database)
         self.timeline = TimelineRepository(self.database, self.identities)
+        self.task_links = TaskMemoryLinks(self.database, self.identities, self.timeline)
         self.relationship = RelationshipCore(self.database, self.identities)
         self.relationship_evolution = RelationshipEvolution(self.relationship)
         self.curated = CuratorStore(self.database, self.identities, self.timeline)
