@@ -127,6 +127,26 @@ class HttpMemoryTests(unittest.TestCase):
             self.admin.onboard_qq(MemoryChannel("qq", "10001", "20004"), "冒充")
         self.assertEqual(blocked.exception.status, 401)
 
+    def test_auto_capture_is_local_and_never_automatically_curates(self):
+        self.core.auto_qq_timeline = True
+        claim = MemoryChannel("qq", "10001", "20005")
+        profile = self.client.onboard_qq(claim, "新用户")
+        self.assertTrue(profile["created"])
+        self.assertTrue(profile["timeline_consent"])
+        self.assertFalse(profile["curation_consent"])
+        captured = self.client.receive(
+            claim, chat_id="private:20005", message_id="m-1", content="第一句")
+        self.assertTrue(captured["entry_id"])
+        people = self.admin.request("/v1/admin/list-people", {})["people"]
+        person_id = next(p["person_id"] for p in people if p["display_name"] == "新用户")
+        self.admin.admin_consent(person_id, "timeline", False)
+        again = self.client.onboard_qq(claim, "新名字")
+        self.assertFalse(again["timeline_consent"])
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.receive(claim, chat_id="private:20005",
+                                message_id="m-2", content="删除后再次发消息")
+        self.assertEqual(e.exception.status, 403)
+
     def test_verified_channel_identity_and_historical_turn(self):
         a, aid = self._person("甲", "alice")
         b, bid = self._person("同名", "bob")
