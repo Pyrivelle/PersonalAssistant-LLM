@@ -85,6 +85,7 @@ class PlanDecision:
     wait_seconds: int = 0
     tool_name: str = ""
     tool_arguments: dict | None = None
+    selection_reason: str = ""  # V3 decision basis, not chain of thought
 
     def prompt(self) -> str:
         return build_replyer_guidance(self)
