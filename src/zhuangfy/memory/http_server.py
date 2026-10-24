@@ -33,7 +33,7 @@ ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/list-people", "/v1/admin/list-memories",
     "/v1/admin/sync-index", "/v1/admin/reflect-one",
     "/v1/admin/evidence", "/v1/admin/correct", "/v1/admin/forget-memory",
-    "/v1/admin/forget-person", "/v1/admin/link-episodes",
+    "/v1/admin/forget-person", "/v1/admin/link-episodes", "/v1/admin/bind-goal-origin",
     "/v1/admin/list-jobs", "/v1/admin/retry-job",
     "/v1/admin/relationship/enroll", "/v1/admin/relationship/correct",
     "/v1/admin/relationship/get", "/v1/admin/relationship/events",
