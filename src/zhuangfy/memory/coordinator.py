@@ -111,6 +111,27 @@ class MemoryCore:
             agent_id=self.agent_id, identity=self._identity(identity),
             task_id=task_id)
 
+    def task_state(self, *, identity: dict, task_id: str, limit: int = 15) -> dict:
+        """User-report-based state, independent of GoalStore execution status."""
+        return self.task_events.snapshot(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            task_id=task_id, limit=limit)
+
+    def admin_task_event_review(self, *, identity: dict, event_id: str,
+                                action: str) -> dict:
+        return self.task_events.review(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            event_id=event_id, action=action)
+
+    def admin_task_event_correct(self, *, identity: dict, task_id: str,
+                                 source_entry_id: str, supersedes_event_id: str,
+                                 reported_state: str) -> dict:
+        return self.task_events.correct(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            task_id=task_id, source_entry_id=source_entry_id,
+            supersedes_event_id=supersedes_event_id,
+            reported_state=reported_state)
+
     def receive(self, *, identity: dict, chat_id: str, message_id: str, content: str) -> dict:
         ident = self._identity(identity)
         conv = self.timeline.open_private(
