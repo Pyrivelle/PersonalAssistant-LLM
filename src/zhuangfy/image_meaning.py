@@ -94,3 +94,14 @@ class ImageMeaningStore:
                 WHERE conversation_id=? AND image_hash=?""",
                 (conversation_id,digest)).fetchone()
         return row[0] if row else ""
+
+    def erase_conversation(self, conversation_id: str) -> None:
+        """Erase private interpretations and image-reference provenance."""
+        if not conversation_id:
+            raise ValueError("missing conversation id")
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute("DELETE FROM image_meanings WHERE conversation_id=?",
+                       (conversation_id,))
+            db.execute("DELETE FROM image_mentions WHERE conversation_id=?",
+                       (conversation_id,))
+            db.commit()
