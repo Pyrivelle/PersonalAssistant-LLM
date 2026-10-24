@@ -594,7 +594,7 @@ class QqBridge:
                         self._memory_timeline_accounts.add(account)
                     if registration.get("created"):
                         log_event("记忆", "自动建档", f"QQ私聊身份已建立：{incoming.user_id}")
-                if account not in self._memory_timeline_accounts:
+                if account not in self._memory_timeline_accounts or incoming.text == IMAGE_ONLY_PROMPT:
                     return None
                 return await asyncio.to_thread(
                     self.memory_client.receive, claim,
@@ -665,7 +665,7 @@ class QqBridge:
                                     is_pure_emoji=normalized.is_pure_emoji,
                                     mentioned=(incoming.kind == "group" and incoming.directed))
         if (self.memory_client is not None and incoming.kind == "private"
-                and incoming.message_id and incoming.text != IMAGE_ONLY_PROMPT
+                and incoming.message_id
                 and incoming.text.strip() not in {
                     "/forget_me", "/删除我的记忆", "/continue", "/discard", "/retry"
                 }):
