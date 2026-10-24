@@ -73,6 +73,11 @@ class BraveAdapterTests(unittest.TestCase):
         self.assertEqual(req.get_header("X-subscription-token"), "mock-key-1234567890")
         self.assertIsNone(_NoRedirects().redirect_request(None, None, 302, "",
                                                            {}, "http://127.0.0.1"))
+        cn_search = BraveSearch("mock-key-1234567890")
+        cn_opener = FakeOpener(response=sample_json())
+        cn_search._opener = cn_opener
+        cn_search.search("计算机考研最新资料")
+        self.assertIn("search_lang=zh-hans", cn_opener.calls[0][0].full_url)
 
     def test_private_queries_never_go_to_provider(self):
         api = BraveSearch("mock-key-1234567890")
