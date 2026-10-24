@@ -182,6 +182,16 @@ class CycleResult:
     rounds: int
     reason: str = ""
 
+    @property
+    def decision(self):
+        from zhuangfy.context_protocol import AgentDecision
+        reason = self.reason or (
+            "silence_not_allowed" if self.plan.action == "stop" and self.action != "stop"
+            else "wait_already_consumed" if self.plan.action == "wait" and self.action != "wait"
+            else "tool_denied" if self.plan.action == "tool" and self.action != "tool"
+            else "planner_selected")
+        return AgentDecision(self.plan.action, self.action, reason)
+
     def tool_feedback(self) -> str:
         """Bounded evidence with explicit outcome; preserve complete receipt lines."""
         if not self.receipts:
@@ -304,7 +314,10 @@ class AgentCycleEngine:
                                    already_waited=already_waited, tools_enabled=authorized)
             if action != "tool":
                 emit("action", round_no, action if action == plan.action else f"{plan.action}->{action}")
-                reason = "tool_denied" if plan.action == "tool" else ""
+                reason = ("tool_denied" if plan.action == "tool"
+                          else "silence_not_allowed" if plan.action == "stop" and action != "stop"
+                          else "wait_already_consumed" if plan.action == "wait" and action != "wait"
+                          else "planner_selected")
                 return CycleResult(plan, action, tuple(receipts), round_no, reason)
             if plan.tool_name == "web_search.search" and previous_searches:
                 query = (plan.tool_arguments or {}).get("query", "")

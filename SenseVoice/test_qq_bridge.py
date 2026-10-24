@@ -457,7 +457,9 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
              patch.object(qq_bridge, "invoke_stage", side_effect=fake_stage):
             await bridge.process(state)
         self.assertEqual(calls[0][1], "给你看看这张图。")
-        self.assertIn("画面的主体", calls[0][2]["system_prompt"])
+        self.assertIn("第三人称观察资料", calls[0][2]["system_prompt"])
+        self.assertIn("不要假定图片人物就是用户",
+                      calls[0][2]["system_prompt"])
         self.assertIn("像回应朋友分享", calls[1][2]["emotion_context"])
         self.assertEqual(bridge.send_reply.await_args.args[1], "这朵玫瑰像是特意留给人的。")
 

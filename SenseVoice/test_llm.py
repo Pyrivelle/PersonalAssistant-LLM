@@ -117,12 +117,37 @@ class LlmTests(unittest.TestCase):
         with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
             llm.chat(llm.LlmSettings(), "test-key", [], "这是什么？",
                      visual_context="可见一只蓝色杯子")
-        self.assertIn("蓝色杯子", captured["messages"][-2]["content"])
-        self.assertIn("不是用户输入的画面描述", captured["messages"][-3]["content"])
-        self.assertIn("不要说自己看不到图片", captured["messages"][-3]["content"])
-        self.assertIn("不把视觉观察逐条复述成识别清单", captured["messages"][-3]["content"])
-        self.assertEqual(captured["messages"][-1], {"role": "user", "content": "这是什么？"})
+        # Visual evidence is attached to the original user turn, not a
+        # fabricated second user message from the vision system.
+        final = captured["messages"][-1]
+        self.assertEqual(final["role"], "user")
+        self.assertTrue(final["content"].startswith("这是什么？"))
+        self.assertIn("蓝色杯子", final["content"])
+        self.assertIn("本消息图片的独立观察", final["content"])
+        self.assertEqual(sum(m["role"] == "user" for m in captured["messages"]), 1)
+        self.assertIn("图片中的人物与台词不能自动认定为发送者",
+                      captured["messages"][-2]["content"])
         self.assertNotIn("蓝色杯子", captured["messages"][0]["content"])
+
+    def test_prior_evidence_and_current_text_have_one_user_role(self):
+        captured = {}
+
+        def fake_open(request, timeout):
+            captured["messages"] = json.loads(request.data)["messages"]
+            return FakeResponse()
+
+        with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
+            llm.chat(llm.LlmSettings(), "test-key", [], "我们继续聊。",
+                     context_notes="上回查询结果摘要",
+                     tool_context="搜索发现官方公告",
+                     memories=[{"memory": "用户明确关注发布情况"}])
+        messages = captured["messages"]
+        self.assertEqual(sum(x["role"] == "user" for x in messages), 1)
+        current = messages[-1]["content"]
+        for fact in ("我们继续聊。", "上回查询结果摘要", "搜索发现官方公告",
+                     "用户明确关注发布情况"):
+            self.assertIn(fact, current)
+        self.assertTrue(current.startswith("我们继续聊。"))
 
     def test_planning_response_is_visible_in_current_session(self):
         with patch.object(llm.urllib.request, "urlopen", return_value=FakeResponse()), \
@@ -189,8 +214,11 @@ class LlmTests(unittest.TestCase):
         with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
             llm.chat(llm.LlmSettings(), "test-key", [], "你记得我吗？",
                      memories=[{"memory": "用户偏好简短解释"}])
-        self.assertEqual(captured["messages"][-1]["content"], "你记得我吗？")
-        self.assertIn("用户偏好简短解释", captured["messages"][-2]["content"])
+        self.assertEqual(captured["messages"][-1]["role"], "user")
+        self.assertTrue(captured["messages"][-1]["content"].startswith("你记得我吗？"))
+        self.assertIn("用户偏好简短解释", captured["messages"][-1]["content"])
+        self.assertIn("长期记忆候选", captured["messages"][-1]["content"])
+        self.assertEqual(sum(m["role"] == "user" for m in captured["messages"]), 1)
 
     def test_emotion_context_is_bounded_and_keeps_current_user_last(self):
         captured = {}
