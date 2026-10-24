@@ -117,11 +117,16 @@ class LlmTests(unittest.TestCase):
         with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
             llm.chat(llm.LlmSettings(), "test-key", [], "这是什么？",
                      visual_context="可见一只蓝色杯子")
-        self.assertIn("蓝色杯子", captured["messages"][-2]["content"])
-        self.assertIn("不是用户输入的画面描述", captured["messages"][-3]["content"])
-        self.assertIn("不要说自己看不到图片", captured["messages"][-3]["content"])
-        self.assertIn("不把视觉观察逐条复述成识别清单", captured["messages"][-3]["content"])
-        self.assertEqual(captured["messages"][-1], {"role": "user", "content": "这是什么？"})
+        # Visual evidence is attached to the original user turn, not a
+        # fabricated second user message from the vision system.
+        final = captured["messages"][-1]
+        self.assertEqual(final["role"], "user")
+        self.assertTrue(final["content"].startswith("这是什么？"))
+        self.assertIn("蓝色杯子", final["content"])
+        self.assertIn("本消息图片的独立观察", final["content"])
+        self.assertEqual(sum(m["role"] == "user" for m in captured["messages"]), 1)
+        self.assertIn("图片中的人物与台词不能自动认定为发送者",
+                      captured["messages"][-2]["content"])
         self.assertNotIn("蓝色杯子", captured["messages"][0]["content"])
 
     def test_planning_response_is_visible_in_current_session(self):
