@@ -61,6 +61,20 @@ class MemoryCore:
             raise PermissionError("Unknown or unverified identity")
         return person_id
 
+    def onboard_qq(self, *, identity: dict, display_name: str) -> dict:
+        """Trust-boundary call: only a QQ adapter with the client token may invoke.
+
+        It creates an identity shell, never Timeline or curation consent.
+        """
+        person, created = self.identities.ensure_qq_person(
+            self._identity(identity), display_name)
+        return {
+            "created": created,
+            "display_name": person.display_name,
+            "timeline_consent": self.identities.has_consent(person.person_id, "timeline"),
+            "curation_consent": self.identities.has_consent(person.person_id, "curation"),
+        }
+
     def receive(self, *, identity: dict, chat_id: str, message_id: str, content: str) -> dict:
         ident = self._identity(identity)
         conv = self.timeline.open_private(
