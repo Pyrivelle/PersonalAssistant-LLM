@@ -18,7 +18,7 @@ _PAIR = re.compile(r"([1-9]\d{0,19}):([1-9]\d{0,19})\Z")
 
 def restrict_web_search_for_qq(
     registry: AuthorizedToolRegistry, *,
-    principal: SkillPrincipal,
+    principal: SkillPrincipal | None,
     allowed_pairs: str,
 ) -> AuthorizedToolRegistry:
     """Return a private-turn registry with Web Search removed unless granted.
@@ -29,8 +29,6 @@ def restrict_web_search_for_qq(
     """
     if WEB_TOOL not in registry.public_names(scope="private", allow_mutation=True):
         return registry
-    if not isinstance(principal, SkillPrincipal):
-        raise TypeError("Verified SkillPrincipal required")
     grants = []
     if isinstance(allowed_pairs, str) and len(allowed_pairs) <= 8192:
         for item in allowed_pairs.split(","):
@@ -44,9 +42,10 @@ def restrict_web_search_for_qq(
                 capability=WEB_TOOL,
                 resource_id=WEB_RESOURCE,
             ))
-    allowed = SkillAccessPolicy(tuple(grants)).allows(
-        principal, WEB_TOOL, resource_id=WEB_RESOURCE)
-    if allowed and principal.scope == "private" and principal.platform == "qq":
+    allowed = (isinstance(principal, SkillPrincipal)
+               and SkillAccessPolicy(tuple(grants)).allows(
+                   principal, WEB_TOOL, resource_id=WEB_RESOURCE))
+    if allowed and principal is not None and principal.scope == "private" and principal.platform == "qq":
         return registry
 
     result = AuthorizedToolRegistry()
