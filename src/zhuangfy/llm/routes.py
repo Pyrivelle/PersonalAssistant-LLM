@@ -283,6 +283,7 @@ def invoke_stage(
     on_attempt: Callable[[str, int, str], None] | None = None,
     response_validator: Callable[[str], bool] | None = None,
     image_data_url: str | None = None,
+    planner_schema: dict | None = None,
 ) -> str:
     """Try the stage's ordered endpoints. Only retries generation, never delivery.
 
