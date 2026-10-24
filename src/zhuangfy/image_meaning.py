@@ -41,7 +41,36 @@ class ImageMeaningStore:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(conversation_id,image_hash)
             )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS image_mentions (
+                conversation_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                image_hash TEXT NOT NULL,
+                seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(conversation_id,message_id)
+            )""")
             db.commit()
+
+    def record_image(self, conversation_id: str, sender_id: str,
+                     message_id: str, digest: str):
+        if not all((conversation_id,sender_id,message_id)) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("invalid image reference")
+        with closing(sqlite3.connect(self.path)) as db:
+            db.execute("""INSERT OR REPLACE INTO image_mentions
+                (conversation_id,sender_id,message_id,image_hash)
+                VALUES(?,?,?,?)""", (conversation_id,sender_id,message_id,digest))
+            db.commit()
+
+    def latest_unambiguous(self, conversation_id: str, sender_id: str,
+                           *, minutes: int = 10) -> str:
+        """Do not bind ambiguous or old images to a new clarification."""
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute("""SELECT image_hash FROM image_mentions
+                WHERE conversation_id=? AND sender_id=?
+                AND seen_at >= datetime('now',?)
+                ORDER BY seen_at DESC, rowid DESC LIMIT 2""",
+                (conversation_id,sender_id,f"-{max(1,min(minutes,60))} minutes")).fetchall()
+        return rows[0][0] if len(rows)==1 else ""
 
     def save(self, conversation_id: str, digest: str,
              explanation: str, source_message_id: str):
