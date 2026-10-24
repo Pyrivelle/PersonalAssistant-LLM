@@ -35,6 +35,7 @@ class ModelCandidate:
     model: str
     enabled: bool = True
     thinking: str = "auto"
+    planner_format: str = "auto"  # auto/prompt/json_object/json_schema
 
     def validated(self) -> "ModelCandidate":
         if not IDENTIFIER.fullmatch(self.id):
