@@ -42,6 +42,8 @@ class ModelCandidate:
             raise ValueError("模型候选 ID 必须是小写英文字母、数字或下划线")
         if type(self.enabled) is not bool:
             raise ValueError("模型候选的启用设置须为布尔值")
+        if self.planner_format not in {"auto", "prompt", "json_object", "json_schema"}:
+            raise ValueError("Planner structured format invalid")
         if self.thinking not in {"auto", "enabled", "disabled"}:
             raise ValueError("模型候选的思考设置无效")
         normalized = LlmSettings(self.provider, self.base_url, self.model).validated()
