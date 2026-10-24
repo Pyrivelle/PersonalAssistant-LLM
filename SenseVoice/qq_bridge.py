@@ -573,7 +573,7 @@ class QqBridge:
                 elif data.get("post_type") == "message" and len(self.early_events) < 32:
                     self.early_events.append(data)
 
-    async def _capture_private_message(self, incoming: Incoming) -> dict | None:
+    async def _capture_private_message(self, incoming: Incoming, *, bot_id: int) -> dict | None:
         """Persist each real QQ private text event, independently of reply timing.
 
         Only admitted, deduplicated messages enter this function. Both identity
@@ -581,7 +581,7 @@ class QqBridge:
         """
         if self.memory_client is None or not incoming.message_id:
             return None
-        account = (self.bot_id, incoming.user_id)
+        account = (bot_id, incoming.user_id)
         lock = self._memory_capture_locks.setdefault(account, asyncio.Lock())
         async with lock:
             claim = MemoryChannel("qq", str(account[0]), str(account[1]))
@@ -665,7 +665,7 @@ class QqBridge:
                                     is_pure_emoji=normalized.is_pure_emoji,
                                     mentioned=(incoming.kind == "group" and incoming.directed))
         if (self.memory_client is not None and incoming.kind == "private"
-                and incoming.message_id and incoming.image is None
+                and incoming.message_id and incoming.text != IMAGE_ONLY_PROMPT
                 and incoming.text.strip() not in {
                     "/forget_me", "/删除我的记忆", "/continue", "/discard", "/retry"
                 }):
@@ -673,7 +673,7 @@ class QqBridge:
             # Planner silence can discard a reply. Never record fake batch IDs.
             capture_key = (self.bot_id, incoming.user_id, incoming.message_id)
             self._memory_capture_tasks[capture_key] = asyncio.create_task(
-                self._capture_private_message(incoming))
+                self._capture_private_message(incoming, bot_id=self.bot_id))
             if len(self._memory_capture_tasks) > 1024:
                 for key, task in list(self._memory_capture_tasks.items()):
                     if task.done():
