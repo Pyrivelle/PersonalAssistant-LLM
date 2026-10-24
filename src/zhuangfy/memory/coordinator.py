@@ -99,7 +99,7 @@ class MemoryCore:
         """Recall source-labelled past discussions for relevant linked goals."""
         return self.task_continuity.recall(
             agent_id=self.agent_id, identity=self._identity(identity),
-            query=query, limit=limit)
+            query=query, limit=limit, exclude_entry_id=exclude_entry_id)
 
     def task_origin(self, *, identity: dict, task_id: str) -> dict:
         """Read only evidence for the authenticated QQ owner's goal."""
