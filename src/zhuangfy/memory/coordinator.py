@@ -20,6 +20,7 @@ from .projector import CuratedIndexProjector
 from .retrieval import HybridMemoryRetriever
 from .timeline import TimelineRepository
 from .task_links import TaskMemoryLinks
+from .task_continuity import TaskContinuity
 from zhuangfy.relationship import RelationshipCore, RelationshipEvolution, RelationshipCandidate
 from .vector import EmbeddingProvider, QdrantLocalIndex, VectorIndex
 
@@ -48,6 +49,8 @@ class MemoryCore:
                 self.root / "qdrant", model_id=embedding.model_id, dimension=embedding.dimension),
         )
         self.retriever = HybridMemoryRetriever(self.projector, self.curated, self.identities)
+        self.task_continuity = TaskContinuity(
+            self.database, self.identities, self.timeline, self.task_links, self.retriever)
         self.admin = MemoryAdminStore(self.database, self.identities, self.curated)
         self.curator = MemoryCurator(self.curated, curator_model) if curator_model else None
         self._index_lock = threading.RLock()
@@ -90,6 +93,13 @@ class MemoryCore:
             agent_id=self.agent_id, identity=self._identity(identity),
             task_id=task_id, owner_scope=owner_scope,
             source_entry_id=source_entry_id)
+
+    def task_recall(self, *, identity: dict, query: str, limit: int = 2,
+                    exclude_entry_id: str = "") -> dict:
+        """Recall source-labelled past discussions for relevant linked goals."""
+        return self.task_continuity.recall(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            query=query, limit=limit, exclude_entry_id=exclude_entry_id)
 
     def task_origin(self, *, identity: dict, task_id: str) -> dict:
         """Read only evidence for the authenticated QQ owner's goal."""

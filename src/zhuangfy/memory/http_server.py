@@ -26,7 +26,7 @@ from .vector import FastEmbedProvider
 MAX_REQUEST_BYTES = 18_000
 PUBLIC_ENDPOINTS = frozenset({
     "/v1/onboard-qq", "/v1/receive", "/v1/recall", "/v1/complete-reply", "/v1/erase-self",
-    "/v1/relationship/snapshot", "/v1/relationship/apply", "/v1/task-origin",
+    "/v1/relationship/snapshot", "/v1/relationship/apply", "/v1/task-origin", "/v1/task-recall",
 })
 ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/create-person", "/v1/admin/link", "/v1/admin/consent",
@@ -97,6 +97,8 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.onboard_qq(**payload)
                 elif path == "/v1/receive":
                     result = core.receive(**payload)
+                elif path == "/v1/task-recall":
+                    result = core.task_recall(**payload)
                 elif path == "/v1/task-origin":
                     result = core.task_origin(**payload)
                 elif path == "/v1/recall":

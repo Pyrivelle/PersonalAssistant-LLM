@@ -93,6 +93,13 @@ class MemoryClient:
             "identity": identity.as_payload(), "display_name": display_name,
         })
 
+    def task_recall(self, identity: MemoryChannel, query: str,
+                    limit: int = 2, exclude_entry_id: str = "") -> dict:
+        return self.request("/v1/task-recall", {
+            "identity": identity.as_payload(), "query": query, "limit": limit,
+            "exclude_entry_id": exclude_entry_id,
+        })
+
     def task_origin(self, identity: MemoryChannel, task_id: str) -> dict:
         return self.request("/v1/task-origin", {
             "identity": identity.as_payload(), "task_id": task_id,

@@ -261,6 +261,136 @@ class HttpMemoryTests(unittest.TestCase):
             self.assertEqual(db.execute(
                 "SELECT count(*) FROM task_memory_links").fetchone()[0], 0)
 
+    def test_task_continuity_finds_previous_shared_topics_without_curator(self):
+        self.core.auto_qq_timeline = True
+        a = MemoryChannel("qq", "10001", "20001")
+        b = MemoryChannel("qq", "10001", "20002")
+        other_bot = MemoryChannel("qq", "10002", "20001")
+        for identity in (a, b, other_bot):
+            self.client.onboard_qq(identity, "相同昵称")
+        source = self.client.receive(
+            a, chat_id="private:20001", message_id="origin-1",
+            content="我们研究OSG港口场景的遮挡剔除和性能优化")
+        other_task = self.client.receive(
+            a, chat_id="private:20001", message_id="origin-2",
+            content="我们复习英语语法分析长难句")
+        continuation = self.client.receive(
+            a, chat_id="private:20001", message_id="next-1",
+            content="OSG遮挡剔除继续研究LOD简化细节")
+        current_turn = self.client.receive(
+            a, chat_id="private:20001", message_id="next-2",
+            content="OSG遮挡剔除这个事情今天继续聊")
+        self.client.receive(
+            b, chat_id="private:20002", message_id="b-1",
+            content="OSG港口场景的遮挡剔除和性能优化")
+        self.client.receive(
+            other_bot, chat_id="private:20001", message_id="c-1",
+            content="OSG港口场景的遮挡剔除和性能优化")
+        self.admin.admin_bind_goal_origin(
+            a, task_id="goal-osg", owner_scope="qq:10001:private:20001",
+            source_entry_id=source["entry_id"])
+        self.admin.admin_bind_goal_origin(
+            a, task_id="goal-english", owner_scope="qq:10001:private:20001",
+            source_entry_id=other_task["entry_id"])
+        result = self.client.task_recall(
+            a, "接着聊OSG遮挡剔除的做法", limit=2,
+            exclude_entry_id=current_turn["entry_id"])
+        self.assertEqual([x["task_id"] for x in result["tasks"]], ["goal-osg"])
+        item = result["tasks"][0]
+        self.assertEqual(item["origin"]["relation"], "verified_origin")
+        self.assertEqual(item["task_status"], "unverified")
+        self.assertEqual(item["origin"]["entry_id"], source["entry_id"])
+        self.assertTrue(any(h["entry_id"] == continuation["entry_id"]
+                            for h in item["history"]))
+        self.assertTrue(all(h["relation"] == "possible_related"
+                            for h in item["history"]))
+        self.assertFalse(any(h["entry_id"] == current_turn["entry_id"]
+                             for h in item["history"]))
+        self.assertEqual(item["curated_candidates"], [])
+        self.assertEqual(self.client.task_recall(
+            a, "晚上吃饭", limit=2)["tasks"], [])
+        self.assertEqual(self.client.task_recall(
+            b, "OSG遮挡剔除", limit=2)["tasks"], [])
+        self.assertEqual(self.client.task_recall(
+            other_bot, "OSG遮挡剔除", limit=2)["tasks"], [])
+        # Recreate service-layer object to verify persistent sources are
+        # discoverable without in-process continuity state.
+        from zhuangfy.memory.task_continuity import TaskContinuity
+        resumed = TaskContinuity(
+            self.core.database, self.core.identities, self.core.timeline,
+            self.core.task_links, self.core.retriever)
+        from zhuangfy.memory.identity import ChannelIdentity
+        self.assertEqual(resumed.recall(
+            agent_id=self.core.agent_id,
+            identity=ChannelIdentity("qq", "10001", "20001"),
+            query="OSG遮挡剔除")["tasks"][0]["task_id"], "goal-osg")
+        person = next(p for p in self.admin.list_people() if
+                      any(v["channel_account_id"] == "10001"
+                          and v["external_user_id"] == "20001"
+                          for v in p["identities"]))
+        self.admin.admin_consent(person["person_id"], "timeline", False)
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.task_recall(a, "OSG遮挡剔除")
+        self.assertEqual(e.exception.status, 403)
+        self.admin.admin_consent(person["person_id"], "timeline", True)
+        self.assertEqual(
+            self.client.task_recall(a, "OSG遮挡剔除")["tasks"][0]["task_id"], "goal-osg")
+        self.client.erase_self(a)
+        self.assertEqual(self.client.task_recall(b, "OSG遮挡剔除")["tasks"], [])
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.task_recall(a, "OSG遮挡剔除")
+        self.assertEqual(e.exception.status, 403)
+
+    def test_task_continuity_curated_candidates_require_separate_consent(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        self.core.auto_qq_timeline = True
+        identity = MemoryChannel("qq", "10001", "20007")
+        self.client.onboard_qq(identity, "交流者")
+        origin = self.client.receive(
+            identity, chat_id="private:20007", message_id="origin-cur",
+            content="之前研究过OSG港口的遮挡剔除优化")
+        self.admin.admin_bind_goal_origin(
+            identity, task_id="goal-cur", owner_scope="qq:10001:private:20007",
+            source_entry_id=origin["entry_id"])
+        person = self.admin.list_people()[0]
+        fabricated_hit = SimpleNamespace(memory=SimpleNamespace(
+            memory_id="some-curated-id", content="用户计划检查OSG遮挡剔除是否完成",
+            event_state="completed", source_entry_ids=(origin["entry_id"],)))
+        with patch.object(self.core.retriever, "search",
+                          return_value=[fabricated_hit]) as retrieve:
+            unapproved = self.client.task_recall(identity, "OSG遮挡剔除")
+            retrieve.assert_not_called()
+        self.assertEqual(unapproved["tasks"][0]["curated_candidates"], [])
+        self.admin.admin_consent(person["person_id"], "curation", True)
+        with patch.object(self.core.retriever, "search",
+                          return_value=[fabricated_hit]) as retrieve:
+            approved = self.client.task_recall(identity, "OSG遮挡剔除")
+            retrieve.assert_called_once()
+        item = approved["tasks"][0]
+        self.assertEqual(item["task_status"], "unverified")
+        self.assertEqual(item["curated_candidates"][0]["relation"],
+                         "semantic_candidate")
+        self.assertEqual(item["curated_candidates"][0]["event_state"], "completed")
+
+    def test_task_continuity_does_not_auto_create_or_mark_complete(self):
+        self.core.auto_qq_timeline = True
+        claim = MemoryChannel("qq", "10001", "20006")
+        self.client.onboard_qq(claim, "相同昵称")
+        self.client.receive(claim, chat_id="private:20006", message_id="m1",
+                            content="我计划未来完成港口模型")
+        self.assertEqual(self.client.task_recall(
+            claim, "港口模型未来的安排")["tasks"], [])
+        # Invalid requests cannot scan other scopes or return bulk history.
+        for text in ("", "a" * 501):
+            with self.assertRaises(MemoryClientError) as err:
+                self.client.task_recall(claim, text)
+            self.assertEqual(err.exception.status, 400)
+        with self.assertRaises(MemoryClientError) as err:
+            self.client.task_recall(claim, "港口模型", limit=100)
+        self.assertEqual(err.exception.status, 400)
+
     def test_task_origin_must_be_real_received_user_entry(self):
         self.core.auto_qq_timeline = True
         owner = MemoryChannel("qq", "10001", "20001")
