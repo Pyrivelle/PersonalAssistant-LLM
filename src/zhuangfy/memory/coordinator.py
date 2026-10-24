@@ -21,6 +21,7 @@ from .retrieval import HybridMemoryRetriever
 from .timeline import TimelineRepository
 from .task_links import TaskMemoryLinks
 from .task_continuity import TaskContinuity
+from .task_events import TaskEventStore
 from zhuangfy.relationship import RelationshipCore, RelationshipEvolution, RelationshipCandidate
 from .vector import EmbeddingProvider, QdrantLocalIndex, VectorIndex
 
