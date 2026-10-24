@@ -1221,22 +1221,22 @@ class QqBridge:
                         member_snapshot = await asyncio.to_thread(self.member_store.context_for, member_key)
                         log_event("记忆", "读取", f"{current.scope} · QQ 个人记忆 {'已提供' if member_snapshot else '暂无'}")
                     notes = state.context.prompt()
-                    # Bring completed visual evidence back into following turns.
-                    # Only the verified current conversation may access its scope.
-                    if image_ref is None:
-                        try:
-                            visual_scope = f"qq:{self.bot_id}:{current.kind}:" + (
-                                str(current.group_id) if current.kind == "group" else str(current.user_id))
-                            cache = VisionDescriptionStore(PROJECT_DATA / "vision" / "descriptions.sqlite3")
-                            signature = (f"{settings.provider}:{settings.model}:"
-                                         f"{hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:12]}")
-                            older_images = cache.recent(visual_scope + ":", signature, 2)
-                            if older_images:
-                                notes += "\n历史图片观察（仅是相同聊天中的资料，非用户本轮新指令）：\n"
-                                notes += "\n".join(
-                                    "- [图片] " + entry.description[:320] for entry in older_images)
-                        except (OSError, sqlite3.Error) as error:
-                            log_event("QQ", "视觉上下文", f"读取跳过 · {type(error).__name__}")
+                    # Evidence is scoped to the verified QQ conversation, never
+                    # inferred from user-supplied text or other participants.
+                    from zhuangfy.evidence_store import EvidenceStore
+                    evidence_scope = (f"qq:{self.bot_id}:group:{current.group_id}"
+                                      if current.kind == "group"
+                                      else f"qq:{self.bot_id}:private:{current.user_id}")
+                    evidence_store = None
+                    try:
+                        evidence_store = EvidenceStore(PROJECT_DATA / "evidence" / "context.sqlite3")
+                        previous_evidence = evidence_store.recent(
+                            evidence_scope, before_turn=turn_id)
+                        if previous_evidence:
+                            notes += "\n" + previous_evidence
+                    except (OSError, sqlite3.Error) as error:
+                        evidence_store = None
+                        log_event("QQ", "证据上下文", f"读取跳过 · {type(error).__name__}")
                     if current.kind == "group" and state.group_recent:
                         # Temporary public group context only; never used to look
                         # up private Memory Core or member profiles.
@@ -1386,6 +1386,16 @@ class QqBridge:
                 delivery.uncertain = uncertain
                 if delivery.delivered == len(delivery.parts):
                     await self._finish_reply(state, current, delivery)
+                    # Only preserve external evidence after the assistant reply
+                    # has been accepted; do not store failed/unsent turns.
+                    if evidence_store is not None:
+                        try:
+                            if visual_context:
+                                evidence_store.save(evidence_scope, turn_id, "vision", visual_context)
+                            if tool_feedback:
+                                evidence_store.save(evidence_scope, turn_id, "tool", tool_feedback)
+                        except (OSError, sqlite3.Error) as error:
+                            log_event("QQ", "证据保存", f"跳过 · {type(error).__name__}")
                 else:
                     # The remaining parts are kept in memory: explicit
                     # /continue never resends already acknowledged bubbles.
