@@ -49,6 +49,8 @@ class MemoryCore:
                 self.root / "qdrant", model_id=embedding.model_id, dimension=embedding.dimension),
         )
         self.retriever = HybridMemoryRetriever(self.projector, self.curated, self.identities)
+        self.task_continuity = TaskContinuity(
+            self.database, self.identities, self.timeline, self.task_links, self.retriever)
         self.admin = MemoryAdminStore(self.database, self.identities, self.curated)
         self.curator = MemoryCurator(self.curated, curator_model) if curator_model else None
         self._index_lock = threading.RLock()
