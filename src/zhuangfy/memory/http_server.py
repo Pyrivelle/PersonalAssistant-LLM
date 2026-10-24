@@ -26,7 +26,7 @@ from .vector import FastEmbedProvider
 MAX_REQUEST_BYTES = 18_000
 PUBLIC_ENDPOINTS = frozenset({
     "/v1/onboard-qq", "/v1/receive", "/v1/recall", "/v1/complete-reply", "/v1/erase-self",
-    "/v1/relationship/snapshot", "/v1/relationship/apply",
+    "/v1/relationship/snapshot", "/v1/relationship/apply", "/v1/task-origin",
 })
 ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/create-person", "/v1/admin/link", "/v1/admin/consent",
