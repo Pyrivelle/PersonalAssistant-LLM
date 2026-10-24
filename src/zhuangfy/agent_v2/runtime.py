@@ -7,6 +7,7 @@ No channel I/O, model SDK, filesystem, or plugins are imported here.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field, replace as dataclass_replace
 from time import monotonic
 from typing import Awaitable, Callable, Literal
@@ -201,6 +202,32 @@ class CycleResult:
         return "\n".join(lines)[:1200]
 
 
+
+def _search_terms(query: str) -> set[str]:
+    """Conservative language-independent anchors for same-turn search checks."""
+    words = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", query.casefold())
+    terms: set[str] = set()
+    for word in words:
+        if re.fullmatch(r"[\u4e00-\u9fff]+", word):
+            terms.update(word[i:i+2] for i in range(len(word)-1))
+        elif len(word) >= 3:
+            terms.add(word)
+    return terms
+
+
+def _search_relation(previous: str, proposed: str) -> str:
+    """Detect near-repeat or unrelated query, without claiming full semantics."""
+    old, new = _search_terms(previous), _search_terms(proposed)
+    if not old or not new:
+        return "unknown"
+    overlap = len(old & new) / min(len(old), len(new))
+    if overlap >= .85:
+        return "duplicate"
+    if overlap < .18:
+        return "topic_drift"
+    return "related"
+
+
 class AgentCycleEngine:
     """One logical turn. The event scheduler decides whether to create it.
 
@@ -232,8 +259,8 @@ class AgentCycleEngine:
         receipts: list[ToolReceipt] = []
         invoked: set[tuple[str, str]] = set()
         tools_used = 0
+        previous_searches: list[str] = []
         fallback = PlanDecision()
-        last_reply_plan = PlanDecision()
 
         def finalize(plan: PlanDecision, reason: str, round_no: int) -> CycleResult:
             # A request to use a tool is never a valid final reply instruction.
@@ -266,6 +293,14 @@ class AgentCycleEngine:
             if action != "tool":
                 reason = "tool_denied" if plan.action == "tool" else ""
                 return CycleResult(plan, action, tuple(receipts), round_no, reason)
+            if plan.tool_name == "web_search.search" and previous_searches:
+                query = (plan.tool_arguments or {}).get("query", "")
+                if isinstance(query, str):
+                    relations = [_search_relation(q, query) for q in previous_searches]
+                    if "duplicate" in relations:
+                        return finalize(plan, "duplicate_search", round_no)
+                    if "related" not in relations and "unknown" not in relations:
+                        return finalize(plan, "search_topic_drift", round_no)
             if tools_used >= self.max_tools or round_no >= self.max_rounds:
                 return finalize(plan, "budget_exhausted", round_no)
             key = (plan.tool_name, repr(sorted((plan.tool_arguments or {}).items())))
@@ -282,6 +317,10 @@ class AgentCycleEngine:
                 timeout=min(tool_timeout, remaining),
             )
             receipts.append(receipt)
+            if receipt.success and plan.tool_name == "web_search.search":
+                query = (plan.tool_arguments or {}).get("query", "")
+                if isinstance(query, str):
+                    previous_searches.append(query)
             # Failed tools do not trigger repeated retries or pretend success.
             if not receipt.success:
                 return finalize(plan, "tool_failed", round_no)
