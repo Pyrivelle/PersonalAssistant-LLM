@@ -334,8 +334,20 @@ def invoke_stage(
                     emotion_context=emotion_context, context_notes=context_notes,
                     timeout=timeout, stage=label,
                     **({"thinking": item.thinking} if item.thinking != "auto" else {}),
-                    **({"force_json": True} if stage == "planner" and candidate_index > 0
-                       and selected_settings.provider == "siliconflow" else {}),
+                    **({"force_json": True} if stage == "planner"
+                       and item.planner_format != "prompt" and (
+                           planner_schema is not None and (
+                               item.planner_format == "json_object"
+                               or (item.planner_format == "auto" and
+                                   selected_settings.provider == "siliconflow"))
+                           or planner_schema is None and candidate_index > 0
+                           and selected_settings.provider == "siliconflow") else {}),
+                    **({"structured_format": {
+                        "type": "json_schema",
+                        "json_schema": {"name": "planner_decision_v3",
+                                        "strict": True, "schema": planner_schema},
+                    }} if stage == "planner" and planner_schema is not None
+                    and item.planner_format == "json_schema" else {}),
                     **({"visual_context": visual_context} if visual_context else {}),
                     **({"image_data_url": image_data_url} if image_data_url is not None else {}))
                 if response_validator is not None and not response_validator(result):
