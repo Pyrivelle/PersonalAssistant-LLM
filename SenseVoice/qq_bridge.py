@@ -963,7 +963,7 @@ class QqBridge:
                                     principal=SkillPrincipal.verified_qq_private(
                                         bot_id=self.bot_id, user_id=current.user_id),
                                     memory_capture_verified=True)
-                            if tools_enabled and self.planner_settings.agent_v3_enabled:
+                            if tools_enabled:
                                 # Plugin installation is NOT authorization for
                                 # an external paid API. Only exact QQ bot/user
                                 # pairs from trusted admin env may see this tool.
