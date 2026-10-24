@@ -19,7 +19,7 @@ python -m zhuangfy.memory.http_server
 
 1. `admin_create_person(display_name)` 创建内部 Person UUID。
 2. 对从可信 OneBot 接入的真实 QQ 私聊，Bridge 可用客户端令牌自动建 Person 并关联 QQ 身份；离线或其它渠道仍需人工核验账号归属后，使用 `admin_link(person_id, MemoryChannel("qq", bot_id, qq_id), "审核凭据编号")` 关联账号。
-3. 默认使用 `admin_consent(person_id, "timeline", True)` 显式启用聊天 Timeline；若管理员配置 QQ 自动留存，仅首次新建的 QQ 人物自动开启 Timeline。无论如何，`admin_consent(person_id, "curation", True)` 始终需要管理员逐人批准才可启用长期记忆提炼；修改授权后重启 QQ Bridge 刷新缓存。
+3. 当 `ZHUANGFY_MEMORY_QQ=1` 且 Memory Service 正常运行时，QQ 私聊文本默认本地保存 Timeline，无需逐人审批。首次私聊建档，同时补齐以前已关联但尚未配置保存策略的账号。曾撤销 Timeline 或执行过 `/forget_me` 的人物不会被静默重新授权。管理端可以单独关闭本地保存。`admin_consent(person_id, "curation", True)` **始终必须管理员逐人批准**，才允许后台模型提炼长期记忆；修改已有授权后需要重启 QQ Bridge 刷新本地缓存。
 
 桌面语音需另行关联 `MemoryChannel("desktop", "local", ZHUANGFY_MEMORY_DESKTOP_USER_ID)` 到同一个 Person UUID。**昵称、用户名和自称都不能作为账户合并证明**；API 只能把通过可信客户端验证的 identity 绑定到 Person。
 
