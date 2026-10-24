@@ -210,7 +210,10 @@ class SkillManager:
                         continue
                     if not binding.description or not isinstance(binding.parameters, dict):
                         raise ValueError("missing skill tool description/schema")
-                    selected.append(replace(binding, scopes=frozenset(allowed)))
+                    selected.append(replace(
+                        binding, scopes=frozenset(allowed),
+                        visibility="core" if manifest.core_tool else "deferred",
+                        discovery_terms=manifest.keywords))
                 if not selected:
                     raise ValueError("no tools permitted by skill policy")
                 registry.register_many(selected)
