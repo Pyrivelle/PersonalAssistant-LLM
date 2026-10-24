@@ -125,7 +125,8 @@ def _read_policy(raw: object, stage: str) -> StagePolicy:
             raise ValueError("候选模型字段格式错误")
         candidates.append(ModelCandidate(
             item["id"], item["provider"], item["base_url"], item["model"],
-            item.get("enabled", True), item.get("thinking", "auto")).validated())
+            item.get("enabled", True), item.get("thinking", "auto"),
+            item.get("planner_format", "auto")).validated())
     fallback = getattr(ModelRoutes(), stage)
     kwargs = {field: raw.get(field, getattr(fallback, field))
               for field in ("retries", "retry_delay", "timeout", "total_timeout")}
