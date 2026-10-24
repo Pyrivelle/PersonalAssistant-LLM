@@ -813,15 +813,21 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
                      patch.object(qq_bridge, "load_key", return_value="test-key"), \
                      patch.object(qq_bridge, "plan_turn_v3", side_effect=planner), \
                      patch.object(qq_bridge, "invoke_stage",
-                                  return_value="根据来源，最近有一些 OSG 更新。"):
+                                  return_value="根据来源，最近有一些 OSG 更新。"), \
+                     patch.object(qq_bridge, "log_event") as activity:
                     await bridge.process(state)
+                search_events = [call.args[2] for call in activity.call_args_list
+                                 if call.args[:2] == ("QQ", "搜索结果")]
                 if grant == "88:42":
                     self.assertEqual(requested, [{"query": "OSG latest release"}])
+                    self.assertEqual(len(search_events), 1)
+                    self.assertIn("https://example.org/knowledge", search_events[0])
                     self.assertIn("web_search.search", decisions[0]["available_tools"])
                     self.assertIn("https://example.org/knowledge",
                                   decisions[1]["tool_feedback"])
                 else:
                     self.assertEqual(requested, [])
+                    self.assertEqual(search_events, [])
                     self.assertNotIn("web_search.search", decisions[0]["available_tools"])
                 bridge.send_reply.assert_awaited_once()
 

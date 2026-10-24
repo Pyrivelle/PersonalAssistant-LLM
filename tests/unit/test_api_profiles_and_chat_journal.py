@@ -31,6 +31,16 @@ class ApiProfilesAndJournalTests(unittest.TestCase):
                             "phase": "调用", "detail": "background"})
             self.assertEqual(ChatJournal(path).recent(), [event])
 
+    def test_search_receipt_survives_reopening_local_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chat.sqlite3"
+            event = {"turn_id": "turn-search", "channel": "QQ", "source": "QQ",
+                     "phase": "搜索结果",
+                     "detail": "private:0:42 · 第1次搜索 · 成功\n"
+                               "[1] 官方资料 | https://example.org/news | 摘要"}
+            ChatJournal(path).append(event)
+            self.assertEqual(ChatJournal(path).recent(), [event])
+
 
 if __name__ == "__main__":
     unittest.main()

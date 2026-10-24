@@ -107,6 +107,8 @@ def project_turns(events: list[dict]) -> list[dict]:
             turn["thinking"].append(("规划摘要", _message_text(detail, channel)))
         elif source == channel and phase == "识图":
             turn["thinking"].append(("图片理解", _message_text(detail, channel)))
+        elif source == channel and phase == "搜索结果":
+            turn["thinking"].append(("联网搜索结果", _message_text(detail, channel)))
         elif source == channel and phase in {"回复", "语音回复"}:
             part = _message_text(detail, channel)
             turn["reply_parts"].append(part)
@@ -482,7 +484,8 @@ class ChatStreamPage(QWidget):
         query = self.search.text().strip().casefold()
         if query:
             selected_turns = [turn for turn in selected_turns
-                              if query in (turn["message"] + "\n" + turn["reply"]).casefold()]
+                              if query in (turn["message"] + "\n" + turn["reply"] + "\n"
+                                           + "\n".join(detail for _, detail in turn["thinking"])).casefold()]
         selected_turns = selected_turns[-80:]
         self.conversation_title.setText(conversation_title(self._selected, self._name_by_qq))
         self.count.setText(f"{self.role_name} · {len(selected_turns)} 轮 · 本机记录")

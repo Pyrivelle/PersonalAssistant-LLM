@@ -1034,6 +1034,14 @@ class QqBridge:
                                       already_waited=bool(state.planner_waits) or image_ref is not None)
                                 plan, action = result.plan, result.action
                                 tool_feedback = result.tool_feedback()
+                                for search_number, receipt in enumerate(
+                                    (item for item in result.receipts
+                                     if item.name == "web_search.search"), start=1
+                                ):
+                                    outcome = "成功" if receipt.success else "失败"
+                                    log_event("QQ", "搜索结果",
+                                              f"{current.scope} · 第{search_number}次搜索 · {outcome}\n"
+                                              f"{receipt.summary}")
                                 log_event("QQ", "工具循环V2",
                                           f"{current.scope} · 轮数={result.rounds} · 工具={len(result.receipts)} · 结果={result.reason or '完成'}")
                             else:

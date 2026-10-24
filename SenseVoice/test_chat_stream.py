@@ -12,6 +12,21 @@ def event(turn, channel, source, phase, detail):
 
 
 class ChatStreamTests(unittest.TestCase):
+    def test_search_result_appears_in_same_turn_with_full_source(self):
+        turns = project_turns([
+            event("qq-search", "QQ", "QQ", "消息",
+                  "private:0:964692788 · 帮我查最新资料"),
+            event("qq-search", "QQ", "QQ", "搜索结果",
+                  "private:0:964692788 · 第1次搜索 · 成功\n"
+                  "[1] 官方资料 | https://example.org/news | 摘要"),
+            event("qq-search", "QQ", "QQ", "回复",
+                  "private:0:964692788 · 查到了。"),
+        ])
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["thinking"][0][0], "联网搜索结果")
+        sections = thought_sections(turns[0]["thinking"])
+        self.assertIn("https://example.org/news", sections[0][3])
+
     def test_verified_memory_name_labels_only_matching_bot(self):
         people = [{"display_name": "小庄的朋友", "identities": [{
             "platform": "qq", "channel_account_id": "3312627226",
