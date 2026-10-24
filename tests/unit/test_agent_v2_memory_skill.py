@@ -94,6 +94,41 @@ class BoundMemorySkillTests(unittest.IsolatedAsyncioTestCase):
             "task_memory.search", {"query": "OSG 项目"},
             scope="group")).success)
 
+    async def test_curated_memory_is_separate_and_service_rechecks_curation(self):
+        principal = SkillPrincipal.verified_qq_private(bot_id=10, user_id=11)
+        client = Mock()
+        reg = create_turn_registry(
+            build_builtin_registry(), memory_client=client, principal=principal,
+            memory_capture_verified=True)
+        names = SkillDiscovery(reg).select(
+            "方宜，你还记得我喜欢什么吗？", scope="private").names
+        self.assertIn("memory.search", names)
+        self.assertIn("task_memory.search", names)
+        client.recall.side_effect = PermissionError("No curation consent")
+        denied = await reg.invoke("memory.search", {"query": "我喜欢的事"},
+                                  scope="private")
+        self.assertFalse(denied.success)
+        self.assertNotIn("No curation consent", denied.summary)
+        client.recall.assert_called_once()
+        self.assertEqual(client.recall.call_args.args[0].external_user_id, "11")
+        # The model cannot select the target person or Curator policy.
+        bad = await reg.invoke("memory.search", {"query": "我喜欢的事",
+                                                 "person_id": "another-person"},
+                               scope="private")
+        self.assertFalse(bad.success)
+        client.recall.side_effect = None
+        client.recall.return_value = {"memories": [{
+            "content": "以前说过喜欢 OSG 渲染研究",
+            "event_state": "ongoing",
+        }]}
+        result = await reg.invoke("memory.search", {"query": "我喜欢的事"},
+                                  scope="private")
+        self.assertTrue(result.success, result.summary)
+        self.assertIn("OSG", result.summary)
+        self.assertFalse((await reg.invoke("memory.search",
+                                          {"query": "我喜欢的事"},
+                                          scope="group")).success)
+
     async def test_no_access_without_trusted_capture_and_fail_closed(self):
         client = Mock()
         principal = SkillPrincipal.verified_qq_private(bot_id=10, user_id=11)
