@@ -1023,6 +1023,19 @@ class QqBridge:
                                         relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled,
                                         relationship_tier=relation_tier,
                                         relationship_hint=relation_hint)
+                                def _agent_event(event: str, round_no: int, detail: str) -> None:
+                                    # The event is emitted during execution, not after the cycle.
+                                    # Never log tool args, query text, or keys here.
+                                    labels = {
+                                        "plan": "Planner决策",
+                                        "action": "行为确定",
+                                        "tool_start": "工具开始",
+                                        "tool_end": "工具结束",
+                                        "finalize": "循环结束",
+                                    }
+                                    log_event("Agent", labels.get(event, event),
+                                              f"{current.scope} · P{round_no} · {detail}")
+
                                 result = await AgentCycleEngine(
                                     max_rounds=self.planner_settings.agent_v2_max_rounds,
                                     max_tools=self.planner_settings.agent_v2_max_tools,
@@ -1031,17 +1044,10 @@ class QqBridge:
                                       registry=turn_registry,
                                       allow_tools=True, allow_mutation=False,
                                       allow_silence=allow_silence,
-                                      already_waited=bool(state.planner_waits) or image_ref is not None)
+                                      already_waited=bool(state.planner_waits) or image_ref is not None,
+                                      on_event=_agent_event)
                                 plan, action = result.plan, result.action
                                 tool_feedback = result.tool_feedback()
-                                for search_number, receipt in enumerate(
-                                    (item for item in result.receipts
-                                     if item.name == "web_search.search"), start=1
-                                ):
-                                    outcome = "成功" if receipt.success else "失败"
-                                    log_event("QQ", "搜索结果",
-                                              f"{current.scope} · 第{search_number}次搜索 · {outcome}\n"
-                                              f"{receipt.summary}")
                                 log_event("QQ", "工具循环V2",
                                           f"{current.scope} · 轮数={result.rounds} · 工具={len(result.receipts)} · 结果={result.reason or '完成'}")
                             else:
