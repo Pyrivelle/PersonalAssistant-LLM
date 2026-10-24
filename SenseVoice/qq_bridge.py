@@ -461,6 +461,11 @@ class PartialReply:
     evidence_scope: str = ""
     visual_evidence: str = ""
     tool_evidence: str = ""
+    image_hash: str = ""
+    image_message_id: str = ""
+    meaning_hash: str = ""
+    meaning_text: str = ""
+    meaning_source_message_id: str = ""
 
 
 @dataclass
@@ -964,6 +969,11 @@ class QqBridge:
                     except (OSError, sqlite3.Error):
                         pass
                     visual_context = ""
+                    digest = ""
+                    stable_message_id = ""
+                    meaning_hash = ""
+                    meaning_text = ""
+                    meaning_source_message_id = ""
                     if image_ref is not None:
                         if not can_attempt_stage("vision", settings, key):
                             raise ModelRoutesFailed("vision", [("配置", "识图模型尚未配置")])
@@ -1006,13 +1016,6 @@ class QqBridge:
                                     cache.store(message_key, digest, model_signature, visual_context)
                                 except (OSError, sqlite3.Error) as error:
                                     log_event("QQ", "识图缓存", f"保存跳过 · {type(error).__name__}")
-                        if current.kind == "private" and image_meaning_store is not None and digest:
-                            try:
-                                image_meaning_store.record_image(
-                                    image_meaning_scope, str(current.user_id),
-                                    stable_message_id, digest)
-                            except (OSError, sqlite3.Error, ValueError):
-                                pass
                         if current.kind == "private" and image_meaning_store is not None and digest:
                             try:
                                 clarified = image_meaning_store.lookup(image_meaning_scope, digest)
@@ -1269,11 +1272,12 @@ class QqBridge:
                                 target_digest = image_meaning_store.latest_unambiguous(
                                     image_meaning_scope, str(current.user_id))
                                 if target_digest:
-                                    image_meaning_store.save(
-                                        image_meaning_scope, target_digest,
-                                        meaning, str(event_ids[0]) if event_ids else turn_id)
+                                    meaning_hash = target_digest
+                                    meaning_text = meaning
+                                    meaning_source_message_id = (
+                                        str(event_ids[0]) if event_ids else turn_id)
                                     log_event("QQ", "图片含义关联",
-                                              f"{current.scope} · 明确解释关联到唯一近期图片")
+                                              f"{current.scope} · 待本轮完整投递后保存解释")
                                 else:
                                     log_event("QQ", "图片含义关联",
                                               f"{current.scope} · 无唯一近期图片，跳过自动关联")
@@ -1441,7 +1445,11 @@ class QqBridge:
                     memory_ref=memory_ref,
                     evidence_scope=evidence_scope,
                     visual_evidence=visual_context,
-                    tool_evidence=tool_feedback)
+                    tool_evidence=tool_feedback,
+                    image_hash=digest if current.kind == "private" else "",
+                    image_message_id=stable_message_id,
+                    meaning_hash=meaning_hash, meaning_text=meaning_text,
+                    meaning_source_message_id=meaning_source_message_id)
                 count, uncertain = await self._send_reply_parts(
                     current, delivery.parts, voice=delivery.voice)
                 delivery.delivered = count
@@ -1504,20 +1512,26 @@ class QqBridge:
         log_event("QQ", "已投递",
                   f"turn:{delivery.turn_id} · {current.scope} · {len(delivery.parts)} 段")
         state.context.commit(delivery.user_text, delivery.canonical_reply, delivery.emotion)
-        # The same delivery finalizer runs after initial ACK and /continue.
-        # Evidence is saved only once the whole logical response is acknowledged.
-        if delivery.evidence_scope and (delivery.visual_evidence or delivery.tool_evidence):
-            try:
-                from zhuangfy.evidence_store import EvidenceStore
-                evidence = EvidenceStore(PROJECT_DATA / "evidence" / "context.sqlite3")
-                if delivery.visual_evidence:
-                    evidence.save(delivery.evidence_scope, delivery.turn_id,
-                                  "vision", delivery.visual_evidence)
-                if delivery.tool_evidence:
-                    evidence.save(delivery.evidence_scope, delivery.turn_id,
-                                  "tool", delivery.tool_evidence)
-            except (OSError, sqlite3.Error, ValueError) as error:
-                log_event("QQ", "证据保存", f"跳过 · {type(error).__name__}")
+        # One finalizer handles initial delivery and /continue after all ACKs.
+        # Keep evidence and the user's correction attached to this same turn.
+        try:
+            from zhuangfy.turn_evidence import commit_delivered_evidence
+            evidence_scope = (f"qq:{self.bot_id}:group:{current.group_id}"
+                              if current.kind == "group"
+                              else f"qq:{self.bot_id}:private:{current.user_id}")
+            commit_delivered_evidence(
+                PROJECT_DATA / "evidence",
+                conversation_id=evidence_scope, sender_id=str(current.user_id),
+                turn_id=delivery.turn_id, image_message_id=delivery.image_message_id,
+                image_hash=delivery.image_hash,
+                visual_summary=delivery.visual_evidence,
+                tool_summary=delivery.tool_evidence,
+                meaning_hash=delivery.meaning_hash,
+                meaning_text=delivery.meaning_text,
+                meaning_source_message_id=delivery.meaning_source_message_id,
+            )
+        except (OSError, sqlite3.Error, ValueError) as error:
+            log_event("QQ", "证据保存", f"跳过 · {type(error).__name__}")
         if self.planner_settings.agent_v2_enabled:
             session = (f"qq:{self.bot_id}:group:{current.group_id}"
                        if current.kind == "group"
