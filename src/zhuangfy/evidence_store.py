@@ -5,6 +5,7 @@ message content, or Tool authorization. SQLite is additive to legacy context.
 """
 from __future__ import annotations
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 class EvidenceStore:
@@ -23,8 +24,14 @@ class EvidenceStore:
             )""")
             db.execute("CREATE INDEX IF NOT EXISTS evidence_scope ON evidence(conversation_id,id)")
 
+    @contextmanager
     def _db(self):
-        return sqlite3.connect(self.path, timeout=5)
+        db = sqlite3.connect(self.path, timeout=5)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def save(self, conversation_id: str, turn_id: str, source: str, summary: str):
         if not conversation_id or not turn_id or source not in ("vision", "tool"):
