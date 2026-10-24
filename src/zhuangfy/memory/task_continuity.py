@@ -170,6 +170,12 @@ class TaskContinuity:
                 "history": history,
                 "curated_candidates": curated[:2],
                 "task_status": "unverified",  # GoalStore resides in another DB.
+                "reported_progress": (
+                    {"state": progress["state"],
+                     "status_basis": progress["status_basis"],
+                     "last_reported_at": progress["last_reported_at"],
+                     "events": progress["events"][-3:]}
+                    if progress is not None else None),
             })
 
         # Re-check after embedding (a different thread may have revoked).
