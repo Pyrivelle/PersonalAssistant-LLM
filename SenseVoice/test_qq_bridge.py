@@ -63,9 +63,11 @@ class QqParsingTests(unittest.TestCase):
         self.assertIsNone(parse_message({**private, "user_id": 88}, 88, settings))
         self.assertIsNone(parse_message({**private, "message_type": "group",
                                          "group_id": 7}, 88, settings))
-        path.write_text(json.dumps({"allow_all_private": "yes"}), encoding="utf-8")
-        with self.assertRaises(ValueError):
-            QqSettings.load(path)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            path.write_text(json.dumps({"allow_all_private": "yes"}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                QqSettings.load(path)
 
     def test_private_allowlist_and_group_mention(self):
         private = {"post_type": "message", "message_type": "private", "user_id": 42,
