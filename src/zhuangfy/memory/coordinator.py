@@ -26,7 +26,8 @@ from .vector import EmbeddingProvider, QdrantLocalIndex, VectorIndex
 class MemoryCore:
     def __init__(self, root: Path, *, embedding: EmbeddingProvider,
                  index: VectorIndex | None = None, curator_model=None,
-                 agent_id: str = "zhuangfy-main") -> None:
+                 agent_id: str = "zhuangfy-main",
+                 auto_qq_timeline: bool = False) -> None:
         self.agent_id = agent_id
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
