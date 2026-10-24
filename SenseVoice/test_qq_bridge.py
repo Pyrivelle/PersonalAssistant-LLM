@@ -390,8 +390,14 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         # Simulated QQ accounts must never enter the user's durable chat stream.
         self.journal_patch = patch.object(activity_log, "_CHAT_JOURNAL", None)
         self.journal_patch.start()
+        self.project_data = tempfile.TemporaryDirectory()
+        self.project_data_patch = patch.object(
+            qq_bridge, "PROJECT_DATA", Path(self.project_data.name))
+        self.project_data_patch.start()
 
     def tearDown(self):
+        self.project_data_patch.stop()
+        self.project_data.cleanup()
         self.journal_patch.stop()
 
     async def test_snowluma_image_action_refreshes_download_url(self):
@@ -683,7 +689,7 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("calculator.evaluate", requests[0]["available_tools"])
         self.assertIn("expression", requests[0]["tool_catalog"])
         self.assertIn("25", requests[1]["tool_feedback"])
-        self.assertIn("25", reply_model.call_args.kwargs["context_notes"])
+        self.assertIn("25", reply_model.call_args.kwargs["tool_context"])
         bridge.send_reply.assert_awaited_once()
         self.assertEqual(state.context.history[-1]["content"], "结果是 25。")
 
