@@ -83,6 +83,20 @@ class MemoryCore:
             "curation_consent": self.identities.has_consent(person.person_id, "curation"),
         }
 
+    def admin_bind_goal_origin(self, *, identity: dict, task_id: str,
+                               owner_scope: str, source_entry_id: str) -> dict:
+        """An administrator has independently verified a GoalStore goal."""
+        return self.task_links.bind_origin(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            task_id=task_id, owner_scope=owner_scope,
+            source_entry_id=source_entry_id)
+
+    def task_origin(self, *, identity: dict, task_id: str) -> dict:
+        """Read only evidence for the authenticated QQ owner's goal."""
+        return self.task_links.get_task(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            task_id=task_id)
+
     def receive(self, *, identity: dict, chat_id: str, message_id: str, content: str) -> dict:
         ident = self._identity(identity)
         conv = self.timeline.open_private(
