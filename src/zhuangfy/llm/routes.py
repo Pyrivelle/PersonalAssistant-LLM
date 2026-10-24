@@ -352,7 +352,10 @@ def invoke_stage(
                         "json_schema": {"name": "planner_decision_v3",
                                         "strict": True, "schema": planner_schema},
                     }} if stage == "planner" and planner_schema is not None
-                    and item.planner_format == "json_schema" else {}),
+                    and item.planner_format == "json_schema" else
+                    {"structured_format": {"type": "json_object"}}
+                    if stage == "planner" and planner_schema is not None
+                    and item.planner_format == "json_object" else {}),
                     **({"visual_context": visual_context} if visual_context else {}),
                     **({"image_data_url": image_data_url} if image_data_url is not None else {}))
                 if response_validator is not None and not response_validator(result):
@@ -383,7 +386,10 @@ def invoke_stage(
                                     "json_schema": {"name": "planner_decision_v3",
                                                     "strict": True, "schema": planner_schema},
                                 }} if planner_schema is not None
-                                and item.planner_format == "json_schema" else {}),
+                                and item.planner_format == "json_schema" else
+                                {"structured_format": {"type": "json_object"}}
+                                if planner_schema is not None and
+                                item.planner_format == "json_object" else {}),
                                 **({"thinking": item.thinking} if item.thinking != "auto" else {}),
                                 **({"visual_context": visual_context} if visual_context else {}))
                             if response_validator(repaired):
