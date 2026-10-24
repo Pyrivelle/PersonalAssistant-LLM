@@ -60,6 +60,21 @@ class IdentityTimelineTests(unittest.TestCase):
                 agent_id="zhuangfy-main", identity=source,
                 external_conversation_id="private:20002")
 
+    def test_qq_auto_timeline_requires_explicit_service_policy_and_is_not_regranted(self):
+        claim = ChannelIdentity("qq", "10001", "20004")
+        person, created = self.people.ensure_qq_person(
+            claim, "首次来访者", initial_timeline=True)
+        self.assertTrue(created)
+        self.assertTrue(self.people.has_consent(person.person_id, "timeline"))
+        self.assertFalse(self.people.has_consent(person.person_id, "curation"))
+        self.people.set_consent(person.person_id, "timeline", False)
+        again, created = self.people.ensure_qq_person(
+            claim, "再次私聊", initial_timeline=True)
+        self.assertFalse(created)
+        self.assertEqual(again.person_id, person.person_id)
+        self.assertFalse(self.people.has_consent(person.person_id, "timeline"))
+        self.assertFalse(self.people.has_consent(person.person_id, "curation"))
+
     def test_auto_qq_onboarding_rejects_non_qq_or_forged_ids(self):
         for claim in (
             ChannelIdentity("desktop", "local", "member"),
