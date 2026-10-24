@@ -1119,11 +1119,6 @@ class QqBridge:
                                       on_event=_agent_event)
                                 plan, action = result.plan, result.action
                                 tool_feedback = result.tool_feedback()
-                                audit = result.decision
-                                log_event("Agent", "行为审计",
-                                          f"{current.scope} · 请求={audit.requested_action} · "
-                                          f"执行={audit.executed_action} · 原因={audit.reason_code} · "
-                                          f"结果={audit.outcome}")
                                 for search_number, receipt in enumerate(
                                     (item for item in result.receipts
                                      if item.name == "web_search.search"), start=1
@@ -1154,11 +1149,25 @@ class QqBridge:
                             # Authorized exact no-reply requests do not depend on
                             # the model selecting stop. Never override host policy.
                             from zhuangfy.agent_v2.silence_intent import explicit_current_turn_silence
-                            if allow_silence and explicit_current_turn_silence(message):
-                                if action != "stop":
-                                    log_event("Agent", "明确静默指令",
-                                              f"{current.scope} · Planner={plan.action} → stop · 原因=explicit_no_reply")
+                            explicit_override = bool(
+                                allow_silence and explicit_current_turn_silence(message)
+                                and action != "stop")
+                            if explicit_override:
                                 action = "stop"
+                            # Audit the final action (after deterministic policy), not
+                            # an intermediate engine result that may be overridden.
+                            from zhuangfy.context_protocol import AgentDecision
+                            reason_code = (
+                                "explicit_no_reply" if explicit_override
+                                else "silence_not_allowed" if plan.action == "stop" and action != "stop"
+                                else "wait_already_consumed" if plan.action == "wait" and action != "wait"
+                                else "tool_denied" if plan.action == "tool" and action != "tool"
+                                else "planner_selected")
+                            audit = AgentDecision(plan.action, action, reason_code)
+                            log_event("Agent", "行为审计",
+                                      f"{current.scope} · 请求={audit.requested_action} · "
+                                      f"执行={audit.executed_action} · 原因={audit.reason_code} · "
+                                      f"结果={audit.outcome}")
                             if action == "wait":
                                 # Requeue the original turn without sending or committing a
                                 # false assistant reply. Only one bounded wait per logical batch.
