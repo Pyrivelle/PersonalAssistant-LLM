@@ -242,6 +242,13 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
     return decision
 
 
+def plan_turn_v3(*args, **kwargs) -> PlanDecision:
+    """V3 structured first-turn protocol; reuses V2 persona/routing contract."""
+    if "protocol_v3" in kwargs:
+        raise ValueError("protocol_v3 is not a user parameter")
+    return plan_turn_v2(*args, protocol_v3=True, **kwargs)
+
+
 def _valid_plan_v2(raw: str) -> bool:
     """Allow failover when a candidate returns unparseable output."""
     try:
