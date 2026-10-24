@@ -88,5 +88,56 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(steps), 2)
 
 
+    async def test_budget_exhausted_preserves_receipt_and_finalizes_tool_plan(self):
+        reg = build_builtin_registry()
+        async def planner(receipts):
+            return PlanDecision(action="tool", confidence=.95,
+                                tool_name="calculator.evaluate",
+                                tool_arguments={"expression": "10+15" if not receipts else "8+9"},
+                                social_intent="回答计算问题")
+        result = await AgentCycleEngine(max_tools=1, max_rounds=3).run(
+            planner, registry=reg, allow_tools=True)
+        self.assertEqual(result.reason, "budget_exhausted")
+        self.assertEqual(result.action, "reply")
+        self.assertEqual(result.plan.action, "reply")
+        self.assertEqual(result.plan.tool_name, "")
+        self.assertEqual(len(result.receipts), 1)
+        self.assertIn("25", result.tool_feedback())
+        self.assertIn("已经执行", result.tool_feedback())
+
+    async def test_duplicate_tool_finalizes_without_second_execution(self):
+        reg = build_builtin_registry()
+        async def planner(receipts):
+            return PlanDecision(action="tool", confidence=.95,
+                                tool_name="calculator.evaluate",
+                                tool_arguments={"expression": "2+3"})
+        result = await AgentCycleEngine(max_tools=3, max_rounds=4).run(
+            planner, registry=reg, allow_tools=True)
+        self.assertEqual(result.reason, "duplicate_tool")
+        self.assertEqual(result.plan.action, "reply")
+        self.assertEqual(len(result.receipts), 1)
+        self.assertIn("5", result.tool_feedback())
+
+    async def test_failed_tool_finalizes_as_reply_with_failure_evidence(self):
+        reg = build_builtin_registry()
+        async def planner(receipts):
+            return PlanDecision(action="tool", confidence=.95,
+                                tool_name="calculator.evaluate",
+                                tool_arguments={"expression": "1/0"})
+        result = await AgentCycleEngine().run(planner, registry=reg,
+                                              allow_tools=True)
+        self.assertEqual(result.reason, "tool_failed")
+        self.assertEqual(result.plan.action, "reply")
+        self.assertIn("失败=1", result.tool_feedback())
+
+    async def test_normal_reply_without_tool_keeps_original_intent(self):
+        async def planner(receipts):
+            return PlanDecision(action="reply", confidence=.9,
+                                reply_act="自然回复")
+        result = await AgentCycleEngine().run(planner)
+        self.assertEqual(result.plan.reply_act, "自然回复")
+        self.assertEqual(result.tool_feedback(), "")
+
+
 if __name__ == "__main__":
     unittest.main()
