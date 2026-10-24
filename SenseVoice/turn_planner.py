@@ -98,7 +98,7 @@ class PlannerSettings:
         return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop,
                    frozenset(memory_ids), skill, v2_enabled, silent_private,
                    silent_group, wait_max, tools_enabled, max_rounds, max_tools,
-                   core_v2, lore_v1, r1, r1_evolution)
+                   core_v2, lore_v1, r1, r1_evolution, v3_enabled)
 
 
 @dataclass(frozen=True)
