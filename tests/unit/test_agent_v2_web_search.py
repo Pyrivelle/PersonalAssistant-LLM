@@ -1,4 +1,4 @@
-"""Offline Brave Web Search Skill tests. Never call a real search provider."""
+"""Offline DeepSeek Web Search Skill tests. Never call a real search provider."""
 from __future__ import annotations
 
 import os
@@ -13,7 +13,7 @@ from zhuangfy.agent_v2.skills import SkillManager, SkillPolicy, build_skill_runt
 from zhuangfy.agent_v2.skill_access import SkillPrincipal
 from zhuangfy.agent_v2.web_search_access import restrict_web_search_for_qq
 from zhuangfy.agent_v2.web_search_provider import (
-    API_URL, MAX_OUTPUT, BraveSearch, SearchUnavailable, _NoRedirects,
+    API_URL, MAX_OUTPUT, DeepSeekSearch, SearchUnavailable, _NoRedirects,
 )
 
 
@@ -45,18 +45,18 @@ class FakeOpener:
 
 
 def sample_json():
-    return (b'{"web":{"results":['
+    return (b'{"results":['
             b'{"title":"Official docs","url":"https://docs.example.org/reference",'
-            b'"description":"Reference and release notes"},'
+            b'"snippet":"Reference and release notes"},'
             b'{"title":"Latest release","url":"https://example.org/releases",'
-            b'"description":"Version history"},'
+            b'"snippet":"Version history"},'
             b'{"title":"Bad redirect","url":"http://127.0.0.1/admin",'
-            b'"description":"do not show"}]}}')
+            b'"snippet":"do not show"}]}')
 
 
-class BraveAdapterTests(unittest.TestCase):
+class DeepSeekAdapterTests(unittest.TestCase):
     def test_fixed_api_sources_and_bounded_network(self):
-        api = BraveSearch("mock-key-1234567890")
+        api = DeepSeekSearch("mock-key-1234567890")
         mock = FakeOpener(response=sample_json())
         api._opener = mock
         text = api.search("OSG project latest release")
@@ -66,24 +66,28 @@ class BraveAdapterTests(unittest.TestCase):
         self.assertNotIn("127.0.0.1", text)
         self.assertLessEqual(len(text), MAX_OUTPUT)
         req, timeout = mock.calls[0]
-        self.assertTrue(req.full_url.startswith(API_URL + "?"))
+        self.assertEqual(req.full_url, API_URL)
         self.assertEqual(timeout, 5.0)
-        self.assertIn("q=OSG+project+latest+release", req.full_url)
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(req.get_header("Authorization"), "Bearer mock-key-1234567890")
         self.assertNotIn("mock-key-1234567890", req.full_url)
-        self.assertEqual(req.get_header("X-subscription-token"), "mock-key-1234567890")
+        import json
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"query": "OSG project latest release",
+                                   "count": 2, "need_content": False})
         self.assertIsNone(_NoRedirects().redirect_request(None, None, 302, "",
                                                            {}, "http://127.0.0.1"))
-        cn_search = BraveSearch("mock-key-1234567890")
+        cn_search = DeepSeekSearch("mock-key-1234567890")
         cn_opener = FakeOpener(response=sample_json())
         cn_search._opener = cn_opener
         cn_search.search("计算机考研最新资料")
-        self.assertIn("search_lang=zh-hans", cn_opener.calls[0][0].full_url)
+        self.assertIn("计算机", cn_opener.calls[0][0].data.decode("utf-8"))
 
     def test_private_queries_never_go_to_provider(self):
-        api = BraveSearch("mock-key-1234567890")
+        api = DeepSeekSearch("mock-key-1234567890")
         mock = FakeOpener(response=sample_json())
         api._opener = mock
-        for query in ("", "s", "x" * 221, "search\nhidden",
+        for query in ("", "s", "x" * 129, "search\nhidden",
                       "call my phone 13800138000",
                       "alice@example.com", "Bearer secret-tok"):
             with self.subTest(query=query), self.assertRaises(ValueError):
@@ -91,7 +95,7 @@ class BraveAdapterTests(unittest.TestCase):
         self.assertEqual(mock.calls, [])
 
     def test_rate_limits_failures_and_no_source(self):
-        api = BraveSearch("mock-key-1234567890", max_requests_per_minute=1)
+        api = DeepSeekSearch("mock-key-1234567890", max_requests_per_minute=1)
         mock = FakeOpener(response=sample_json())
         api._opener = mock
         api.search("test search")
@@ -99,16 +103,16 @@ class BraveAdapterTests(unittest.TestCase):
             api.search("another query")
         self.assertEqual(len(mock.calls), 1)
 
-        failing = BraveSearch("mock-key-1234567890")
+        failing = DeepSeekSearch("mock-key-1234567890")
         failing._opener = FakeOpener(error=URLError("secret-key-in-error"))
         with self.assertRaises(SearchUnavailable) as err:
             failing.search("public info")
         self.assertNotIn("secret-key-in-error", str(err.exception))
-        no_results = BraveSearch("mock-key-1234567890")
+        no_results = DeepSeekSearch("mock-key-1234567890")
         no_results._opener = FakeOpener(
-            response=b'{"web":{"results":[{"title":"Bad","url":"http://127.0.0.1"}]}}')
+            response=b'{"results":[{"title":"Bad","url":"http://127.0.0.1"}]}')
         self.assertIn("没有返回可用", no_results.search("safe public info"))
-        oversized = BraveSearch("mock-key-1234567890")
+        oversized = DeepSeekSearch("mock-key-1234567890")
         oversized._opener = FakeOpener(response=b"x" * 65537)
         with self.assertRaises(SearchUnavailable):
             oversized.search("public knowledge")
@@ -118,7 +122,7 @@ class SearchActivationTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_skill_activation_key_and_deferred_discovery(self):
         root = Path(__file__).resolve().parents[2] / "SenseVoice" / "skills"
         self.assertTrue((root / "web_search" / "skill.json").is_file())
-        with patch.dict(os.environ, {"ZHUANGFY_BRAVE_SEARCH_API_KEY": ""}):
+        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_SEARCH_API_KEY": ""}):
             statuses = SkillManager(root, {"web_search": SkillPolicy(enabled=True)}).discover()
             entry = next(x for x in statuses if x.id == "web_search")
             self.assertTrue(entry.enabled)
@@ -129,7 +133,7 @@ class SearchActivationTests(unittest.IsolatedAsyncioTestCase):
             status = next(x for x in mgr.statuses if x.id == "web_search")
             self.assertFalse(status.loaded)
             self.assertNotIn("web_search.search", registry.public_names(scope="private"))
-        with patch.dict(os.environ, {"ZHUANGFY_BRAVE_SEARCH_API_KEY": "mock-key-1234567890"}):
+        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_SEARCH_API_KEY": "mock-key-1234567890"}):
             registry = AuthorizedToolRegistry()
             mgr = SkillManager(root, {"web_search": SkillPolicy(enabled=True)})
             mgr.activate(registry)
