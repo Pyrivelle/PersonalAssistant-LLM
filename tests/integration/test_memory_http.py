@@ -289,7 +289,9 @@ class HttpMemoryTests(unittest.TestCase):
         self.admin.admin_bind_goal_origin(
             a, task_id="goal-english", owner_scope="qq:10001:private:20001",
             source_entry_id=other_task["entry_id"])
-        result = self.client.task_recall(a, "接着聊OSG遮挡剔除的做法", limit=2)
+        result = self.client.task_recall(
+            a, "接着聊OSG遮挡剔除的做法", limit=2,
+            exclude_entry_id=continuation["entry_id"])
         self.assertEqual([x["task_id"] for x in result["tasks"]], ["goal-osg"])
         item = result["tasks"][0]
         self.assertEqual(item["origin"]["relation"], "verified_origin")
