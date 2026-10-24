@@ -10,10 +10,9 @@
 
 ## QQ 私聊启用
 
-在 `SenseVoice/skills_settings.json` 设置 `web_search.enabled=true`，`scopes=["private"]`，`allow_mutation=false`；在可信 QQ Bridge 进程环境中配置：
+在 `SenseVoice/skills_settings.json` 设置 `web_search.enabled=true`，`scopes=["private"]`，`allow_mutation=false`。密钥可通过模型管理中已保存的 DeepSeek 官方供应商连接提供（仅接受 `https://api.deepseek.com` 的目标绑定密钥），也可在可信 QQ Bridge 进程环境中配置 `ZHUANGFY_DEEPSEEK_API_KEY`。精确 QQ 授权可写在本机忽略提交的 `SenseVoice/.env.local`，或通过进程环境配置：
 
 ```text
-ZHUANGFY_DEEPSEEK_API_KEY=<DeepSeek API Key>
 ZHUANGFY_WEB_SEARCH_ALLOWED_QQ=<BOT_QQ_ID>:<USER_QQ_ID>
 ```
 

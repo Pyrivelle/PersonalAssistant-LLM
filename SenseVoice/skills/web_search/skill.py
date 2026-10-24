@@ -13,10 +13,27 @@ from zhuangfy.agent_v2.runtime import ToolBinding
 from zhuangfy.agent_v2.web_search_provider import DeepSeekSearch
 
 
+def _search_key() -> str:
+    key = os.environ.get("ZHUANGFY_DEEPSEEK_API_KEY", "")
+    if key:
+        return key
+    # Reuse an explicitly saved official DeepSeek provider connection. The
+    # registry validates that its credential belongs to this exact endpoint.
+    from zhuangfy.llm.model_registry import load_provider_key, load_registry
+
+    for provider in load_registry().providers:
+        if (provider.kind == "deepseek"
+                and provider.base_url.rstrip("/") == "https://api.deepseek.com"):
+            key = load_provider_key(provider.id, provider.kind, provider.base_url)
+            if key:
+                return key
+    return ""
+
+
 def setup(context):
     if context.skill_id != "web_search":
         raise ValueError("Unexpected Web Search skill identity")
-    key = os.environ.get("ZHUANGFY_DEEPSEEK_API_KEY", "")
+    key = _search_key()
     if not key:
         raise ValueError("ZHUANGFY_DEEPSEEK_API_KEY is not configured")
     provider = DeepSeekSearch(key)

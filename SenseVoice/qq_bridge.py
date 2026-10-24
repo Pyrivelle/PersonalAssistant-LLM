@@ -283,6 +283,22 @@ def load_snowluma_token() -> str:
     return ""
 
 
+def load_search_allowed_qq() -> str:
+    """Read the private search grant without exposing it to other services."""
+    configured = os.environ.get("ZHUANGFY_WEB_SEARCH_ALLOWED_QQ")
+    if configured is not None:
+        return configured
+    path = ROOT / ".env.local"
+    if not path.is_file():
+        return ""
+    grant = ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name.strip() == "ZHUANGFY_WEB_SEARCH_ALLOWED_QQ":
+            grant = value.strip().strip('"').strip("'")
+    return grant
+
+
 @contextmanager
 def single_instance():
     """Prevent the standalone launcher and dashboard from replying twice."""
@@ -976,8 +992,7 @@ class QqBridge:
                                     else None)
                                 turn_registry = restrict_web_search_for_qq(
                                     turn_registry, principal=principal,
-                                    allowed_pairs=os.environ.get(
-                                        "ZHUANGFY_WEB_SEARCH_ALLOWED_QQ", ""))
+                                    allowed_pairs=load_search_allowed_qq())
                             names = (turn_registry.public_names(scope=current.kind)
                                      if tools_enabled else ())
                             if tools_enabled and self.planner_settings.agent_v3_enabled:

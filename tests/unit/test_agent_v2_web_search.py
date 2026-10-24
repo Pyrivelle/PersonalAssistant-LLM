@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.error import URLError
@@ -122,7 +123,9 @@ class SearchActivationTests(unittest.IsolatedAsyncioTestCase):
     async def test_explicit_skill_activation_key_and_deferred_discovery(self):
         root = Path(__file__).resolve().parents[2] / "SenseVoice" / "skills"
         self.assertTrue((root / "web_search" / "skill.json").is_file())
-        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_API_KEY": ""}):
+        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_API_KEY": ""}), \
+             patch("zhuangfy.llm.model_registry.load_registry",
+                   return_value=SimpleNamespace(providers=())):
             statuses = SkillManager(root, {"web_search": SkillPolicy(enabled=True)}).discover()
             entry = next(x for x in statuses if x.id == "web_search")
             self.assertTrue(entry.enabled)
@@ -144,6 +147,26 @@ class SearchActivationTests(unittest.IsolatedAsyncioTestCase):
                       SkillDiscovery(registry).select("帮我联网搜索最新 OSG 发布", scope="private").names)
         self.assertNotIn("web_search.search",
                          registry.public_names(scope="group"))
+
+    async def test_reuses_only_saved_official_deepseek_provider_key(self):
+        root = Path(__file__).resolve().parents[2] / "SenseVoice" / "skills"
+        providers = (
+            SimpleNamespace(id="other", kind="deepseek",
+                            base_url="https://gateway.example.com"),
+            SimpleNamespace(id="official", kind="deepseek",
+                            base_url="https://api.deepseek.com"),
+        )
+        with patch.dict(os.environ, {"ZHUANGFY_DEEPSEEK_API_KEY": ""}), \
+             patch("zhuangfy.llm.model_registry.load_registry",
+                   return_value=SimpleNamespace(providers=providers)), \
+             patch("zhuangfy.llm.model_registry.load_provider_key",
+                   return_value="saved-official-key") as load_key:
+            registry = AuthorizedToolRegistry()
+            manager = SkillManager(root, {"web_search": SkillPolicy(enabled=True)})
+            manager.activate(registry)
+        self.assertTrue(next(s.loaded for s in manager.statuses if s.id == "web_search"))
+        self.assertIn("web_search.search", registry.public_names(scope="private"))
+        load_key.assert_called_once_with("official", "deepseek", "https://api.deepseek.com")
 
     async def test_per_qq_user_grant_filters_visibility_and_execution(self):
         async def search(args):

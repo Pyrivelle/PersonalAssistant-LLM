@@ -68,6 +68,16 @@ class QqMemoryCaptureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QqParsingTests(unittest.TestCase):
+    def test_search_grant_comes_from_local_file_unless_process_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env.local").write_text(
+                "ZHUANGFY_WEB_SEARCH_ALLOWED_QQ=88:42\n", encoding="utf-8")
+            with patch.object(qq_bridge, "ROOT", root), patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(qq_bridge.load_search_allowed_qq(), "88:42")
+                os.environ["ZHUANGFY_WEB_SEARCH_ALLOWED_QQ"] = "99:77"
+                self.assertEqual(qq_bridge.load_search_allowed_qq(), "99:77")
+
     def test_initial_l0_is_private_only_and_requires_allowlist(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "qq_settings.json"
@@ -758,12 +768,15 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_v3_web_search_respects_exact_qq_grant(self):
         from zhuangfy.agent_v2.planner import PlanDecision
         from zhuangfy.agent_v2.runtime import ToolBinding
+        from zhuangfy.agent_v2.tools import build_builtin_registry
         for grant in ("88:42", "88:43", ""):
             with self.subTest(grant=grant):
                 with patch.object(qq_bridge.PlannerSettings, "load",
                                   return_value=PlannerSettings(
                                       agent_v2_enabled=True, agent_v2_tools_enabled=True,
-                                      agent_v3_enabled=True)):
+                                      agent_v3_enabled=True)), \
+                     patch.object(qq_bridge, "build_skill_runtime",
+                                  return_value=(build_builtin_registry(), Mock(statuses=[]))):
                     bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
                                                  quiet_seconds=0,
                                                  private_cooldown_seconds=0))
@@ -815,10 +828,13 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
     async def test_v3_web_search_plain_chat_is_not_invoked(self):
         from zhuangfy.agent_v2.planner import PlanDecision
         from zhuangfy.agent_v2.runtime import ToolBinding
+        from zhuangfy.agent_v2.tools import build_builtin_registry
         with patch.object(qq_bridge.PlannerSettings, "load",
                           return_value=PlannerSettings(
                               agent_v2_enabled=True, agent_v2_tools_enabled=True,
-                              agent_v3_enabled=True)):
+                              agent_v3_enabled=True)), \
+             patch.object(qq_bridge, "build_skill_runtime",
+                          return_value=(build_builtin_registry(), Mock(statuses=[]))):
             bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
                                          quiet_seconds=0, private_cooldown_seconds=0))
         bridge.bot_id = 88
