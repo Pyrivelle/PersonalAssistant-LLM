@@ -1121,6 +1121,14 @@ class QqBridge:
                             log_event("QQ", "思考V2",
                                       f"{current.scope} · 行为：{action} · 意图：{plan.social_intent[:70]} · "
                                       f"语气：{plan.tone} · 置信度：{plan.confidence:.2f}")
+                            # Authorized exact no-reply requests do not depend on
+                            # the model selecting stop. Never override host policy.
+                            from zhuangfy.agent_v2.silence_intent import explicit_current_turn_silence
+                            if allow_silence and explicit_current_turn_silence(message):
+                                if action != "stop":
+                                    log_event("Agent", "明确静默指令",
+                                              f"{current.scope} · Planner={plan.action} → stop · 原因=explicit_no_reply")
+                                action = "stop"
                             if action == "wait":
                                 # Requeue the original turn without sending or committing a
                                 # false assistant reply. Only one bounded wait per logical batch.
