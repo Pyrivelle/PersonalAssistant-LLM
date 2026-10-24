@@ -29,6 +29,11 @@ class UpstreamNativeLauncherTests(unittest.TestCase):
             isolated = root.parent / "maisaka-outside"
             self.assertEqual(launcher.safe_instance_path(root, source, isolated),
                              isolated.resolve())
+            # Default experiment data can live in repository root, unlike
+            # credential/production database subtrees.
+            default = root / ".maisaka-experiment"
+            self.assertEqual(launcher.safe_instance_path(root, source, default),
+                             default.resolve())
 
     def test_requires_channel_confirmation_before_run(self):
         with tempfile.TemporaryDirectory() as td:
