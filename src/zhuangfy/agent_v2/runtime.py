@@ -77,7 +77,10 @@ class AuthorizedToolRegistry:
         """Only host-registered, authorized tool schemas are shown to the model."""
         import json
         lines = []
-        for name in self.public_names(scope=scope, allow_mutation=allow_mutation)[:12]:
+        allowed = self.public_names(scope=scope, allow_mutation=allow_mutation)
+        chosen = allowed[:12] if names is None else tuple(
+            name for name in names if name in allowed)[:12]
+        for name in chosen:
             tool = self._tools[name]
             spec = json.dumps(tool.parameters, ensure_ascii=False, separators=(",", ":"))
             lines.append(f"{name}：{tool.description[:150]}；参数 schema：{spec[:450]}")
