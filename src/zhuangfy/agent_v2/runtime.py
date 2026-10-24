@@ -332,6 +332,10 @@ class AgentCycleEngine:
             )
             receipts.append(receipt)
             emit("tool_end", round_no, f"{plan.tool_name}:{'success' if receipt.success else 'failure'}")
+            if plan.tool_name == "web_search.search":
+                # Emit the bounded receipt at execution time, rather than
+                # replaying all search results after the cycle completes.
+                emit("search_result", round_no, receipt.as_context())
             if receipt.success and plan.tool_name == "web_search.search":
                 query = (plan.tool_arguments or {}).get("query", "")
                 if isinstance(query, str):
