@@ -950,6 +950,16 @@ class QqBridge:
                                        + "\n只输出准备发送给对方的对白；不要用（语气……）、（轻声）、（动作……）或其他括号写表演、神情、心理和镜头旁白。"
                                        "平常闲聊使用自然中文，不使用多余 Markdown 双空格、标题或加粗。"
                                        "回答长一些时可以自然分段，不必用空行制造视觉间距。代码、链接或步骤等技术内容可保留必要格式。")
+                    from zhuangfy.image_meaning import ImageMeaningStore, explicit_image_meaning
+                    image_meaning_store = None
+                    image_meaning_scope = (f"qq:{self.bot_id}:group:{current.group_id}"
+                                           if current.kind == "group"
+                                           else f"qq:{self.bot_id}:private:{current.user_id}")
+                    try:
+                        image_meaning_store = ImageMeaningStore(
+                            PROJECT_DATA / "evidence" / "image_meanings.sqlite3")
+                    except (OSError, sqlite3.Error):
+                        pass
                     visual_context = ""
                     if image_ref is not None:
                         if not can_attempt_stage("vision", settings, key):
@@ -993,6 +1003,16 @@ class QqBridge:
                                     cache.store(message_key, digest, model_signature, visual_context)
                                 except (OSError, sqlite3.Error) as error:
                                     log_event("QQ", "识图缓存", f"保存跳过 · {type(error).__name__}")
+                        if image_meaning_store is not None and digest:
+                            try:
+                                clarified = image_meaning_store.lookup(image_meaning_scope, digest)
+                                if clarified:
+                                    visual_context += (
+                                        "\n【此前在本会话中，用户对相同图片的明确解释】"
+                                        + clarified[:180]
+                                        + "（这只是当时用户解释的用途，不能自动断定本次意图相同。）")
+                            except (OSError, sqlite3.Error):
+                                pass
                         log_event("QQ", "识图", f"{current.scope} · 完成 · {len(visual_context)} 字")
                     candidate = state.context.observe(message)
                     plan = TurnPlan()
@@ -1220,6 +1240,26 @@ class QqBridge:
                         member_key = MemberKey(self.bot_id, current.user_id)
                         member_snapshot = await asyncio.to_thread(self.member_store.context_for, member_key)
                         log_event("记忆", "读取", f"{current.scope} · QQ 个人记忆 {'已提供' if member_snapshot else '暂无'}")
+                    # Bind an explicit correction to the most recent visual
+                    # observation in this conversation, never across sessions.
+                    if image_ref is None and image_meaning_store is not None:
+                        meaning = explicit_image_meaning(message)
+                        if meaning:
+                            try:
+                                visual_scope = image_meaning_scope + ":"
+                                cache = VisionDescriptionStore(
+                                    PROJECT_DATA / "vision" / "descriptions.sqlite3")
+                                signature = (f"{settings.provider}:{settings.model}:"
+                                             f"{hashlib.sha256(VISION_PROMPT.encode()).hexdigest()[:12]}")
+                                previous_images = cache.recent(visual_scope, signature, 1)
+                                if previous_images:
+                                    image_meaning_store.save(
+                                        image_meaning_scope, previous_images[-1].image_hash,
+                                        meaning, str(event_ids[0]) if event_ids else turn_id)
+                                    log_event("QQ", "图片含义关联",
+                                              f"{current.scope} · 用户明确解释已关联最近图片")
+                            except (OSError, sqlite3.Error) as error:
+                                log_event("QQ", "图片含义关联", f"跳过 · {type(error).__name__}")
                     notes = state.context.prompt()
                     # Evidence is scoped to the verified QQ conversation, never
                     # inferred from user-supplied text or other participants.
