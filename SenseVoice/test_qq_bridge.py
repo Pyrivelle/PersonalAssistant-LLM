@@ -46,6 +46,27 @@ class QqParsingTests(unittest.TestCase):
         self.settings = QqSettings(allowed_private_ids=frozenset({42}),
                                    allowed_group_ids=frozenset({9}))
 
+    def test_open_private_access_is_explicit_and_preserves_qq_nickname(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            path.write_text(json.dumps({"allowed_private_ids": [],
+                                        "allow_all_private": True}), encoding="utf-8")
+            settings = QqSettings.load(path)
+        private = {"post_type": "message", "message_type": "private",
+                   "user_id": 42, "message_id": 123,
+                   "sender": {"nickname": "梨愿"},
+                   "message": [{"type": "text", "data": {"text": "你好"}}]}
+        incoming = parse_message(private, 88, settings)
+        self.assertIsNotNone(incoming)
+        self.assertEqual(incoming.nickname, "梨愿")
+        self.assertEqual(incoming.user_id, 42)
+        self.assertIsNone(parse_message({**private, "user_id": 88}, 88, settings))
+        self.assertIsNone(parse_message({**private, "message_type": "group",
+                                         "group_id": 7}, 88, settings))
+        path.write_text(json.dumps({"allow_all_private": "yes"}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            QqSettings.load(path)
+
     def test_private_allowlist_and_group_mention(self):
         private = {"post_type": "message", "message_type": "private", "user_id": 42,
                    "message_id": 1, "message": [{"type": "text", "data": {"text": "你好"}}]}
