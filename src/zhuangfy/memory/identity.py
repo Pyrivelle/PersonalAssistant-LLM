@@ -89,6 +89,47 @@ class IdentityRepository:
                        (person.person_id, person.display_name, person.created_at))
         return person
 
+    def ensure_qq_person(self, identity: ChannelIdentity, display_name: str) -> tuple[Person, bool]:
+        """Provision an empty person only for a trusted inbound QQ private identity.
+
+        A caller must have authenticated the QQ transport and admitted the
+        message. This method never grants Timeline/Curator consent, merges
+        people by nickname, or reassigns a previously linked account.
+        """
+        if identity.platform != "qq":
+            raise ValueError("Automatic onboarding is restricted to QQ")
+        bot_id = _nonempty(identity.channel_account_id, "channel_account_id")
+        user_id = _nonempty(identity.external_user_id, "external_user_id")
+        if (not bot_id.isascii() or not user_id.isascii()
+                or not bot_id.isdecimal() or not user_id.isdecimal()
+                or int(bot_id) <= 0 or int(user_id) <= 0
+                or str(int(bot_id)) != bot_id or str(int(user_id)) != user_id
+                or bot_id == user_id):
+            raise ValueError("Invalid QQ channel identity")
+        if not isinstance(display_name, str):
+            raise ValueError("display_name must be a string")
+        nickname = "".join(ch for ch in display_name if ch.isprintable()).strip()[:80]
+        nickname = nickname or f"QQ用户{user_id}"
+        with self.database.write() as db:
+            existing = db.execute("""
+                SELECT p.person_id, p.display_name, p.created_at
+                FROM identities i JOIN persons p ON p.person_id = i.person_id
+                WHERE i.platform=? AND i.channel_account_id=? AND i.external_user_id=?
+            """, ("qq", bot_id, user_id)).fetchone()
+            if existing is not None:
+                # Preserve any administrator-chosen or previously verified name.
+                return Person(**dict(existing)), False
+            person = Person(str(uuid4()), nickname, int(time.time()))
+            db.execute("INSERT INTO persons(person_id,display_name,created_at) VALUES(?,?,?)",
+                       (person.person_id, person.display_name, person.created_at))
+            db.execute("""INSERT INTO identities
+                (platform,channel_account_id,external_user_id,person_id,
+                 proof_method,proof_reference,verified_at)
+                VALUES(?,?,?,?,?,?,?)""",
+                ("qq", bot_id, user_id, person.person_id, "authenticated_channel",
+                 "trusted_qq_private_message", int(time.time())))
+        return person, True
+
     def get_person(self, person_id: str) -> Person | None:
         with self.database.connection() as db:
             row = db.execute("SELECT * FROM persons WHERE person_id=?", (person_id,)).fetchone()
