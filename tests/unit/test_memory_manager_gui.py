@@ -35,7 +35,9 @@ class MemoryManagerGuiTests(unittest.TestCase):
                 "memory_count": 0, "jobs": {"pending": 0, "running": 0,
                                             "done": 0, "failed": 0},
             }]
+            win.person.blockSignals(True)
             win.person.addItem("梨愿", person_id)
+            win.person.blockSignals(False)
             win._render_people()
             self.assertEqual(win.account_table.rowCount(), 1)
             self.assertIn("qq:100:200", win.account_table.item(0, 1).text())
