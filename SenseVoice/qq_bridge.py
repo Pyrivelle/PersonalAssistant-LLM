@@ -962,7 +962,7 @@ class QqBridge:
                                     principal=SkillPrincipal.verified_qq_private(
                                         bot_id=self.bot_id, user_id=current.user_id),
                                     memory_capture_verified=True)
-                            names = (self.tool_registry.public_names(scope=current.kind)
+                            names = (turn_registry.public_names(scope=current.kind)
                                      if tools_enabled else ())
                             if tools_enabled and self.planner_settings.agent_v3_enabled:
                                 # No external retrieval and no loading disabled skills.
