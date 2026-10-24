@@ -1,6 +1,6 @@
 """Opt-in, read-only web_search.search Skill.
 
-Enable it explicitly in skills_settings.json and configure a Brave Search
+Enable it explicitly in skills_settings.json and configure a DeepSeek Search
 API key through the administrator environment. This skill cannot browse a
 model-selected URL or call arbitrary external hosts.
 """
@@ -10,16 +10,16 @@ import asyncio
 import os
 
 from zhuangfy.agent_v2.runtime import ToolBinding
-from zhuangfy.agent_v2.web_search_provider import BraveSearch
+from zhuangfy.agent_v2.web_search_provider import DeepSeekSearch
 
 
 def setup(context):
     if context.skill_id != "web_search":
         raise ValueError("Unexpected Web Search skill identity")
-    key = os.environ.get("ZHUANGFY_BRAVE_SEARCH_API_KEY", "")
+    key = os.environ.get("ZHUANGFY_DEEPSEEK_API_KEY", "")
     if not key:
-        raise ValueError("ZHUANGFY_BRAVE_SEARCH_API_KEY is not configured")
-    provider = BraveSearch(key)
+        raise ValueError("ZHUANGFY_DEEPSEEK_API_KEY is not configured")
+    provider = DeepSeekSearch(key)
 
     async def search(arguments: dict) -> str:
         return await asyncio.to_thread(provider.search, arguments["query"])
@@ -34,7 +34,7 @@ def setup(context):
             "type": "object",
             "properties": {
                 "query": {
-                    "type": "string", "minLength": 2, "maxLength": 220,
+                    "type": "string", "minLength": 2, "maxLength": 128,
                     "description": "简短的公开搜索关键词，禁止个人隐私或账户密钥",
                 },
             },
