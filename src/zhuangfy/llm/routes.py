@@ -291,6 +291,8 @@ def invoke_stage(
     fails, raise ModelRoutesFailed; callers decide whether to show an error or
     (for Planner only) proceed with a default plan.
     """
+    if planner_schema is not None and (stage != "planner" or not isinstance(planner_schema, dict)):
+        raise ValueError("Structured schema only allowed for Planner")
     if stage not in STAGES:
         raise ValueError("未知模型阶段")
     if (stage == "vision") != (image_data_url is not None):
