@@ -38,6 +38,7 @@ from zhuangfy.agent_v2.planner import plan_turn_v2, plan_turn_v3, choose_action,
 from zhuangfy.agent_v2.discovery import SkillDiscovery
 from zhuangfy.agent_v2.memory_skill import create_turn_registry
 from zhuangfy.agent_v2.skill_access import SkillPrincipal
+from zhuangfy.agent_v2.web_search_access import restrict_web_search_for_qq
 from zhuangfy.agent_v2.runtime import AgentCycleEngine
 from zhuangfy.agent_v2.scheduler import UnifiedTurnScheduler, SchedulerConfig
 from zhuangfy.agent_v2.turn_trigger import TurnEvent
@@ -962,6 +963,18 @@ class QqBridge:
                                     principal=SkillPrincipal.verified_qq_private(
                                         bot_id=self.bot_id, user_id=current.user_id),
                                     memory_capture_verified=True)
+                            if tools_enabled and self.planner_settings.agent_v3_enabled:
+                                # Plugin installation is NOT authorization for
+                                # an external paid API. Only exact QQ bot/user
+                                # pairs from trusted admin env may see this tool.
+                                principal = (SkillPrincipal.verified_qq_private(
+                                    bot_id=self.bot_id, user_id=current.user_id)
+                                    if current.kind == "private" and self.bot_id > 0
+                                    else None)
+                                turn_registry = restrict_web_search_for_qq(
+                                    turn_registry, principal=principal,
+                                    allowed_pairs=os.environ.get(
+                                        "ZHUANGFY_WEB_SEARCH_ALLOWED_QQ", ""))
                             names = (turn_registry.public_names(scope=current.kind)
                                      if tools_enabled else ())
                             if tools_enabled and self.planner_settings.agent_v3_enabled:
