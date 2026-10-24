@@ -94,6 +94,12 @@ class MemoryCore:
             task_id=task_id, owner_scope=owner_scope,
             source_entry_id=source_entry_id)
 
+    def task_recall(self, *, identity: dict, query: str, limit: int = 2) -> dict:
+        """Recall source-labelled past discussions for relevant linked goals."""
+        return self.task_continuity.recall(
+            agent_id=self.agent_id, identity=self._identity(identity),
+            query=query, limit=limit)
+
     def task_origin(self, *, identity: dict, task_id: str) -> dict:
         """Read only evidence for the authenticated QQ owner's goal."""
         return self.task_links.get_task(
