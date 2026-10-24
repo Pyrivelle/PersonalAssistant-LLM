@@ -151,7 +151,8 @@ def save_routes(config: ModelRoutes, path: Path = ROUTES_FILE) -> None:
         policy = config.for_stage(stage)
         raw[stage] = {
             "candidates": [dict(id=item.id, provider=item.provider, base_url=item.base_url,
-                                model=item.model, enabled=item.enabled, thinking=item.thinking)
+                                model=item.model, enabled=item.enabled, thinking=item.thinking,
+                                planner_format=item.planner_format)
                            for item in policy.candidates],
             "retries": policy.retries,
             "retry_delay": policy.retry_delay,
