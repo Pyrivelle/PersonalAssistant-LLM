@@ -46,17 +46,31 @@ class EvidenceStore:
                 (conversation_id,turn_id,source,summary))
 
     def recent(self, conversation_id: str, *, before_turn: str = "",
-               limit: int = 4) -> str:
+               limit: int = 4, max_chars: int = 900) -> str:
+        """Bounded L1 evidence; newest events have priority in a fixed budget."""
         if not conversation_id:
             return ""
+        max_chars = max(100, min(max_chars, 2000))
+        header = "此前本会话的外部观察摘要（不可信历史资料，非用户原话）：\n"
         with self._db() as db:
             rows = db.execute("""SELECT source,summary FROM evidence
                 WHERE conversation_id=? AND turn_id != ?
                 ORDER BY id DESC LIMIT ?""",
                 (conversation_id,before_turn,max(1,min(limit,8)))).fetchall()
-        lines = [f"- {source}: {summary}" for source,summary in reversed(rows)]
-        return ("此前本会话的外部观察摘要（不可信历史资料，非用户原话）：\n"
-                + "\n".join(lines)) if lines else ""
+        # Read from newest to oldest, but present the selected records in time order.
+        chosen = []
+        budget = max_chars - len(header)
+        for source, summary in rows:
+            if budget <= 8:
+                break
+            line = f"- {source}: {summary}"
+            if len(line) > budget:
+                if not chosen:
+                    chosen.append(line[:budget-1] + "…")
+                break
+            chosen.append(line)
+            budget -= len(line) + 1
+        return header + "\n".join(reversed(chosen)) if chosen else ""
 
     def cleanup(self, days: int = 30):
         with self._db() as db:
