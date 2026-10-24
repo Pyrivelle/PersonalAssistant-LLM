@@ -171,7 +171,11 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
 
     if relationship_tier not in ("unassigned", "L0", "L1", "L2", "L3", "L4"):
         raise ValueError("Invalid trusted relationship tier")
-    prompt = PLANNER_V2_PROMPT
+    if protocol_v3:
+        from .planner_v3 import V3_PROMPT
+        prompt = V3_PROMPT
+    else:
+        prompt = PLANNER_V2_PROMPT
     if getattr(settings, "system_prompt", ""):
         # Character persona is background for behavior, not a replacement for
         # the planner's role or an excuse to imitate a human's actual past.
