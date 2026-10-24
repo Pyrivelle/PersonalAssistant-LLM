@@ -19,6 +19,7 @@ from .identity import ChannelIdentity, IdentityProof, IdentityRepository
 from .projector import CuratedIndexProjector
 from .retrieval import HybridMemoryRetriever
 from .timeline import TimelineRepository
+from .task_links import TaskMemoryLinks
 from zhuangfy.relationship import RelationshipCore, RelationshipEvolution, RelationshipCandidate
 from .vector import EmbeddingProvider, QdrantLocalIndex, VectorIndex
 
