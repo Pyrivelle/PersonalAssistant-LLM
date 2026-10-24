@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import tempfile
 import time
 import urllib.request
@@ -52,6 +53,7 @@ from zhuangfy.memory.routing import legacy_memory_allowed
 from zhuangfy.channels.qq.relationship_review import DailyRelationshipReview
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
 from zhuangfy.paths import Paths
+from zhuangfy.vision_context import VisionDescriptionStore, image_digest
 
 
 SETTINGS_FILE = ROOT / "qq_settings.json"
@@ -950,9 +952,33 @@ class QqBridge:
                         if not can_attempt_stage("vision", settings, key):
                             raise ModelRoutesFailed("vision", [("配置", "识图模型尚未配置")])
                         picture = await self._image_data_url(image_ref)
-                        visual_context = await asyncio.to_thread(
-                            invoke_stage, "vision", settings, key, [], message,
-                            system_prompt=VISION_PROMPT, image_data_url=picture)
+                        # Vision analysis is keyed by image content, not QQ's
+                        # expiring URL. Fail open to the existing vision route if
+                        # local cache/database is unavailable.
+                        cache = None
+                        digest = ""
+                        model_signature = f"{settings.provider}:{settings.model}:vision-v1"
+                        message_key = f"qq:{self.bot_id}:{current.kind}:{current.user_id}:{turn_id}"
+                        try:
+                            digest = image_digest(picture)
+                            cache = VisionDescriptionStore(PROJECT_DATA / "vision" / "descriptions.sqlite3")
+                            cache.associate(message_key, digest)
+                            visual_context = cache.lookup(digest, model_signature)
+                            if visual_context:
+                                cache.associate(message_key, digest, "completed")
+                                log_event("QQ", "识图缓存", f"{current.scope} · 命中 · {len(visual_context)} 字")
+                        except (OSError, ValueError, sqlite3.Error) as error:
+                            cache = None
+                            log_event("QQ", "识图缓存", f"不可用 · {type(error).__name__}")
+                        if not visual_context:
+                            visual_context = await asyncio.to_thread(
+                                invoke_stage, "vision", settings, key, [], message,
+                                system_prompt=VISION_PROMPT, image_data_url=picture)
+                            if cache is not None and digest and visual_context.strip():
+                                try:
+                                    cache.store(message_key, digest, model_signature, visual_context)
+                                except (OSError, sqlite3.Error) as error:
+                                    log_event("QQ", "识图缓存", f"保存跳过 · {type(error).__name__}")
                         log_event("QQ", "识图", f"{current.scope} · 完成 · {len(visual_context)} 字")
                     candidate = state.context.observe(message)
                     plan = TurnPlan()
