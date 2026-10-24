@@ -947,6 +947,21 @@ class QqBridge:
                                 else self.planner_settings.agent_v2_allow_silence_private
                             )
                             tools_enabled = self.planner_settings.agent_v2_tools_enabled
+                            # A fresh, turn-scoped tool registry captures ONLY the
+                            # verified sender of this particular incoming message.
+                            # Never bind a principal to self.tool_registry: other
+                            # QQ users can be processed by the same bridge.
+                            turn_registry = self.tool_registry
+                            if (tools_enabled and self.planner_settings.agent_v3_enabled
+                                    and memory_claim is not None
+                                    and memory_ref is not None and current.kind == "private"
+                                    and self.memory_client is not None):
+                                turn_registry = create_turn_registry(
+                                    self.tool_registry,
+                                    memory_client=self.memory_client,
+                                    principal=SkillPrincipal.verified_qq_private(
+                                        bot_id=self.bot_id, user_id=current.user_id),
+                                    memory_capture_verified=True)
                             names = (self.tool_registry.public_names(scope=current.kind)
                                      if tools_enabled else ())
                             if tools_enabled and self.planner_settings.agent_v3_enabled:
