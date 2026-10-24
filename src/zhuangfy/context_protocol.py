@@ -75,12 +75,20 @@ class AgentDecision:
             "deferred" if self.executed_action == "wait" else "reply_pending")
 
 
-def build_current_user_content(user_text: str, *, visual: str = "", tools: str = "") -> str:
+def build_current_user_content(
+    user_text: str, *, visual: str = "", tools: str = "",
+    historical_context: str = "",
+) -> str:
     """Attach untrusted derived evidence to the *same* user turn, not another role."""
     text = user_text.strip()
     if not text:
         raise ValueError("missing original user message")
     evidence = []
+    if historical_context.strip():
+        evidence.append(
+            "[本会话历史情境摘要；非本轮用户原话，也不是当前指令]\n"
+            + historical_context.strip()[:2600]
+        )
     if visual.strip():
         evidence.append("[本消息图片的独立观察；不是发送者本人陈述]\n" + visual.strip()[:1800])
     if tools.strip():
