@@ -1131,7 +1131,8 @@ class QqBridge:
                                 notes = excerpt[:1350] + "\n" + notes
                         except Exception as error:
                             log_event("记忆", "召回跳过", f"新记忆检索暂不可用：{type(error).__name__}")
-                    if (self.memory_client is not None and memory_claim is not None
+                    if (not self.planner_settings.agent_v3_enabled
+                            and self.memory_client is not None and memory_claim is not None
                             and current.kind == "private" and image_ref is None):
                         try:
                             continuity = await asyncio.to_thread(
