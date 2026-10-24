@@ -1353,7 +1353,11 @@ class QqBridge:
                         previous_evidence = evidence_store.recent(
                             evidence_scope, before_turn=turn_id)
                         if previous_evidence:
-                            notes += "\n" + previous_evidence
+                            # Provider only forwards context_notes[:2600]. Reserve
+                            # budget for recalled L1 evidence instead of appending
+                            # beyond that limit and silently losing it.
+                            prior_budget = 750 if current.kind == "group" else 1550
+                            notes = notes[-prior_budget:] + "\n" + previous_evidence
                     except (OSError, sqlite3.Error) as error:
                         evidence_store = None
                         log_event("QQ", "证据上下文", f"读取跳过 · {type(error).__name__}")
