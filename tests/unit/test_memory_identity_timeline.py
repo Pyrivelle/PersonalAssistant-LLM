@@ -75,6 +75,21 @@ class IdentityTimelineTests(unittest.TestCase):
         self.assertFalse(self.people.has_consent(person.person_id, "timeline"))
         self.assertFalse(self.people.has_consent(person.person_id, "curation"))
 
+    def test_existing_qq_identity_gets_local_timeline_once_but_not_after_revocation(self):
+        linked = ChannelIdentity("qq", "200", "301")
+        person = self.people.create_person("已有账号")
+        self.people.link_verified(person.person_id, linked, PROOF)
+        self.assertFalse(self.people.has_consent(person.person_id, "timeline"))
+        reused, created = self.people.ensure_qq_person(
+            linked, "新昵称", initial_timeline=True)
+        self.assertFalse(created)
+        self.assertEqual(reused.person_id, person.person_id)
+        self.assertTrue(self.people.has_consent(person.person_id, "timeline"))
+        self.assertFalse(self.people.has_consent(person.person_id, "curation"))
+        self.people.set_consent(person.person_id, "timeline", False)
+        self.people.ensure_qq_person(linked, "重连", initial_timeline=True)
+        self.assertFalse(self.people.has_consent(person.person_id, "timeline"))
+
     def test_auto_qq_onboarding_rejects_non_qq_or_forged_ids(self):
         for claim in (
             ChannelIdentity("desktop", "local", "member"),
