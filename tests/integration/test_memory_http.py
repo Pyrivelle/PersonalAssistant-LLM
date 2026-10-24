@@ -176,6 +176,118 @@ class HttpMemoryTests(unittest.TestCase):
         self.assertTrue(latest["timeline_revoked"])
         self.assertFalse(latest["curation_enabled"])
 
+    def test_task_origin_bridge_is_scoped_idempotent_and_erasure_safe(self):
+        from zhuangfy.agent_v2.goals import GoalStore
+        from zhuangfy.agent_v2.task_memory_bridge import link_existing_qq_goal
+
+        self.core.auto_qq_timeline = True
+        owner = MemoryChannel("qq", "10001", "20001")
+        other = MemoryChannel("qq", "10001", "20002")
+        self.client.onboard_qq(owner, "同名")
+        self.client.onboard_qq(other, "同名")
+        msg = self.client.receive(
+            owner, chat_id="private:20001", message_id="qq-1",
+            content="明天继续优化港口场景")
+        other_msg = self.client.receive(
+            other, chat_id="private:20002", message_id="qq-2",
+            content="明天继续优化港口场景")
+        goals = GoalStore(self.core.root / "goals.sqlite3")
+        self.assertTrue(goals.create(
+            goal_id="goal-001", owner_scope="qq:10001:private:20001",
+            source_event_id=msg["entry_id"], due_at=10, expires_at=200,
+            consent=True))
+        created = link_existing_qq_goal(
+            goals=goals, admin=self.admin, goal_id="goal-001",
+            bot_id="10001", user_id="20001")
+        self.assertTrue(created["created"])
+        again = link_existing_qq_goal(
+            goals=goals, admin=self.admin, goal_id="goal-001",
+            bot_id="10001", user_id="20001")
+        self.assertFalse(again["created"])
+        result = self.client.task_origin(owner, "goal-001")
+        self.assertEqual(result["origin_entry_id"], msg["entry_id"])
+        self.assertEqual(result["evidence"][0]["source_message_id"], "qq-1")
+        # Task IDs cannot be hijacked by an overlapping nickname.
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.task_origin(other, "goal-001")
+        self.assertEqual(e.exception.status, 403)
+        with self.assertRaises(PermissionError):
+            link_existing_qq_goal(goals=goals, admin=self.admin,
+                                  goal_id="goal-001", bot_id="10001",
+                                  user_id="20002")
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.admin_bind_goal_origin(
+                owner, task_id="goal-001", owner_scope="qq:10001:private:20001",
+                source_entry_id=other_msg["entry_id"])
+        self.assertEqual(e.exception.status, 403)
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.admin_bind_goal_origin(
+                owner, task_id="goal-002", owner_scope="qq:10001:private:20001",
+                source_entry_id=other_msg["entry_id"])
+        self.assertEqual(e.exception.status, 403)
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.admin_bind_goal_origin(
+                owner, task_id="goal-002", owner_scope="qq:private:20001",
+                source_entry_id=msg["entry_id"])
+        self.assertEqual(e.exception.status, 403)
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.admin_bind_goal_origin(
+                owner, task_id="goal-002", owner_scope="qq:10001:private:20001",
+                source_entry_id="made-up-entry")
+        self.assertEqual(e.exception.status, 403)
+        # A non-admin channel token cannot register invented tasks.
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.admin_bind_goal_origin(
+                owner, task_id="forged", owner_scope="qq:10001:private:20001",
+                source_entry_id=msg["entry_id"])
+        self.assertEqual(e.exception.status, 401)
+        # A revoked Timeline is not readable as task context.
+        p = next(p for p in self.admin.list_people() if
+                 p["display_name"] == "同名" and any(
+                    i["external_user_id"] == "20001" for i in p["identities"]))
+        self.admin.admin_consent(p["person_id"], "timeline", False)
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.task_origin(owner, "goal-001")
+        self.assertEqual(e.exception.status, 403)
+        self.admin.admin_consent(p["person_id"], "timeline", True)
+        self.assertEqual(self.client.task_origin(owner, "goal-001")["task_id"], "goal-001")
+        self.client.erase_self(owner)
+        with self.assertRaises(MemoryClientError) as e:
+            self.client.task_origin(owner, "goal-001")
+        self.assertEqual(e.exception.status, 403)
+        with self.core.database.connection() as db:
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM task_memory_tasks").fetchone()[0], 0)
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM task_memory_links").fetchone()[0], 0)
+
+    def test_task_origin_must_be_real_received_user_entry(self):
+        self.core.auto_qq_timeline = True
+        owner = MemoryChannel("qq", "10001", "20001")
+        self.client.onboard_qq(owner, "测试")
+        msg = self.client.receive(
+            owner, chat_id="private:20001", message_id="qq-3", content="开始任务")
+        reply = self.client.complete_reply(
+            owner, conversation_id=msg["conversation_id"],
+            entry_id=msg["entry_id"], reply_id="bot-3", content="明白")
+        with self.assertRaises(MemoryClientError) as e:
+            self.admin.admin_bind_goal_origin(
+                owner, task_id="goal-003", owner_scope="qq:10001:private:20001",
+                source_entry_id=reply["entry_id"])
+        self.assertEqual(e.exception.status, 403)
+        self.assertTrue(self.admin.admin_bind_goal_origin(
+            owner, task_id="goal-003", owner_scope="qq:10001:private:20001",
+            source_entry_id=msg["entry_id"])["created"])
+        # Persistence through a new repository instance (e.g. process restart).
+        from zhuangfy.memory.task_links import TaskMemoryLinks
+        restored = TaskMemoryLinks(self.core.database, self.core.identities, self.core.timeline)
+        from zhuangfy.memory.identity import ChannelIdentity
+        self.assertEqual(
+            restored.get_task(
+                agent_id=self.core.agent_id,
+                identity=ChannelIdentity("qq", "10001", "20001"),
+                task_id="goal-003")["origin_entry_id"], msg["entry_id"])
+
     def test_verified_channel_identity_and_historical_turn(self):
         a, aid = self._person("甲", "alice")
         b, bid = self._person("同名", "bob")
