@@ -37,6 +37,17 @@ class EvidenceStoreTests(unittest.TestCase):
             db.save("conv", "t1", "tool", "x"*5000)
             self.assertLess(len(db.recent("conv")), 1100)
 
+    def test_erase_scope_cannot_recall_or_delete_other_conversations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            db = EvidenceStore(Path(temp) / "evidence.db")
+            db.save("a", "turn-a", "vision", "private image")
+            db.save("b", "turn-b", "vision", "other image")
+            db.erase_conversation("a")
+            self.assertEqual(db.recent("a"), "")
+            self.assertIn("other image", db.recent("b"))
+            with self.assertRaises(ValueError):
+                db.erase_conversation("")
+
 
 if __name__ == "__main__":
     unittest.main()
