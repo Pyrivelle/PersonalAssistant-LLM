@@ -6,6 +6,7 @@ verified conversation and sender identity, never model-inferred values.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from .evidence_store import EvidenceStore
 from .image_meaning import ImageMeaningStore
 
@@ -26,6 +27,15 @@ def commit_delivered_evidence(
 ) -> None:
     if not conversation_id or not sender_id or not turn_id:
         raise ValueError("verified turn identifiers are required")
+    # Validate the entire payload *before* any database writes. Otherwise
+    # malformed image data could leave the evidence row half committed.
+    for digest in (image_hash, meaning_hash):
+        if digest and re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("invalid image digest")
+    if image_hash and not image_message_id:
+        raise ValueError("image message identity required")
+    if meaning_hash and (not meaning_text or not meaning_source_message_id):
+        raise ValueError("explicit user correction provenance required")
     if visual_summary or tool_summary:
         store = EvidenceStore(root / "context.sqlite3")
         if visual_summary:
@@ -35,11 +45,7 @@ def commit_delivered_evidence(
     if image_hash or meaning_hash:
         store = ImageMeaningStore(root / "image_meanings.sqlite3")
         if image_hash:
-            if not image_message_id:
-                raise ValueError("image message identity required")
             store.record_image(conversation_id, sender_id, image_message_id, image_hash)
         if meaning_hash:
-            if not meaning_text or not meaning_source_message_id:
-                raise ValueError("explicit user correction provenance required")
             store.save(conversation_id, meaning_hash, meaning_text,
                        meaning_source_message_id)
