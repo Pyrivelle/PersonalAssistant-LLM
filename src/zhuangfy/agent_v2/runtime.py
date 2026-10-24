@@ -88,40 +88,72 @@ class AuthorizedToolRegistry:
 
     @staticmethod
     def _check_schema(arguments: dict, schema: dict) -> bool:
-        """Small no-dependency guard for host-declared top-level object fields."""
-        if not schema:
-            return True
-        if schema.get("type") != "object":
-            return False
-        properties = schema.get("properties", {})
-        required = schema.get("required", [])
-        if not isinstance(properties, dict) or not isinstance(required, list):
-            return False
-        if any(key not in arguments for key in required):
-            return False
-        if schema.get("additionalProperties") is False and any(
-                key not in properties for key in arguments):
-            return False
-        for key, value in arguments.items():
-            prop = properties.get(key, {})
-            if not isinstance(prop, dict):
+        """Bounded host-side JSON Schema subset. Unknown keywords fail closed.
+
+        Supports objects, arrays, enums, primitives, required, bounds and
+        additionalProperties=false; never interprets JSON references.
+        """
+        import math
+        allowed_keys = frozenset({
+            "type", "properties", "required", "additionalProperties",
+            "items", "enum", "minLength", "maxLength",
+            "minimum", "maximum", "minItems", "maxItems",
+            "description",
+        })
+
+        def validate(value, spec, depth=0):
+            if depth > 6 or not isinstance(spec, dict) or set(spec) - allowed_keys:
                 return False
-            kind = prop.get("type")
+            if not spec:
+                return True
+            kind = spec.get("type")
+            kinds = {
+                "object": lambda: type(value) is dict,
+                "array": lambda: type(value) is list,
+                "string": lambda: type(value) is str,
+                "integer": lambda: type(value) is int,
+                "number": lambda: type(value) in (int, float)
+                and math.isfinite(value),
+                "boolean": lambda: type(value) is bool,
+            }
+            if kind not in kinds or not kinds[kind]():
+                return False
+            if "enum" in spec:
+                options = spec["enum"]
+                if not isinstance(options, list) or not options or value not in options:
+                    return False
+            if kind == "object":
+                props = spec.get("properties", {})
+                required = spec.get("required", [])
+                extra = spec.get("additionalProperties", True)
+                if (not isinstance(props, dict) or not isinstance(required, list)
+                        or any(not isinstance(x, str) for x in required)
+                        or extra not in (True, False)):
+                    return False
+                if any(key not in value for key in required):
+                    return False
+                if extra is False and any(key not in props for key in value):
+                    return False
+                return all(validate(v, props[k], depth+1)
+                           for k, v in value.items() if k in props)
+            if kind == "array":
+                items = spec.get("items")
+                low, high = spec.get("minItems", 0), spec.get("maxItems", 100)
+                if (type(low) is not int or type(high) is not int
+                        or not 0 <= low <= len(value) <= high <= 100):
+                    return False
+                return items is None or all(validate(v, items, depth+1) for v in value)
             if kind == "string":
-                if not isinstance(value, str) or len(value) > prop.get("maxLength", 1024):
-                    return False
-            elif kind == "integer":
-                if type(value) is not int:
-                    return False
-            elif kind == "number":
-                if type(value) not in (int, float):
-                    return False
-            elif kind == "boolean":
-                if type(value) is not bool:
-                    return False
-            elif kind is not None:
-                return False
-        return True
+                low, high = spec.get("minLength", 0), spec.get("maxLength", 1024)
+                return (type(low) is int and type(high) is int
+                        and 0 <= low <= len(value) <= high <= 3000)
+            if kind in ("integer", "number"):
+                lower, upper = spec.get("minimum", float("-inf")), spec.get("maximum", float("inf"))
+                return (type(lower) in (float, int) and type(upper) in (float, int)
+                        and lower <= value <= upper)
+            return True
+
+        return type(arguments) is dict and validate(arguments, schema)
 
     async def invoke(self, name: str, arguments: dict, *, scope: str,
                      allow_mutation: bool = False, timeout: float = 6.0) -> ToolReceipt:
