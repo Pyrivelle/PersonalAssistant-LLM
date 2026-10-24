@@ -147,6 +147,24 @@ class VisionDescriptionStore:
         return [VisualEvidence(key, digest, description, "completed")
                 for key,digest,description in reversed(rows)]
 
+    def erase_conversation(self, prefix: str) -> None:
+        """Drop this conversation's message links and unreferenced descriptions.
+
+        Keep cache entries still referenced by other users' conversations.
+        The prefix includes the trailing ':' separator to prevent collisions.
+        """
+        if not prefix or not prefix.endswith(":"):
+            raise ValueError("scope must end with ':'")
+        with self._lock, self._connect() as db:
+            db.execute("""DELETE FROM message_images
+                WHERE substr(message_key,1,?)=?""", (len(prefix),prefix))
+            db.execute("""DELETE FROM descriptions
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM message_images m
+                    WHERE m.image_hash=descriptions.image_hash
+                    AND m.model_signature=descriptions.model_signature
+                )""")
+
     def cleanup(self, days: int = 30) -> None:
         with self._lock, self._connect() as db:
             db.execute("DELETE FROM descriptions WHERE updated_at < datetime('now',?)",
