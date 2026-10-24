@@ -900,6 +900,29 @@ class QqBridge:
                                 remote_notice += " 部分新记忆向量索引尚待修复。"
                         except Exception:
                             remote_notice = " 新记忆库未能确认清除或关闭记录，请在管理界面检查。"
+                    # PR #53's derived evidence must obey the same erase command.
+                    # Scope uses trusted QQ identity, never user-provided text.
+                    erased_scope = f"qq:{self.bot_id}:private:{current.user_id}"
+                    erase_failed = []
+                    from zhuangfy.evidence_store import EvidenceStore
+                    from zhuangfy.image_meaning import ImageMeaningStore
+                    for store_type, db_path, erase_arg in (
+                        (EvidenceStore, PROJECT_DATA / "evidence" / "context.sqlite3",
+                         erased_scope),
+                        (ImageMeaningStore, PROJECT_DATA / "evidence" / "image_meanings.sqlite3",
+                         erased_scope),
+                        (VisionDescriptionStore, PROJECT_DATA / "vision" / "descriptions.sqlite3",
+                         erased_scope + ":"),
+                    ):
+                        try:
+                            if db_path.exists():
+                                store_type(db_path).erase_conversation(erase_arg)
+                        except (OSError, sqlite3.Error, ValueError) as error:
+                            erase_failed.append(store_type.__name__)
+                            log_event("QQ", "隐私清理失败",
+                                      f"{store_type.__name__} · {type(error).__name__}")
+                    if erase_failed:
+                        remote_notice += " 注意：部分图片或工具证据未能确认清除，请在服务管理中检查。"
                     await self.send_reply(current, "已清除这个 QQ 账号在本机器人中的会话与成员记忆。" + remote_notice)
                     continue
                 memory_ref = None
