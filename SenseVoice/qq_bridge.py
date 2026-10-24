@@ -34,7 +34,8 @@ from emotion import EmotionState
 from llm import LlmSettings
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
 from zhuangfy.agent_v2 import MessageDebouncer, from_qq_incoming
-from zhuangfy.agent_v2.planner import plan_turn_v2, choose_action, PlanDecision
+from zhuangfy.agent_v2.planner import plan_turn_v2, plan_turn_v3, choose_action, PlanDecision
+from zhuangfy.agent_v2.discovery import SkillDiscovery
 from zhuangfy.agent_v2.runtime import AgentCycleEngine
 from zhuangfy.agent_v2.scheduler import UnifiedTurnScheduler, SchedulerConfig
 from zhuangfy.agent_v2.turn_trigger import TurnEvent
