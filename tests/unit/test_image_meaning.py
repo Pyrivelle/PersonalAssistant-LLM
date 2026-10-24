@@ -26,5 +26,18 @@ class ImageMeaningTests(unittest.TestCase):
             self.assertEqual(db.lookup("qq:bot:private:alice", "b"*64), "")
 
 
+    def test_only_recent_unique_same_sender_image_can_be_explained(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = ImageMeaningStore(Path(folder) / "meanings.db")
+            a, b = "a"*64, "b"*64
+            db.record_image("private", "alice", "msg-1", a)
+            self.assertEqual(db.latest_unambiguous("private", "alice"), a)
+            self.assertEqual(db.latest_unambiguous("private", "bob"), "")
+            db.record_image("private", "bob", "msg-2", b)
+            self.assertEqual(db.latest_unambiguous("private", "alice"), a)
+            db.record_image("private", "alice", "msg-3", b)
+            self.assertEqual(db.latest_unambiguous("private", "alice"), "")
+
+
 if __name__ == "__main__":
     unittest.main()
