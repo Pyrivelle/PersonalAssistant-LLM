@@ -90,8 +90,12 @@ class BraveSearch:
             if len(self._timestamps) >= self._max_requests:
                 raise SearchUnavailable("Search rate limit reached")
             self._timestamps.append(now)
+        # Brave expects a localized Chinese search_lang code rather than
+        # plain "zh"; English-only queries retain the default English index.
+        language = "zh-hans" if re.search(r"[\u4e00-\u9fff]", query) else "en"
         url = API_URL + "?" + urlencode({
             "q": query, "count": RESULT_LIMIT, "safesearch": "moderate",
+            "search_lang": language,
         })
         request = Request(url, headers={
             "Accept": "application/json",
