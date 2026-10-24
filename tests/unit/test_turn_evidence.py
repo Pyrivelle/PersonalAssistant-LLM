@@ -47,6 +47,17 @@ class DeliveredEvidenceTests(unittest.TestCase):
                     Path(temp), conversation_id="qq:1:private:alice",
                     sender_id="alice", turn_id="t2", meaning_hash="a"*64)
 
+    def test_invalid_image_provenance_cannot_half_commit_tool_summary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaises(ValueError):
+                commit_delivered_evidence(
+                    root, conversation_id="conv", sender_id="alice", turn_id="t1",
+                    tool_summary="should-not-persist",
+                    image_hash="not-a-sha256", image_message_id="m1",
+                )
+            self.assertFalse((root / "context.sqlite3").exists())
+
     def test_erase_all_derivative_stores_after_delivery(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
