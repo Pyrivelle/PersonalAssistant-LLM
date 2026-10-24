@@ -97,6 +97,8 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.onboard_qq(**payload)
                 elif path == "/v1/receive":
                     result = core.receive(**payload)
+                elif path == "/v1/task-origin":
+                    result = core.task_origin(**payload)
                 elif path == "/v1/recall":
                     result = core.recall(**payload)
                 elif path == "/v1/complete-reply":
