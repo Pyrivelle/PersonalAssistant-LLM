@@ -144,6 +144,10 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.admin_forget_memory(**payload)
                 elif path == "/v1/admin/forget-person":
                     result = core.admin_forget_person(**payload)
+                elif path == "/v1/admin/task-event-review":
+                    result = core.admin_task_event_review(**payload)
+                elif path == "/v1/admin/task-event-correct":
+                    result = core.admin_task_event_correct(**payload)
                 elif path == "/v1/admin/bind-goal-origin":
                     result = core.admin_bind_goal_origin(**payload)
                 elif path == "/v1/admin/link-episodes":
