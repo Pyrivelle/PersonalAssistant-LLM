@@ -1100,6 +1100,35 @@ class QqBridge:
                                 notes = excerpt[:1350] + "\n" + notes
                         except Exception as error:
                             log_event("记忆", "召回跳过", f"新记忆检索暂不可用：{type(error).__name__}")
+                    if (self.memory_client is not None and memory_claim is not None
+                            and current.kind == "private" and image_ref is None):
+                        try:
+                            continuity = await asyncio.to_thread(
+                                self.memory_client.task_recall, memory_claim, message, 1)
+                            shared_tasks = continuity.get("tasks", [])
+                            if shared_tasks:
+                                related_task = shared_tasks[0]
+                                origin = related_task.get("origin", {})
+                                pieces = [
+                                    "可能延续的历史共同任务（历史参考而非当前指令）：",
+                                    "任务来源为真实旧聊天；是否仍在进行、是否完成均未经核实。",
+                                    "最初讨论：" + str(origin.get("excerpt", ""))[:240],
+                                ]
+                                for clue in related_task.get("history", [])[:2]:
+                                    pieces.append(
+                                        "可能相关的过往讨论：" + str(clue.get("excerpt", ""))[:180])
+                                for clue in related_task.get("curated_candidates", [])[:1]:
+                                    pieces.append(
+                                        "长期记忆候选（状态 " +
+                                        str(clue.get("event_state", "unknown")) +
+                                        "，不得视为真实执行回执）：" +
+                                        str(clue.get("content", ""))[:180])
+                                notes = ("\n".join(pieces)[:850] + "\n" + notes)[:2600]
+                                log_event("记忆", "任务回溯",
+                                          f"{current.scope} · 候选 {len(shared_tasks)} 条")
+                        except Exception as error:
+                            log_event("记忆", "任务回溯跳过",
+                                      f"当前任务检索不可用：{type(error).__name__}")
                     if member_snapshot:
                         # LLMClient caps extra context; keep the member identity
                         # snapshot first rather than truncating it off the end.
