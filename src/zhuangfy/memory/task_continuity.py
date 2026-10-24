@@ -118,7 +118,8 @@ class TaskContinuity:
                   AND e.entry_id<>?
                 ORDER BY e.sequence DESC LIMIT 200
             """, (person_id, agent_id, identity.channel_account_id,
-                  "private:" + identity.external_user_id)).fetchall() if selected else []
+                  "private:" + identity.external_user_id,
+                  exclude_entry_id)).fetchall() if selected else []
 
         # Existing Curator permissions are deliberately independent of Timeline.
         curated = []
