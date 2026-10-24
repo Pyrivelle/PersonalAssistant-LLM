@@ -68,7 +68,8 @@ class MemoryCore:
     def onboard_qq(self, *, identity: dict, display_name: str) -> dict:
         """Trust-boundary call: only a QQ adapter with the client token may invoke.
 
-        It creates an identity shell, never Timeline or curation consent.
+        An explicit service policy may allow local Timeline retention for newly
+        created QQ people. Curator permission always remains ungranted.
         """
         person, created = self.identities.ensure_qq_person(
             self._identity(identity), display_name)
