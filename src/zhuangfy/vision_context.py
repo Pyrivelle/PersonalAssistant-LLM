@@ -9,6 +9,7 @@ import base64
 import hashlib
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +25,7 @@ class VisualEvidence:
 def image_digest(data_url: str) -> str:
     """Hash actual image bytes, not the data URL string or temporary QQ URL."""
     head, sep, payload = data_url.partition(",")
-    if not sep or not head.startswith("data:image/") or ";base64" not in head:
+    if len(payload) > 28 * 1024 * 1024:\n        raise ValueError("Image payload too large")\n    if not sep or not head.startswith("data:image/") or ";base64" not in head:
         raise ValueError("Expected a base64 image data URL")
     try:
         raw = base64.b64decode(payload, validate=True)
@@ -44,11 +45,13 @@ class VisionDescriptionStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as con:
             con.execute("""CREATE TABLE IF NOT EXISTS descriptions(
-                image_hash TEXT PRIMARY KEY, description TEXT NOT NULL,
-                model_signature TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                image_hash TEXT NOT NULL, description TEXT NOT NULL,
+                model_signature TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(image_hash, model_signature)
             )""")
             con.execute("""CREATE TABLE IF NOT EXISTS message_images(
                 message_key TEXT PRIMARY KEY, image_hash TEXT NOT NULL,
+                model_signature TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL CHECK(status IN ('pending','completed','failed'))
             )""")
 
@@ -62,38 +65,50 @@ class VisionDescriptionStore:
                 (image_hash, model_signature)).fetchone()
         return row[0] if row else ""
 
-    def associate(self, message_key: str, image_hash: str, status: str = "pending") -> None:
+    def associate(self, message_key: str, image_hash: str, status: str = "pending", signature: str = "") -> None:
         if not message_key or status not in ("pending", "completed", "failed"):
             raise ValueError("Invalid message association")
         with self._lock, self._connect() as con:
-            con.execute("""INSERT INTO message_images(message_key,image_hash,status)
-                VALUES(?,?,?) ON CONFLICT(message_key) DO UPDATE SET
-                image_hash=excluded.image_hash,status=excluded.status""",
-                (message_key, image_hash, status))
+            con.execute("""INSERT INTO message_images(message_key,image_hash,status,model_signature)
+                VALUES(?,?,?,?) ON CONFLICT(message_key) DO UPDATE SET
+                image_hash=excluded.image_hash,status=excluded.status,
+                model_signature=excluded.model_signature""",
+                (message_key, image_hash, status, signature))
 
     def store(self, message_key: str, image_hash: str, signature: str, description: str) -> None:
         if not description.strip():
             raise ValueError("Empty vision result")
         with self._lock, self._connect() as con:
             con.execute("""INSERT INTO descriptions(image_hash,description,model_signature)
-                VALUES(?,?,?) ON CONFLICT(image_hash) DO UPDATE SET
-                description=excluded.description,model_signature=excluded.model_signature,
-                updated_at=CURRENT_TIMESTAMP""", (image_hash, description, signature))
-            con.execute("""INSERT INTO message_images(message_key,image_hash,status)
-                VALUES(?,?,'completed') ON CONFLICT(message_key) DO UPDATE SET
-                image_hash=excluded.image_hash,status='completed'""", (message_key, image_hash))
+                VALUES(?,?,?) ON CONFLICT(image_hash,model_signature) DO UPDATE SET
+                description=excluded.description,updated_at=CURRENT_TIMESTAMP""", (image_hash, description, signature))
+            con.execute("""INSERT INTO message_images(message_key,image_hash,status,model_signature)
+                VALUES(?,?,'completed',?) ON CONFLICT(message_key) DO UPDATE SET
+                image_hash=excluded.image_hash,status='completed',
+                model_signature=excluded.model_signature""", (message_key, image_hash, signature))
 
     def refresh(self, message_key: str, signature: str) -> VisualEvidence | None:
         """Refresh a pending message reference from a completed cached description."""
         with self._lock, self._connect() as con:
             row = con.execute(
-                "SELECT image_hash,status FROM message_images WHERE message_key=?",
+                "SELECT image_hash,status,model_signature FROM message_images WHERE message_key=?",
                 (message_key,)).fetchone()
         if row is None:
             return None
         digest, status = row
         description = self.lookup(digest, signature)
         if description and status != "completed":
-            self.associate(message_key, digest, "completed")
+            self.associate(message_key, digest, "completed", signature)
             status = "completed"
         return VisualEvidence(message_key, digest, description, status)
+
+    def mark_failed(self, message_key: str, image_hash: str, signature: str) -> None:
+        self.associate(message_key, image_hash, "failed", signature)
+
+    def cleanup(self, *, days: int = 30) -> None:
+        """Bound local retention of descriptions and message references."""
+        cutoff = f"-{max(1, min(days, 365))} days"
+        with self._lock, self._connect() as con:
+            con.execute("DELETE FROM descriptions WHERE updated_at < datetime('now', ?)", (cutoff,))
+            con.execute("""DELETE FROM message_images WHERE image_hash NOT IN
+                (SELECT image_hash FROM descriptions) AND status != 'pending'""")
