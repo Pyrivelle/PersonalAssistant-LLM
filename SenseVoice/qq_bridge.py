@@ -876,6 +876,31 @@ class QqBridge:
                             current.user_id in self.planner_settings.persist_private_ids):
                         self.context_store.delete(f"bot:{self.bot_id}:{current.scope}")
                         self.context_store.delete(current.scope)  # legacy pre-bot scope
+                    # The newer derived stores also contain conversation-linked
+                    # personal evidence; erasure must cover them as well.
+                    evidence_scope = f"qq:{self.bot_id}:private:{current.user_id}"
+                    for store_name, store_path, erase_arg in (
+                        ("证据摘要", PROJECT_DATA / "evidence" / "context.sqlite3",
+                         evidence_scope),
+                        ("图片含义", PROJECT_DATA / "evidence" / "image_meanings.sqlite3",
+                         evidence_scope),
+                        ("图片关联", PROJECT_DATA / "vision" / "descriptions.sqlite3",
+                         evidence_scope + ":"),
+                    ):
+                        if not store_path.exists():
+                            continue
+                        try:
+                            if store_name == "证据摘要":
+                                from zhuangfy.evidence_store import EvidenceStore
+                                EvidenceStore(store_path).erase_conversation(erase_arg)
+                            elif store_name == "图片含义":
+                                from zhuangfy.image_meaning import ImageMeaningStore
+                                ImageMeaningStore(store_path).erase_conversation(erase_arg)
+                            else:
+                                VisionDescriptionStore(store_path).erase_conversation(erase_arg)
+                        except (OSError, sqlite3.Error) as error:
+                            log_event("QQ", "派生记忆清理失败",
+                                      f"{store_name} · {type(error).__name__}")
                     state.context = DialogueContext()
                     state.partial_replies.clear()
                     state.last_failed_generation = ""
