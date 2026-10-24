@@ -256,6 +256,7 @@ class AgentCycleEngine:
         allow_silence: bool = False,
         already_waited: bool = False,
         tool_timeout: float = 6.0,
+        on_event: Callable[[str, int, str], None] | None = None,
     ) -> CycleResult:
         deadline = monotonic() + self.total_timeout
         receipts: list[ToolReceipt] = []
@@ -264,6 +265,13 @@ class AgentCycleEngine:
         previous_searches: list[str] = []
         fallback = PlanDecision()
 
+        def emit(event: str, round_no: int, detail: str = "") -> None:
+            if on_event is not None:
+                try:
+                    on_event(event, round_no, detail)
+                except Exception:
+                    pass  # Diagnostics must never change action execution.
+
         def finalize(plan: PlanDecision, reason: str, round_no: int) -> CycleResult:
             # A request to use a tool is never a valid final reply instruction.
             # Keep the character/tone, but clear stale tool intent and arguments.
@@ -271,6 +279,7 @@ class AgentCycleEngine:
                 plan = dataclass_replace(plan, action="reply",
                     reply_act="依据已经执行的工具回执回答当前问题；不要称正在准备查询",
                     tool_name="", tool_arguments=None, selection_reason="")
+            emit("finalize", round_no, reason)
             return CycleResult(plan, "reply", tuple(receipts), round_no, reason)
 
         for round_no in range(1, self.max_rounds + 1):
@@ -286,6 +295,7 @@ class AgentCycleEngine:
             if not isinstance(plan, PlanDecision):
                 return finalize(fallback, "invalid_plan", round_no)
             fallback = plan
+            emit("plan", round_no, plan.action if plan.action != "tool" else f"tool:{plan.tool_name}")
             authorized = bool(
                 allow_tools and registry is not None
                 and registry.available(plan.tool_name, scope=scope, allow_mutation=allow_mutation)
@@ -293,6 +303,7 @@ class AgentCycleEngine:
             action = choose_action(plan, allow_silence=allow_silence,
                                    already_waited=already_waited, tools_enabled=authorized)
             if action != "tool":
+                emit("action", round_no, action if action == plan.action else f"{plan.action}->{action}")
                 reason = "tool_denied" if plan.action == "tool" else ""
                 return CycleResult(plan, action, tuple(receipts), round_no, reason)
             if plan.tool_name == "web_search.search" and previous_searches:
@@ -313,12 +324,14 @@ class AgentCycleEngine:
             remaining = deadline - monotonic()
             if remaining <= 0:
                 return finalize(plan, "total_timeout", round_no)
+            emit("tool_start", round_no, plan.tool_name)
             receipt = await registry.invoke(
                 plan.tool_name, plan.tool_arguments or {},
                 scope=scope, allow_mutation=allow_mutation,
                 timeout=min(tool_timeout, remaining),
             )
             receipts.append(receipt)
+            emit("tool_end", round_no, f"{plan.tool_name}:{'success' if receipt.success else 'failure'}")
             if receipt.success and plan.tool_name == "web_search.search":
                 query = (plan.tool_arguments or {}).get("query", "")
                 if isinstance(query, str):
