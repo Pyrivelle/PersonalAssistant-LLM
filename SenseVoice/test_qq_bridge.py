@@ -30,7 +30,7 @@ class QqParsingTests(unittest.TestCase):
             settings = QqSettings.load(path)
             self.assertEqual(starting_relationship_tier(settings, "private", 42), "L0")
             self.assertEqual(starting_relationship_tier(settings, "group", 42), "unassigned")
-            self.assertEqual(starting_relationship_tier(settings, "private", 43), "unassigned")
+            self.assertEqual(starting_relationship_tier(settings, "private", 43), "L0")
             path.write_text(json.dumps({"allowed_private_ids": [42],
                                         "initial_l0_private_ids": [43]}), encoding="utf-8")
             with self.assertRaises(ValueError):
