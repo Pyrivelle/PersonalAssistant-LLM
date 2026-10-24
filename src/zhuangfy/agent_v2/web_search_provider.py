@@ -1,8 +1,7 @@
-"""Fixed-endpoint Brave Search adapter for an opt-in, read-only Skill.
+"""Fixed-endpoint DeepSeek Search adapter for a read-only, opt-in Skill.
 
-Network policy: HTTPS to the official Brave API only, no redirects or proxies,
-no arbitrary model-provided URLs, no cookies and no web page fetching.
-Results are untrusted third-party text with explicit source URLs.
+Searches only the official HTTPS endpoint; no redirects, proxies, cookies,
+or fetching arbitrary result URLs. Search snippets are untrusted input.
 """
 from __future__ import annotations
 
@@ -11,10 +10,10 @@ import re
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-API_URL = "https://api.search.brave.com/res/v1/web/search"
+API_URL = "https://api.deepseek.com/v1/tools/search"
 RESULT_LIMIT = 2
 MAX_OUTPUT = 438
 MAX_RESPONSE_BYTES = 65_536
@@ -59,8 +58,8 @@ def _validated_query(query: str) -> str:
     if not isinstance(query, str):
         raise ValueError("Search query must be text")
     query = query.strip()
-    if (not 2 <= len(query) <= 220 or any(ch in query for ch in "\r\n\x00")):
-        raise ValueError("Search query must be 2–220 characters on one line")
+    if (not 2 <= len(query) <= 128 or any(ch in query for ch in "\r\n\x00")):
+        raise ValueError("Search query must be 2–128 characters on one line")
     # Privacy guard: never send common private identifiers or secrets by mistake.
     if (re.search(r"[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}", query)
             or re.search(r"(?<!\d)\d{10,}(?!\d)", query)
@@ -69,11 +68,11 @@ def _validated_query(query: str) -> str:
     return query
 
 
-class BraveSearch:
+class DeepSeekSearch:
     def __init__(self, token: str, *, max_requests_per_minute: int = 6):
         if (not isinstance(token, str) or len(token.strip()) < 12
                 or token != token.strip() or "\r" in token or "\n" in token):
-            raise ValueError("Valid Brave Search API key must be configured")
+            raise ValueError("Valid DeepSeek API key must be configured")
         if type(max_requests_per_minute) is not int or not 1 <= max_requests_per_minute <= 30:
             raise ValueError("Invalid request rate limit")
         self._token = token
@@ -90,18 +89,16 @@ class BraveSearch:
             if len(self._timestamps) >= self._max_requests:
                 raise SearchUnavailable("Search rate limit reached")
             self._timestamps.append(now)
-        # Brave expects a localized Chinese search_lang code rather than
-        # plain "zh"; English-only queries retain the default English index.
-        language = "zh-hans" if re.search(r"[\u4e00-\u9fff]", query) else "en"
-        url = API_URL + "?" + urlencode({
-            "q": query, "count": RESULT_LIMIT, "safesearch": "moderate",
-            "search_lang": language,
-        })
-        request = Request(url, headers={
+        # Only the query is model-controlled. Never accept arbitrary URLs or headers.
+        payload = json.dumps({
+            "query": query, "count": RESULT_LIMIT, "need_content": False,
+        }, ensure_ascii=False).encode("utf-8")
+        request = Request(API_URL, data=payload, headers={
             "Accept": "application/json",
-            "X-Subscription-Token": self._token,
-            "User-Agent": "ZhuangFY-WebSearch/0.1",
-        }, method="GET")
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._token}",
+            "User-Agent": "ZhuangFY-WebSearch/0.2",
+        }, method="POST")
         try:
             with self._opener.open(request, timeout=5.0) as response:
                 body = response.read(MAX_RESPONSE_BYTES + 1)
@@ -112,7 +109,7 @@ class BraveSearch:
             raise SearchUnavailable("Search response exceeded size limit")
         try:
             decoded = json.loads(body)
-            candidates = decoded["web"]["results"]
+            candidates = decoded["results"]
         except (ValueError, TypeError, KeyError):
             raise SearchUnavailable("Search provider returned invalid data") from None
         if not isinstance(candidates, list):
@@ -124,7 +121,7 @@ class BraveSearch:
                 continue
             link = _safe_result_url(candidate.get("url"))
             title = _clean(candidate.get("title"), 48)
-            snippet = _clean(candidate.get("description"), 80)
+            snippet = _clean(candidate.get("snippet") or candidate.get("summary"), 80)
             if not link or not title:
                 continue
             line = f"[{len(lines)+1}] {title} | {link} | {snippet}"
