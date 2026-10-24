@@ -172,5 +172,16 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             "赛博朋克 边缘行者 第二季 Netflix 官方人物介绍"), "related")
 
 
+    async def test_current_turn_tool_evidence_is_not_old_history(self):
+        from zhuangfy.llm.providers import build_tool_evidence_message
+        receipt = "web_search.search: 成功；[1] Roman review | https://example.org/roman"
+        message = build_tool_evidence_message(receipt)
+        self.assertEqual(message["role"], "user")
+        self.assertIn("本轮刚完成", message["content"])
+        self.assertIn(receipt, message["content"])
+        self.assertNotIn("较早对话", message["content"])
+        self.assertIn("证据不足", message["content"])
+
+
 if __name__ == "__main__":
     unittest.main()
