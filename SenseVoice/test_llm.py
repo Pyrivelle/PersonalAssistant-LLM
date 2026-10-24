@@ -129,6 +129,26 @@ class LlmTests(unittest.TestCase):
                       captured["messages"][-2]["content"])
         self.assertNotIn("蓝色杯子", captured["messages"][0]["content"])
 
+    def test_prior_evidence_and_current_text_have_one_user_role(self):
+        captured = {}
+
+        def fake_open(request, timeout):
+            captured["messages"] = json.loads(request.data)["messages"]
+            return FakeResponse()
+
+        with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
+            llm.chat(llm.LlmSettings(), "test-key", [], "我们继续聊。",
+                     context_notes="上回查询结果摘要",
+                     tool_context="搜索发现官方公告",
+                     memories=[{"memory": "用户明确关注发布情况"}])
+        messages = captured["messages"]
+        self.assertEqual(sum(x["role"] == "user" for x in messages), 1)
+        current = messages[-1]["content"]
+        for fact in ("我们继续聊。", "上回查询结果摘要", "搜索发现官方公告",
+                     "用户明确关注发布情况"):
+            self.assertIn(fact, current)
+        self.assertTrue(current.startswith("我们继续聊。"))
+
     def test_planning_response_is_visible_in_current_session(self):
         with patch.object(llm.urllib.request, "urlopen", return_value=FakeResponse()), \
                 patch.object(llm, "log_event") as record:
@@ -194,8 +214,11 @@ class LlmTests(unittest.TestCase):
         with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
             llm.chat(llm.LlmSettings(), "test-key", [], "你记得我吗？",
                      memories=[{"memory": "用户偏好简短解释"}])
-        self.assertEqual(captured["messages"][-1]["content"], "你记得我吗？")
-        self.assertIn("用户偏好简短解释", captured["messages"][-2]["content"])
+        self.assertEqual(captured["messages"][-1]["role"], "user")
+        self.assertTrue(captured["messages"][-1]["content"].startswith("你记得我吗？"))
+        self.assertIn("用户偏好简短解释", captured["messages"][-1]["content"])
+        self.assertIn("长期记忆候选", captured["messages"][-1]["content"])
+        self.assertEqual(sum(m["role"] == "user" for m in captured["messages"]), 1)
 
     def test_emotion_context_is_bounded_and_keeps_current_user_last(self):
         captured = {}
