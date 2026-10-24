@@ -216,22 +216,22 @@ class HttpMemoryTests(unittest.TestCase):
                                   goal_id="goal-001", bot_id="10001",
                                   user_id="20002")
         with self.assertRaises(MemoryClientError) as e:
-            self.client.admin_bind_goal_origin(
+            self.admin.admin_bind_goal_origin(
                 owner, task_id="goal-001", owner_scope="qq:10001:private:20001",
                 source_entry_id=other_msg["entry_id"])
         self.assertEqual(e.exception.status, 403)
         with self.assertRaises(MemoryClientError) as e:
-            self.client.admin_bind_goal_origin(
+            self.admin.admin_bind_goal_origin(
                 owner, task_id="goal-002", owner_scope="qq:10001:private:20001",
                 source_entry_id=other_msg["entry_id"])
         self.assertEqual(e.exception.status, 403)
         with self.assertRaises(MemoryClientError) as e:
-            self.client.admin_bind_goal_origin(
+            self.admin.admin_bind_goal_origin(
                 owner, task_id="goal-002", owner_scope="qq:private:20001",
                 source_entry_id=msg["entry_id"])
         self.assertEqual(e.exception.status, 403)
         with self.assertRaises(MemoryClientError) as e:
-            self.client.admin_bind_goal_origin(
+            self.admin.admin_bind_goal_origin(
                 owner, task_id="goal-002", owner_scope="qq:10001:private:20001",
                 source_entry_id="made-up-entry")
         self.assertEqual(e.exception.status, 403)
