@@ -45,7 +45,7 @@ def main() -> int:
     sp.add_parser("status")
     sp.add_parser("events").add_argument("--limit", type=int, default=30)
     enroll = sp.add_parser("enroll")
-    enroll.add_argument("--tier", choices=("L0","L1","L2","L3"), default="L0")
+    enroll.add_argument("--tier", choices=("L0","L1","L2","L3","L4"), default="L0")
     enroll.add_argument("--allow-affection", action="store_true")
     correct = sp.add_parser("correct")
     correct.add_argument("--version", type=int, required=True)

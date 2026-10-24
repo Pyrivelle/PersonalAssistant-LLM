@@ -69,7 +69,11 @@ class MemoryClient:
             "Authorization": "Bearer " + self.token,
         })
         try:
-            with self._opener.open(req, timeout=self.timeout) as response:
+            # Curation may spend up to 60 seconds on the model request. Keep
+            # ordinary recall latency short, but let an explicit admin run
+            # receive the actual result instead of timing out after 2 seconds.
+            request_timeout = max(self.timeout, 150.0) if route == "/v1/admin/reflect-one" else self.timeout
+            with self._opener.open(req, timeout=request_timeout) as response:
                 data = response.read(2_000_000)
             result = json.loads(data)
             if not isinstance(result, dict) or "result" not in result:

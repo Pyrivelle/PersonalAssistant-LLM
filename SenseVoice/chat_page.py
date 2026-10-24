@@ -87,7 +87,7 @@ class ChatPage(QWidget):
         self.chat_subtitle.setObjectName("muted")
         title_col.addWidget(self.chat_subtitle)
         header.addLayout(title_col, 1)
-        models_button = QPushButton("模型设置")
+        models_button = QPushButton("模型管理")
         models_button.clicked.connect(self.open_models.emit)
         header.addWidget(models_button)
         voice_button = QPushButton("语音交互 ↗")
@@ -319,9 +319,9 @@ class ChatPage(QWidget):
         key = load_key(settings.provider)
         try:
             if not can_attempt_stage("reply", settings, key):
-                raise ValueError("回复阶段没有可用模型；请先到模型设置配置 API")
+                raise ValueError("回复阶段没有可用模型；请先到模型管理配置 API")
             if image is not None and not can_attempt_stage("vision", settings, key):
-                raise ValueError("识图阶段没有可用模型；请先到模型设置配置识图 API")
+                raise ValueError("识图阶段没有可用模型；请先到模型管理配置识图 API")
         except (OSError, ValueError, TypeError) as error:
             self.status.setText(str(error))
             return

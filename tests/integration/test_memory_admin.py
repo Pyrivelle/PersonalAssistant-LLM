@@ -76,6 +76,12 @@ ADMIN_TOKEN = "a"*48
 
 
 class AdminManagementTests(unittest.TestCase):
+    def test_admin_people_include_verified_channel_labels(self):
+        people = self.admin.list_people()
+        alice = next(p for p in people if p["person_id"] == self.alice)
+        self.assertTrue(any(identity["external_user_id"] == self.aid.external_user_id
+                            for identity in alice["identities"]))
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

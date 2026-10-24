@@ -46,3 +46,19 @@ class PlannerStreamTests(unittest.TestCase):
             result = providers.chat(providers.LlmSettings(), "test-key", [], "hello", stage="思考")
         self.assertTrue(request_payload["stream"])
         self.assertEqual(result, "done")
+
+    def test_json_mode_is_only_added_to_siliconflow_request(self):
+        class Response(io.BytesIO):
+            headers = {"Content-Type": "application/json"}
+
+        captured = []
+        def fake_open(request, timeout):
+            captured.append(json.loads(request.data))
+            return Response(b'{"choices":[{"message":{"content":"{\\"action\\":\\"reply\\",\\"confidence\\":0.9}"}}]}')
+        with patch.object(providers.urllib.request, "urlopen", side_effect=fake_open):
+            providers.chat(providers.LlmSettings(), "test-key", [], "hello",
+                           stage="思考", force_json=True)
+            providers.chat(providers.LlmSettings(), "test-key", [], "hello",
+                           stage="思考", force_json=False)
+        self.assertEqual(captured[0]["response_format"], {"type": "json_object"})
+        self.assertNotIn("response_format", captured[1])

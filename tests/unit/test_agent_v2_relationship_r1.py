@@ -65,11 +65,14 @@ class R1BehaviorTests(unittest.TestCase):
         self.assertEqual(close.tier, "L3")
         self.assertIn("对方明确欢迎", close.guidance)
         self.assertIn("不可虚构共同经历", close.guidance)
+        more_close = behavior_r1(PERSONA, "晚安", tier="L4")
+        self.assertIn("自然表达想念", more_close.guidance)
+        self.assertIn("不必每轮暧昧", more_close.guidance)
         group = behavior_r1(PERSONA, "晚安", tier="L3", channel="qq_group")
         self.assertIn("公共群聊", group.guidance)
         self.assertIn("不泄漏", group.guidance)
         with self.assertRaises(ValueError):
-            behavior_r1(PERSONA, "Hi", tier="L4")
+            behavior_r1(PERSONA, "Hi", tier="L5")
 
     def test_opt_in_gate_and_other_personas(self):
         self.assertEqual(behavior_r1(PERSONA, "晚安", enabled=False).guidance, "")

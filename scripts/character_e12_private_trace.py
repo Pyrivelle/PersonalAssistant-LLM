@@ -65,12 +65,13 @@ def run(args):
     relation = None
     if args.relationship_tier != "unassigned":
         seeds = {"L0": (10, 10, 0), "L1": (35, 30, 15),
-                 "L2": (65, 65, 35), "L3": (85, 80, 80)}
+                 "L2": (65, 65, 35), "L3": (85, 80, 80), "L4": (95, 90, 95)}
         f, t, closeness = seeds[args.relationship_tier]
         relation = RelationshipSnapshot(
             "synthetic-agent", "synthetic-person", 1, f, t, closeness,
-            args.relationship_tier, "L3",
-            args.relationship_tier == "L3", True, "natural", True, False,
+            args.relationship_tier, "L4",
+            args.relationship_tier in ("L3", "L4"), args.relationship_tier != "L4",
+            "natural", True, False,
             False, False, False)
     rel_tier = relation.tier if relation else "unassigned"
     rel_hint = relation.prompt_hint() if relation else ""
@@ -151,7 +152,7 @@ def main():
     parser.add_argument("--provider", required=True, choices=("siliconflow", "deepseek", "kimi_cn", "kimi_global", "hachimi"))
     parser.add_argument("--model", required=True)
     parser.add_argument("--max-cases", type=int, choices=(3, 7, 14), default=3)
-    parser.add_argument("--relationship-tier", choices=("unassigned","L0","L1","L2","L3"), default="unassigned")
+    parser.add_argument("--relationship-tier", choices=("unassigned","L0","L1","L2","L3","L4"), default="unassigned")
     parser.add_argument("--evaluate-events", action="store_true")
     parser.add_argument("--out", type=Path, default=ROOT / "build/e12-private")
     parser.add_argument("--allow-network", action="store_true")

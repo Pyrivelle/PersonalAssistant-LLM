@@ -15,12 +15,13 @@ from uuid import uuid4
 from zhuangfy.memory.database import MemoryDatabase
 from zhuangfy.memory.identity import ChannelIdentity, IdentityRepository, _nonempty
 
-TIERS = ("L0", "L1", "L2", "L3")
+TIERS = ("L0", "L1", "L2", "L3", "L4")
 SEEDS = {
     "L0": (10, 10, 0),
     "L1": (35, 30, 15),
     "L2": (65, 65, 35),
     "L3": (85, 80, 80),
+    "L4": (95, 90, 95),
 }
 # These are conservative design heuristics, NOT claims of psychological accuracy.
 EVENTS = {
@@ -52,7 +53,9 @@ class RelationshipSnapshot:
 
     def prompt_hint(self) -> str:
         """Bounded host-authored advice; never grants tool/send/identity rights."""
-        expression = ("可以在用户欢迎的范围内温柔表达" if self.allow_affection
+        expression = ("可以更自然地表达亲近、想念与偏爱，但尊重对方当下的意愿和边界"
+                      if self.tier == "L4" else
+                      "可以在用户欢迎的范围内温柔表达" if self.allow_affection
                       else "不预设暧昧关系或使用亲密称呼")
         nickname = "避免亲昵称呼" if self.avoid_nicknames else "称呼保持自然"
         return (
@@ -83,6 +86,9 @@ def _number(value: object, name: str) -> int:
 
 def _tier(row: sqlite3.Row) -> str:
     f, t, c = row["familiarity"], row["trust"], row["closeness"]
+    if (row["l4_opt_in"] and row["allow_affection"] and row["tier_ceiling"] == "L3"
+            and f >= 90 and t >= 85 and c >= 90):
+        return "L4"
     if f >= 75 and t >= 65 and c >= 75 and row["allow_affection"]:
         rank = 3
     elif f >= 55 and t >= 60:
@@ -116,6 +122,7 @@ class RelationshipCore:
                     trust INTEGER NOT NULL CHECK(trust BETWEEN 0 AND 100),
                     closeness INTEGER NOT NULL CHECK(closeness BETWEEN 0 AND 100),
                     tier_ceiling TEXT NOT NULL CHECK(tier_ceiling IN ('L0','L1','L2','L3')),
+                    l4_opt_in INTEGER NOT NULL DEFAULT 0 CHECK(l4_opt_in IN (0,1)),
                     allow_affection INTEGER NOT NULL DEFAULT 0 CHECK(allow_affection IN (0,1)),
                     avoid_nicknames INTEGER NOT NULL DEFAULT 1 CHECK(avoid_nicknames IN (0,1)),
                     tone TEXT NOT NULL DEFAULT 'natural'
@@ -141,6 +148,12 @@ class RelationshipCore:
                 CREATE INDEX IF NOT EXISTS relationship_event_recent
                     ON relationship_events(agent_id,person_id,kind,occurred_at);
             """)
+            # SQLite cannot extend the existing tier_ceiling CHECK in place.
+            # This additive column keeps old profiles and event foreign keys intact.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(relationship_profiles)")}
+            if "l4_opt_in" not in columns:
+                db.execute("ALTER TABLE relationship_profiles ADD COLUMN "
+                           "l4_opt_in INTEGER NOT NULL DEFAULT 0 CHECK(l4_opt_in IN (0,1))")
 
     def _identity(self, db: sqlite3.Connection, identity: ChannelIdentity) -> str:
         # Authentication is performed by the trusted channel adapter; identity
@@ -167,7 +180,8 @@ class RelationshipCore:
             agent_id=row["agent_id"], person_id=row["person_id"],
             version=row["version"], familiarity=row["familiarity"],
             trust=row["trust"], closeness=row["closeness"], tier=_tier(row),
-            tier_ceiling=row["tier_ceiling"], allow_affection=bool(row["allow_affection"]),
+            tier_ceiling="L4" if row["l4_opt_in"] else row["tier_ceiling"],
+            allow_affection=bool(row["allow_affection"]),
             avoid_nicknames=bool(row["avoid_nicknames"]), tone=row["tone"],
             auto_growth=bool(row["auto_growth"]), frozen=bool(row["frozen"]),
             lock_familiarity=bool(row["lock_familiarity"]),
@@ -193,8 +207,8 @@ class RelationshipCore:
         agent_id = _nonempty(agent_id, "agent_id")
         if initial_tier not in SEEDS or type(allow_affection) is not bool:
             raise ValueError("Invalid relationship seed")
-        if initial_tier == "L3" and not allow_affection:
-            raise ValueError("An L3 starting point requires explicit affection consent")
+        if initial_tier in {"L3", "L4"} and not allow_affection:
+            raise ValueError("An L3/L4 starting point requires explicit affection consent")
         with self.database.write() as db:
             person_id = self._identity(db, identity)
             existing = db.execute("SELECT 1 FROM relationship_profiles WHERE agent_id=? AND person_id=?",
@@ -205,9 +219,10 @@ class RelationshipCore:
             db.execute("""
                 INSERT INTO relationship_profiles
                     (agent_id,person_id,familiarity,trust,closeness,
-                     tier_ceiling,allow_affection)
-                VALUES(?,?,?,?,?,?,?)
-            """, (agent_id, person_id, f, t, c, "L3", int(allow_affection)))
+                     tier_ceiling,l4_opt_in,allow_affection)
+                VALUES(?,?,?,?,?,?,?,?)
+            """, (agent_id, person_id, f, t, c, "L3",
+                  int(initial_tier == "L4"), int(allow_affection)))
             self._audit(db, agent_id, person_id, "enroll", "profile", None, None,
                         None, "trusted_initial_" + initial_tier, int(time.time()))
             return self._snapshot(self._profile(db, agent_id, person_id))
@@ -251,7 +266,8 @@ class RelationshipCore:
         if tier_ceiling is not None:
             if tier_ceiling not in TIERS:
                 raise ValueError("Invalid tier ceiling")
-            changes["tier_ceiling"] = tier_ceiling
+            changes["tier_ceiling"] = "L3" if tier_ceiling == "L4" else tier_ceiling
+            changes["l4_opt_in"] = int(tier_ceiling == "L4")
         if tone is not None:
             if tone not in TONE_OPTIONS:
                 raise ValueError("Invalid preferred tone")
@@ -266,7 +282,7 @@ class RelationshipCore:
             meaningful = {k: v for k, v in changes.items() if row[k] != v}
             if not meaningful:
                 return self._snapshot(row)
-            # No automatic intimacy expansion; explicit UI opt-in gates L3.
+            # No automatic L4 promotion; only a trusted correction/enrollment opts in.
             # Manual score corrections alone cannot bypass this gate.
             for k, v in meaningful.items():
                 db.execute(f"UPDATE relationship_profiles SET {k}=? WHERE agent_id=? AND person_id=?",

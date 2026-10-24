@@ -13,13 +13,29 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
 import qq_bridge
+import activity_log
 from llm import LlmSettings
-from qq_bridge import Conversation, Incoming, QqBridge, QqSettings, ReplyLimiter, parse_message, spoken_reply
+from qq_bridge import (Conversation, Incoming, QqBridge, QqSettings, ReplyLimiter,
+                       parse_message, spoken_reply, starting_relationship_tier)
 from turn_planner import PlannerSettings, TurnPlan
 from zhuangfy.channels.qq.images import ImageReference, _allowed_url, _encode_jpeg
 
 
 class QqParsingTests(unittest.TestCase):
+    def test_initial_l0_is_private_only_and_requires_allowlist(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "qq_settings.json"
+            path.write_text(json.dumps({"allowed_private_ids": [42],
+                                        "initial_l0_private_ids": [42]}), encoding="utf-8")
+            settings = QqSettings.load(path)
+            self.assertEqual(starting_relationship_tier(settings, "private", 42), "L0")
+            self.assertEqual(starting_relationship_tier(settings, "group", 42), "unassigned")
+            self.assertEqual(starting_relationship_tier(settings, "private", 43), "unassigned")
+            path.write_text(json.dumps({"allowed_private_ids": [42],
+                                        "initial_l0_private_ids": [43]}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                QqSettings.load(path)
+
     def test_spoken_reply_removes_only_leading_stage_directions(self):
         self.assertEqual(spoken_reply("发语音了，轻声清楚的说，晚安，早点休息。"), "晚安，早点休息。")
         self.assertEqual(spoken_reply("（轻声说）晚安，今天辛苦了。"), "晚安，今天辛苦了。")
@@ -290,6 +306,14 @@ class QqParsingTests(unittest.TestCase):
 
 
 class QqSocketTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Simulated QQ accounts must never enter the user's durable chat stream.
+        self.journal_patch = patch.object(activity_log, "_CHAT_JOURNAL", None)
+        self.journal_patch.start()
+
+    def tearDown(self):
+        self.journal_patch.stop()
+
     async def test_snowluma_image_action_refreshes_download_url(self):
         with patch.object(qq_bridge.PlannerSettings, "load", return_value=PlannerSettings()):
             bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))

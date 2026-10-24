@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
+from zhuangfy.observability.activity_log import log_event
 
 
 class AdminTask(QThread):
@@ -109,6 +110,9 @@ class CuratedMemoryDialog(QDialog):
         self.job_list = QListWidget()
         self.job_list.setMaximumHeight(90)
         layout.addWidget(self.job_list)
+        self.reflection_status = QLabel("手动整理尚未运行")
+        self.reflection_status.setWordWrap(True)
+        layout.addWidget(self.reflection_status)
         for text, callback in [
             ("刷新任务", self.refresh_jobs),
             ("重试失败任务", self.retry_job),
@@ -131,6 +135,9 @@ class CuratedMemoryDialog(QDialog):
             self.pending = (action, args)
             return
         self.notice.setText(f"处理中：{action}")
+        if action == "reflect_one":
+            self.reflection_status.setText("正在请求记忆服务整理下一批，等待任务与模型结果…")
+            log_event("记忆整理", "开始", "手动整理请求已发送到本机 Memory Service")
         worker = AdminTask(self.client, action, args, self)
         self.task = worker
         worker.completed.connect(self._done)
@@ -150,9 +157,26 @@ class CuratedMemoryDialog(QDialog):
 
     def _failed(self, message):
         self.notice.setText(message)
+        if self.task is not None and self.task.action == "reflect_one":
+            self.reflection_status.setText("记忆服务请求失败；无法确认模型是否收到资料。")
+            log_event("记忆整理", "请求失败", message)
 
     def _done(self, action, result):
         self.notice.setText(f"已完成：{action}")
+        if action == "reflect_one":
+            status = result.get("status", "unknown") if isinstance(result, dict) else "unknown"
+            attempted = bool(result.get("model_attempted")) if isinstance(result, dict) else False
+            if status == "idle":
+                summary = "没有待整理任务；本次没有调用模型。"
+            elif status == "done":
+                summary = (f"整理成功；模型{'已调用' if attempted else '未调用（无可用资料）'}；"
+                           f"新增 {result.get('created', 0)} 条记忆；"
+                           f"索引失败 {result.get('index_failures', 0)} 条。")
+            else:
+                summary = (f"整理失败；模型{'已尝试调用' if attempted else '未调用'}；"
+                           f"原因类型：{result.get('error_type', 'unknown')}。")
+            self.reflection_status.setText(summary)
+            log_event("记忆整理", status, summary)
         if action == "list_people":
             selected = self.person.currentData()
             self.people = result

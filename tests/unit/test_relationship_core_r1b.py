@@ -76,6 +76,37 @@ class RelationshipCoreTests(unittest.TestCase):
         self.assertTrue(any('"before"' in e.detail and '"after"' in e.detail
                             for e in events if e.kind == "manual_correction"))
 
+    def test_l4_requires_explicit_opt_in_and_can_be_reversed(self):
+        p = self.core.enroll(agent_id=AGENT, identity=self.a, initial_tier="L3",
+                             allow_affection=True)
+        p = self.core.correct(agent_id=AGENT, identity=self.a, expected_version=p.version,
+                              familiarity=95, trust=90, closeness=95)
+        self.assertEqual(p.tier, "L3")
+        p = self.core.correct(agent_id=AGENT, identity=self.a, expected_version=p.version,
+                              tier_ceiling="L4", avoid_nicknames=False)
+        self.assertEqual((p.tier, p.tier_ceiling, p.avoid_nicknames), ("L4", "L4", False))
+        self.assertIn("表达亲近", p.prompt_hint())
+        p = self.core.correct(agent_id=AGENT, identity=self.a, expected_version=p.version,
+                              tier_ceiling="L3")
+        self.assertEqual((p.tier, p.tier_ceiling), ("L3", "L3"))
+        with self.assertRaises(ValueError):
+            self.core.enroll(agent_id="new-agent", identity=self.a, initial_tier="L4")
+        self.assertEqual(self.core.enroll(agent_id="new-agent", identity=self.a,
+                                          initial_tier="L4", allow_affection=True).tier, "L4")
+
+    def test_legacy_relationship_table_is_extended_without_erasing_events(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as folder:
+            db = MemoryDatabase(Path(folder) / "legacy.sqlite3")
+            with db.write() as conn:
+                conn.execute("CREATE TABLE relationship_profiles (agent_id TEXT, "
+                             "person_id TEXT, tier_ceiling TEXT, PRIMARY KEY(agent_id,person_id))")
+                conn.execute("INSERT INTO relationship_profiles VALUES ('agent','person','L3')")
+            RelationshipCore(db, IdentityRepository(db))
+            with db.connection() as conn:
+                row = conn.execute("SELECT tier_ceiling,l4_opt_in FROM relationship_profiles").fetchone()
+            self.assertEqual(tuple(row), ("L3", 0))
+
     def test_only_real_timeline_evidence_can_drive_autonomous_growth(self):
         p = self.core.enroll(agent_id=AGENT, identity=self.a)
         with self.assertRaises(ValueError):

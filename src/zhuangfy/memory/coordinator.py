@@ -244,15 +244,32 @@ class MemoryCore:
             return {"status": "idle"}
         sync = self.project()
         return {"status": result.status, "job_id": result.job_id,
-                "created": len(result.created_memory_ids), "index_failures": sync["failed"]}
+                "created": len(result.created_memory_ids), "index_failures": sync["failed"],
+                "model_attempted": result.model_attempted,
+                "error_type": result.error_type}
 
     def schedule_due_reflections(self) -> int:
         return self.curated.schedule_due()
 
     def list_people(self) -> list[dict]:
         with self.database.connection() as db:
-            return [dict(row) for row in db.execute(
+            people = [dict(row) for row in db.execute(
                 "SELECT person_id,display_name,created_at FROM persons ORDER BY created_at,person_id").fetchall()]
+            identities = db.execute(
+                "SELECT person_id,platform,channel_account_id,external_user_id "
+                "FROM identities ORDER BY platform,channel_account_id,external_user_id").fetchall()
+        by_person = {person["person_id"]: person for person in people}
+        for person in people:
+            person["identities"] = []
+        for identity in identities:
+            person = by_person.get(identity["person_id"])
+            if person is not None:
+                person["identities"].append({
+                    "platform": identity["platform"],
+                    "channel_account_id": identity["channel_account_id"],
+                    "external_user_id": identity["external_user_id"],
+                })
+        return people
 
     def admin_create_person(self, display_name: str) -> dict:
         p = self.identities.create_person(display_name)

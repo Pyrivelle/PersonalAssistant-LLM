@@ -25,6 +25,15 @@ function Read-LocalKey([string]$name) {
     return $entry.Split('=', 2)[1].Trim().Trim('"').Trim("'")
 }
 
+function Find-LocalKey([string]$name) {
+    if (-not $name) { return '' }
+    $entry = Get-Content -LiteralPath $envPath | Where-Object {
+        $_.Split('=', 2)[0].Trim() -eq $name
+    } | Select-Object -Last 1
+    if (-not $entry) { return '' }
+    return $entry.Split('=', 2)[1].Trim().Trim('"').Trim("'")
+}
+
 $env:PYTHONPATH = "$(Join-Path $repoRoot 'src');$legacyRoot"
 $env:PYTHONUNBUFFERED = '1'
 $env:ZHUANGFY_MEMORY_TOKEN = Read-LocalKey 'ZHUANGFY_MEMORY_TOKEN'
@@ -36,7 +45,43 @@ $env:ZHUANGFY_MEMORY_DESKTOP_USER_ID = [string]$settings.desktop_user_id
 
 $listener = Get-NetTCPConnection -LocalPort 8769 -State Listen -ErrorAction SilentlyContinue
 if (-not $listener) {
-    $env:ZHUANGFY_MEMORY_LLM_API_KEY = Read-LocalKey 'SILICONFLOW_API_KEY'
+    $providerKeys = @{
+        siliconflow = 'SILICONFLOW_API_KEY'; deepseek = 'DEEPSEEK_API_KEY'
+        kimi_cn = 'KIMI_CN_API_KEY'; kimi_global = 'KIMI_GLOBAL_API_KEY'
+        hachimi = 'HACHIMI_API_KEY'; custom = 'SHIMANO_CUSTOM_API_KEY'
+    }
+    $profileId = [string]$settings.profile_id
+    $profileKey = if ($profileId -match '^[a-z][a-z0-9_]{0,39}$') {
+        Find-LocalKey "ZHUANGFY_ROUTE_$($profileId.ToUpperInvariant())_API_KEY"
+    } else { '' }
+    $provider = if ($settings.provider) { [string]$settings.provider } else { 'siliconflow' }
+    if ($profileKey) {
+        $target = Find-LocalKey "ZHUANGFY_ROUTE_$($profileId.ToUpperInvariant())_TARGET"
+        $address = ([string]$settings.base_url).Trim().TrimEnd('/')
+        $source = [System.Text.Encoding]::UTF8.GetBytes($provider + [char]0 + $address)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try { $digest = $sha256.ComputeHash($source) }
+        finally { $sha256.Dispose() }
+        $expected = ([BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant().Substring(0, 32)
+        if ($target -ne $expected) { $profileKey = '' }
+    }
+    $catalogProviderId = [string]$settings.provider_id
+    $catalogKey = if ($catalogProviderId -match '^[a-z][a-z0-9_]{0,39}$') {
+        Find-LocalKey "ZHUANGFY_PROVIDER_$($catalogProviderId.ToUpperInvariant())_API_KEY"
+    } else { '' }
+    if ($catalogKey) {
+        $target = Find-LocalKey "ZHUANGFY_PROVIDER_$($catalogProviderId.ToUpperInvariant())_API_KEY_TARGET"
+        $address = ([string]$settings.base_url).Trim().TrimEnd('/')
+        $source = [System.Text.Encoding]::UTF8.GetBytes($provider + [char]0 + $address)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try { $digest = $sha256.ComputeHash($source) }
+        finally { $sha256.Dispose() }
+        $expected = ([BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant().Substring(0, 32)
+        if ($target -ne $expected) { $catalogKey = '' }
+    }
+    $providerKey = Find-LocalKey $providerKeys[$provider]
+    $env:ZHUANGFY_MEMORY_LLM_API_KEY = if ($catalogKey) { $catalogKey } elseif ($profileKey) { $profileKey } else { $providerKey }
+    if (-not $env:ZHUANGFY_MEMORY_LLM_API_KEY) { throw 'Memory model API key is missing.' }
     $env:ZHUANGFY_MEMORY_LLM_BASE_URL = [string]$settings.base_url
     $env:ZHUANGFY_MEMORY_LLM_MODEL = [string]$settings.model
     $env:ZHUANGFY_MEMORY_REFLECT = if ($settings.reflect_enabled) { '1' } else { '0' }

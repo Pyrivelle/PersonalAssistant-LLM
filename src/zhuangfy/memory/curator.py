@@ -70,6 +70,8 @@ class CuratorRunResult:
     job_id: str
     created_memory_ids: tuple[str, ...]
     status: str
+    model_attempted: bool = False
+    error_type: str = ""
 
 
 def _read_text(item: dict, name: str, maximum: int) -> str:
@@ -206,6 +208,7 @@ class MemoryCurator:
         job = self.store.claim_next()
         if job is None:
             return None
+        model_attempted = False
         try:
             # Explicit consent does not justify forwarding passwords, tokens,
             # or recovery codes to a remote LLM. Never send secret-looking
@@ -242,13 +245,28 @@ class MemoryCurator:
             # must be chunked via additional jobs, never silently truncated.
             if len(json.dumps(payload, ensure_ascii=False)) > MAX_CONTEXT_CHARS:
                 raise CuratorValidationError("Reflection payload exceeds allowed context")
+            model_attempted = True
             raw = self.model.extract(system_prompt=CURATOR_PROMPT, payload=payload)
-            operations = parse_and_validate(
-                raw, sources=sources, agent_id=job.agent_id,
-                person_id=job.person_id, store=self.store,
-            )
+            try:
+                operations = parse_and_validate(
+                    raw, sources=sources, agent_id=job.agent_id,
+                    person_id=job.person_id, store=self.store,
+                )
+            except CuratorValidationError as error:
+                # The batch stays unapplied. Give the model one bounded chance
+                # to produce a proposal satisfying the exact rejected rule.
+                # Only a newly validated result can reach the database.
+                correction = (CURATOR_PROMPT + "\n上一轮输出未通过验证：" + str(error) +
+                              "。重新依据提供的 sources 生成严格 JSON。若无法找到可靠的逐字证据，"
+                              "只返回 {\"operations\":[]}。不得解释或使用 Markdown。")
+                repaired = self.model.extract(system_prompt=correction, payload=payload)
+                operations = parse_and_validate(
+                    repaired, sources=sources, agent_id=job.agent_id,
+                    person_id=job.person_id, store=self.store,
+                )
             ids = self.store.complete(job, operations)
-            return CuratorRunResult(job.job_id, tuple(ids), "done")
+            return CuratorRunResult(job.job_id, tuple(ids), "done", model_attempted)
         except Exception as exc:
             self.store.fail(job, type(exc).__name__)
-            return CuratorRunResult(job.job_id, (), "failed")
+            return CuratorRunResult(job.job_id, (), "failed", model_attempted,
+                                    type(exc).__name__)

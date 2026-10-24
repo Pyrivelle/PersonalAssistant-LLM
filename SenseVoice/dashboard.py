@@ -29,11 +29,8 @@ from branding import APP_NAME, app_icon
 from zhuangfy.paths import Paths
 from zhuangfy.memory.routing import legacy_memory_allowed, new_memory_selected
 from llm import (
-    DEFAULT_PROMPT, LlmSettings, PROVIDERS, PROVIDER_BASE_URLS,
-    PROVIDER_DEFAULT_MODELS, PROVIDER_SUGGESTED_MODELS,
-    load_key, load_settings, save_key, save_settings,
+    DEFAULT_PROMPT, load_key, load_settings, save_settings,
 )
-from model_catalog import ModelCatalogWorker
 from persona_packs import BUILTIN_PACKS, matching_pack
 from owner_memory import current_bot_id, load_link, save_link
 from gpt_sovits import (ENGINE_ROOT, SpeechSettings, available_models, save_model_config,
@@ -42,13 +39,21 @@ from qq_bridge import QqSettings, SETTINGS_FILE as QQ_SETTINGS_FILE, load_snowlu
 from zhuangfy.agent_v2.proactive_delivery import ProactiveConfig
 from chat_page import ChatPage
 from chat_stream import ChatStreamPage
+from model_management_page import ModelManagementPage
+from model_routes import load_route_key, load_routes
+from zhuangfy.ui.console_highlighter import ConsoleHighlighter
+from zhuangfy.ui.follow_scroll import FollowScroll
+from zhuangfy.ui.window_preferences import (
+    PRESETS as WINDOW_PRESETS, WindowPreferences, fit_to_screen,
+    load_preferences as load_window_preferences,
+    save_preferences as save_window_preferences,
+)
 from toggle_switch import ToggleSwitch
 
 
 ROOT = Path(__file__).resolve().parent
 SNOWLUMA_WEBUI = QUrl("http://127.0.0.1:5099/")
 SNOWLUMA_DIR = Paths.current().snowluma_root
-MEMORY_RUNTIME_FILE = Paths.current().project_root / "data" / "memory_runtime.json"
 PAGE_HOME, PAGE_CHAT, PAGE_STREAM, PAGE_MEMORY, PAGE_PERSONA, PAGE_MODEL, PAGE_PLATFORM, PAGE_PLUGINS, PAGE_MONITOR, PAGE_SYSTEM, PAGE_VOICE = range(11)
 
 
@@ -177,14 +182,19 @@ class Dashboard(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} · 控制台")
-        self.resize(1120, 760)
         self.setMinimumSize(940, 620)
+        self.window_preferences = load_window_preferences()
+        self._window_resize_ready = False
+        self._applying_window_size = False
+        self.apply_window_preferences(self.window_preferences)
+        self.window_resize_timer = QTimer(self)
+        self.window_resize_timer.setSingleShot(True)
+        self.window_resize_timer.setInterval(500)
+        self.window_resize_timer.timeout.connect(self.save_custom_window_size)
         self.voice_window = None
         self.chat_window = None
         self.memory_window = None
         self.curated_memory_window = None
-        self._model_worker = None
-        self._memory_catalog_worker = None
         self._tts_network = QNetworkAccessManager(self)
         self._tts_pending_settings = None
         self._tts_pending_model = None
@@ -243,7 +253,7 @@ class Dashboard(QMainWindow):
         side.addSpacing(25)
         self.nav = []
         for section, names in (("", ("首页", "聊天", "聊天流")),
-                               ("工作空间", ("记忆中心", "角色设置", "模型设置")),
+                               ("工作空间", ("记忆中心", "角色设置", "模型管理")),
                                ("服务管理", ("平台连接", "插件管理", "运行监控")),
                                ("高级", ("系统设置",))):
             if section:
@@ -302,6 +312,7 @@ class Dashboard(QMainWindow):
         self.refresh_status()
         self._log("控制台已启动")
         self.refresh_logs()
+        QTimer.singleShot(0, self.enable_window_resize_tracking)
 
     def _setup_tray(self) -> None:
         self.tray = None
@@ -426,7 +437,7 @@ class Dashboard(QMainWindow):
         model_layout.addWidget(self.memory_state)
         self.memory_core_state = QLabel()
         model_layout.addWidget(self.memory_core_state)
-        model_layout.addWidget(_button("查看模型设置  →", lambda: self.switch_page(PAGE_MODEL)))
+        model_layout.addWidget(_button("查看模型管理  →", lambda: self.switch_page(PAGE_MODEL)))
         row.addWidget(model_card)
         qq_card, qq_layout = _card("平台与声音")
         self.snow_state = QLabel()
@@ -502,159 +513,8 @@ class Dashboard(QMainWindow):
         column.addStretch()
         return page
 
-    def _model_page(self) -> QScrollArea:
-        page, column = self._page("模型设置", "配置默认对话 API 与各阶段的模型候选；语音和 QQ 桥接将在下一轮或重启连接后读取设置。")
-        saved = load_settings()
-        self._provider_values = {saved.provider: (saved.base_url, saved.model)}
-        self._model_choices = {}
-        self._last_provider = saved.provider
-        card, layout = _card("默认对话模型", "当对应阶段没有配置模型候选时，使用这里的供应商和模型。")
-        form = QFormLayout()
-        form.setSpacing(12)
-        self.provider = QComboBox()
-        for code, label in PROVIDERS.items():
-            self.provider.addItem(label, code)
-        self.provider.setCurrentIndex(self.provider.findData(saved.provider))
-        self.provider.currentIndexChanged.connect(self.provider_changed)
-        form.addRow("供应商", self.provider)
-        self.api_url = _line("API Base URL", saved.base_url)
-        self.api_url.setPlaceholderText("输入供应商提供的 API Base URL，例如 https://example.com/v1")
-        form.addRow("API 地址", self.api_url)
-        self.model_id = QComboBox()
-        self.model_id.setEditable(True)
-        self.model_id.setMaxVisibleItems(16)
-        self.model_id.addItems(PROVIDER_SUGGESTED_MODELS[saved.provider])
-        self.model_id.setCurrentText(saved.model)
-        self.model_id.setAccessibleName("模型 ID")
-        self.model_id.completer().setFilterMode(Qt.MatchFlag.MatchContains)
-        self.model_id.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        model_row = QHBoxLayout()
-        model_row.addWidget(self.model_id, 1)
-        self.fetch_button = _button("获取模型列表", self.fetch_models)
-        model_row.addWidget(self.fetch_button)
-        form.addRow("模型 ID", model_row)
-        self.catalog_state = QLabel("可手动输入模型 ID；点击获取列表后可从下拉框选择。")
-        self.catalog_state.setObjectName("muted")
-        form.addRow("模型列表", self.catalog_state)
-        self.api_key = QLineEdit()
-        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key.setPlaceholderText("留空则继续使用本机已保存的密钥")
-        form.addRow("API Key", self.api_key)
-        self.key_state = QLabel()
-        self.key_state.setObjectName("muted")
-        form.addRow("密钥状态", self.key_state)
-        layout.addLayout(form)
-        layout.addWidget(_button("保存模型设置", self.save_model, primary=True))
-        self.model_feedback = QLabel("密钥只存于本机 .env.local，不会在界面回显。")
-        self.model_feedback.setObjectName("muted")
-        layout.addWidget(self.model_feedback)
-        column.addWidget(card)
-        routes_card, routes_layout = _card(
-            "分阶段模型 API 与容灾",
-            "思考、回复、识图可分别配置多条 API；按优先级故障切换，支持单次超时和重试。"
-            "桌面聊天已支持图片输入；识图结果会交给回复模型生成回答。")
-        routes_layout.addWidget(_button(
-            "配置各阶段的 API 候选、密钥及重试策略  →",
-            self.open_model_routes, primary=True))
-        column.addWidget(routes_card)
-
-        memory_api, memory_api_layout = _card("记忆整理 API", "新记忆服务使用独立的整理模型，复用本机保存的硅基流动密钥。")
-        runtime = self._memory_runtime_settings()
-        self.memory_model_id = QComboBox()
-        self.memory_model_id.setEditable(True)
-        self.memory_model_id.addItems(PROVIDER_SUGGESTED_MODELS["siliconflow"])
-        self.memory_model_id.setCurrentText(str(runtime.get("model", "deepseek-ai/DeepSeek-V4-Flash")))
-        self.memory_model_id.setEnabled(bool(runtime))
-        memory_form = QFormLayout()
-        memory_form.addRow("供应商", QLabel("硅基流动"))
-        memory_row = QHBoxLayout()
-        memory_row.addWidget(self.memory_model_id, 1)
-        self.memory_model_fetch = _button("获取模型列表", self.fetch_memory_models)
-        self.memory_model_fetch.setEnabled(bool(runtime))
-        memory_row.addWidget(self.memory_model_fetch)
-        memory_form.addRow("整理模型", memory_row)
-        memory_api_layout.addLayout(memory_form)
-        self.memory_api_feedback = QLabel("本机记忆服务尚未配置。" if not runtime else
-                                          "保存后将在下次启动新记忆服务时生效；运行中的服务不会立即切换。")
-        self.memory_api_feedback.setObjectName("muted")
-        memory_api_layout.addWidget(self.memory_api_feedback)
-        save_memory_model = _button("保存记忆模型", self.save_memory_model)
-        save_memory_model.setEnabled(bool(runtime))
-        memory_api_layout.addWidget(save_memory_model)
-        column.addWidget(memory_api)
-
-        column.addStretch()
-        self.provider_changed()
-        return page
-
-    @staticmethod
-    def _memory_runtime_settings() -> dict:
-        try:
-            data = json.loads(MEMORY_RUNTIME_FILE.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) and data.get("enabled") is True else {}
-        except (OSError, ValueError, TypeError):
-            return {}
-
-    def fetch_memory_models(self) -> None:
-        if self._memory_catalog_worker is not None:
-            return
-        key = load_key("siliconflow")
-        if not key:
-            self.memory_api_feedback.setText("请先在默认模型设置中保存硅基流动 API Key。")
-            return
-        model = self.memory_model_id.currentText().strip() or "deepseek-ai/DeepSeek-V4-Flash"
-        worker = ModelCatalogWorker(
-            LlmSettings("siliconflow", PROVIDER_BASE_URLS["siliconflow"], model), key)
-        self._memory_catalog_worker = worker
-        self.memory_model_fetch.setEnabled(False)
-        self.memory_api_feedback.setText("正在获取硅基流动模型列表…")
-        worker.loaded.connect(self._memory_models_loaded)
-        worker.failed.connect(self.memory_api_feedback.setText)
-        worker.finished.connect(self._memory_models_finished)
-        worker.start()
-
-    def _memory_models_loaded(self, choices: list[str]) -> None:
-        selected = self.memory_model_id.currentText()
-        self.memory_model_id.clear()
-        self.memory_model_id.addItems(choices)
-        self.memory_model_id.setCurrentText(selected)
-        self.memory_api_feedback.setText(f"已获取 {len(choices)} 个模型；请选择支持对话与结构化输出的模型。")
-
-    def _memory_models_finished(self) -> None:
-        worker = self._memory_catalog_worker
-        self._memory_catalog_worker = None
-        self.memory_model_fetch.setEnabled(True)
-        if worker is not None:
-            worker.deleteLater()
-
-    def save_memory_model(self) -> bool:
-        temporary = MEMORY_RUNTIME_FILE.with_suffix(".tmp")
-        try:
-            runtime = self._memory_runtime_settings()
-            if not runtime:
-                raise ValueError("本机记忆服务尚未启用")
-            model = self.memory_model_id.currentText().strip()
-            LlmSettings("siliconflow", PROVIDER_BASE_URLS["siliconflow"], model).validated()
-            if not load_key("siliconflow"):
-                raise ValueError("未找到硅基流动 API Key")
-            runtime["model"] = model
-            runtime["base_url"] = PROVIDER_BASE_URLS["siliconflow"]
-            temporary.write_text(json.dumps(runtime, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            os.replace(temporary, MEMORY_RUNTIME_FILE)
-            self.memory_api_feedback.setText("记忆整理模型已保存；下次启动新记忆服务后生效。")
-            return True
-        except (OSError, ValueError) as error:
-            self.memory_api_feedback.setText(f"保存失败：{error}")
-            return False
-        finally:
-            temporary.unlink(missing_ok=True)
-
-    def open_model_routes(self) -> None:
-        from model_routes_gui import ModelRoutesDialog
-        try:
-            ModelRoutesDialog(self).exec()
-        except (OSError, ValueError, TypeError) as error:
-            QMessageBox.warning(self, "API 路由配置无效", str(error))
+    def _model_page(self) -> QWidget:
+        return ModelManagementPage(self)
 
     def load_persona_pack(self) -> None:
         pack = self.persona_pack.currentData()
@@ -738,6 +598,10 @@ class Dashboard(QMainWindow):
         self.private_ids = _line("私聊白名单", ", ".join(map(str, sorted(saved.allowed_private_ids))))
         self.private_ids.setPlaceholderText("多个 QQ 号用逗号分隔")
         rule_form.addRow("私聊 QQ 号", self.private_ids)
+        self.initial_l0_private_ids = _line(
+            "初识 L0 QQ 号", ", ".join(map(str, sorted(saved.initial_l0_private_ids))))
+        self.initial_l0_private_ids.setPlaceholderText("测试账号用初识语气；须先加入私聊 QQ 号")
+        rule_form.addRow("初识 L0 QQ 号", self.initial_l0_private_ids)
         self.voice_private_ids = _line("允许模型选择语音的 QQ 号", ", ".join(map(str, sorted(saved.voice_private_ids))))
         self.voice_private_ids.setPlaceholderText("留空则只发文字；仅限已在私聊白名单中的账号")
         rule_form.addRow("语音回复 QQ 号", self.voice_private_ids)
@@ -814,29 +678,105 @@ class Dashboard(QMainWindow):
         return page
 
     def _system_page(self) -> QScrollArea:
-        page, column = self._page("系统设置", "管理桌面程序的运行方式；更多系统选项会在这里逐步加入。")
-        runtime, layout = _card("运行与窗口")
-        layout.addWidget(QLabel("关闭主窗口时会收起到系统托盘；从托盘菜单可重新打开或完全退出。"))
-        row = QHBoxLayout()
-        row.addWidget(_button("重启 QQ 与语音连接", self.restart_connections, primary=True))
-        row.addWidget(_button("打开语音窗口  ↗", self.open_voice))
-        row.addStretch()
-        layout.addLayout(row)
+        page, column = self._page("系统设置", "调整控制台窗口大小。")
+        runtime, layout = _card("窗口大小")
+        size_row = QHBoxLayout()
+        self.window_size_preset = QComboBox()
+        self.window_size_preset.addItem("自定义大小", None)
+        for width, height in WINDOW_PRESETS:
+            self.window_size_preset.addItem(f"{width} × {height}", (width, height))
+        selected = self._window_preset_index(
+            (self.window_preferences.width, self.window_preferences.height))
+        self.window_size_preset.setCurrentIndex(selected if selected >= 0 else 0)
+        size_row.addWidget(self.window_size_preset)
+        size_row.addStretch()
+        layout.addLayout(size_row)
+        self.window_size_preset.currentIndexChanged.connect(self.select_window_preset)
         column.addWidget(runtime)
-        storage, storage_layout = _card("本机数据")
-        local_path = QLabel(str(Paths.current().conversation_root))
-        local_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        local_path.setWordWrap(True)
-        storage_layout.addWidget(QLabel("对话与旧版记忆数据目录"))
-        storage_layout.addWidget(local_path)
-        column.addWidget(storage)
         column.addStretch()
         return page
 
+    def apply_window_preferences(self, value: WindowPreferences) -> tuple[int, int]:
+        screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen()
+        if screen is None:
+            applied = (value.width, value.height)
+        else:
+            available = screen.availableGeometry()
+            applied = fit_to_screen(value, available.width(), available.height())
+        self._applying_window_size = True
+        try:
+            if self.isMaximized():
+                self.showNormal()
+            self.resize(*applied)
+            if screen is not None:
+                available = screen.availableGeometry()
+                self.move(available.x() + max(0, (available.width() - applied[0]) // 2),
+                          available.y() + max(0, (available.height() - applied[1]) // 2))
+        finally:
+            self._applying_window_size = False
+        return applied
+
+    def _window_preset_index(self, pair: tuple[int, int]) -> int:
+        for index in range(self.window_size_preset.count()):
+            value = self.window_size_preset.itemData(index)
+            if value is not None and tuple(value) == pair:
+                return index
+        return -1
+
+    def enable_window_resize_tracking(self) -> None:
+        self._window_resize_ready = True
+
+    def select_window_preset(self, index: int) -> None:
+        value = self.window_size_preset.itemData(index)
+        if value is None:
+            self.statusBar().showMessage("拖动窗口边缘调整大小后会自动保存", 5000)
+            return
+        self.window_resize_timer.stop()
+        preference = WindowPreferences(*value)
+        try:
+            save_window_preferences(preference)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"窗口大小保存失败：{error}", 5000)
+            return
+        self.window_preferences = preference
+        self.apply_window_preferences(preference)
+        self.statusBar().showMessage(f"窗口大小已保存：{value[0]} × {value[1]}", 5000)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if (not getattr(self, "_window_resize_ready", False)
+                or self._applying_window_size or self.isMaximized() or self.isMinimized()):
+            return
+        screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen()
+        applied = (self.window_preferences.width, self.window_preferences.height)
+        if screen is not None:
+            available = screen.availableGeometry()
+            applied = fit_to_screen(self.window_preferences,
+                                    available.width(), available.height())
+        if (self.width(), self.height()) == applied:
+            return
+        self.window_size_preset.blockSignals(True)
+        self.window_size_preset.setCurrentIndex(0)
+        self.window_size_preset.blockSignals(False)
+        self.window_resize_timer.start()
+
+    def save_custom_window_size(self) -> None:
+        if self.isMaximized():
+            return
+        value = WindowPreferences(self.width(), self.height())
+        if value == self.window_preferences:
+            return
+        try:
+            save_window_preferences(value)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"窗口大小保存失败：{error}", 5000)
+            return
+        self.window_preferences = value
+
     def _logs_page(self) -> QScrollArea:
         page, column = self._page(
-            "运行监控", "查看本次启动的语音、文字、QQ 与模型调用。这里的“思考”是规划器返回的表达策略，不是模型内部推理。")
-        card, layout = _card("本次启动的对话与调用", "内容只保存在当前程序内存中，退出后清空；新运行不写入日志文件。")
+            "运行监控", "按时间查看本次启动的服务、消息、模型请求与回复。")
+        card, layout = _card("运行控制台", "当前启动的实时事件流；内容留在内存中，退出后清空。")
         controls = QHBoxLayout()
         self.log_filter = QComboBox()
         self.log_filter.addItems(("全部来源", "控制台", "语音", "文字", "QQ", "模型", "记忆", "SnowLuma"))
@@ -849,10 +789,14 @@ class Dashboard(QMainWindow):
         controls.addWidget(self.log_search, 1)
         layout.addLayout(controls)
         self.log_view = QPlainTextEdit()
+        self.log_view.setObjectName("consoleView")
         self.log_view.setReadOnly(True)
-        self.log_view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
-        self.log_view.setMinimumHeight(370)
-        self.log_view.setPlaceholderText("操作、消息、模型调用与回复将按时间出现在这里。")
+        self.log_view.setUndoRedoEnabled(False)
+        self.log_view.setFont(QFont("Consolas", 10))
+        self.log_view.setMinimumHeight(480)
+        self.log_view.setPlaceholderText("等待服务事件…")
+        self.log_follow = FollowScroll(self.log_view.verticalScrollBar())
+        self.log_highlighter = ConsoleHighlighter(self.log_view.document())
         layout.addWidget(self.log_view)
         bottom = QHBoxLayout()
         self.log_count = QLabel()
@@ -860,10 +804,12 @@ class Dashboard(QMainWindow):
         bottom.addStretch()
         bottom.addWidget(_button("刷新", lambda: self.refresh_logs(force=True)))
         bottom.addWidget(_button("复制当前视图", lambda: QApplication.clipboard().setText(self.log_view.toPlainText())))
+        bottom.addWidget(_button("到底部", self.log_follow.jump_to_latest))
         layout.addLayout(bottom)
         column.addWidget(card)
         column.addStretch()
         self._log_signature = None
+        self._log_lines: list[str] = []
         return page
 
     def _home_voice_page(self) -> QScrollArea:
@@ -1259,11 +1205,14 @@ class Dashboard(QMainWindow):
             line = format_event(entry)
             if not query or query in line.casefold():
                 lines.append(line)
-        scrollbar = self.log_view.verticalScrollBar()
-        at_end = scrollbar.value() >= scrollbar.maximum() - 3
-        old_position = scrollbar.value()
-        self.log_view.setPlainText("\n".join(lines))
-        scrollbar.setValue(scrollbar.maximum() if at_end else min(old_position, scrollbar.maximum()))
+        if lines != self._log_lines:
+            self.log_follow.begin_update()
+            if self._log_lines and lines[:len(self._log_lines)] == self._log_lines:
+                self.log_view.appendPlainText("\n".join(lines[len(self._log_lines):]))
+            else:
+                self.log_view.setPlainText("\n".join(lines))
+            self._log_lines = lines
+            self.log_follow.end_update()
         self.log_count.setText(f"显示 {len(lines)} / {len(entries)} 条 · 本次启动（最多保留 2000 条）")
 
     @staticmethod
@@ -1288,92 +1237,13 @@ class Dashboard(QMainWindow):
             button.style().polish(button)
         self.refresh_status()
 
-    def provider_changed(self) -> None:
-        provider = self.provider.currentData()
-        if provider != self._last_provider:
-            self._provider_values[self._last_provider] = (self.api_url.text(), self.model_id.currentText())
-            url, model = self._provider_values.get(provider, (
-                PROVIDER_BASE_URLS.get(provider, "http://localhost:11434/v1"),
-                PROVIDER_DEFAULT_MODELS[provider],
-            ))
-            self.api_url.setText(url)
-            self._set_model_choices(self._model_choices.get(provider, PROVIDER_SUGGESTED_MODELS[provider]), model)
-            self.catalog_state.setText("可手动输入模型 ID；点击获取列表后可从下拉框选择。")
-            self._last_provider = provider
-        self.api_url.setReadOnly(provider in PROVIDER_BASE_URLS)
-        self.key_state.setText("已保存" if load_key(provider) else "未保存")
-
-    def _set_model_choices(self, choices: list[str], selected: str) -> None:
-        self.model_id.clear()
-        self.model_id.addItems(choices)
-        self.model_id.setCurrentText(selected)
-
-    def fetch_models(self) -> None:
-        if self._model_worker is not None:
-            return
-        try:
-            settings = LlmSettings(
-                self.provider.currentData(), self.api_url.text(),
-                self.model_id.currentText().strip() or "_",
-                load_settings().system_prompt, load_settings().memory_enabled,
-            ).validated()
-            key = self.api_key.text().strip() or load_key(settings.provider)
-            if settings.provider not in {"custom", "hachimi"} and not key:
-                raise ValueError("请先填写或保存当前供应商的 API Key")
-            worker = ModelCatalogWorker(settings, key)
-            self._model_worker = worker
-            self.fetch_button.setEnabled(False)
-            self.catalog_state.setText("正在从供应商获取模型列表…")
-            worker.loaded.connect(lambda choices, p=settings.provider, u=settings.base_url: self._models_loaded(p, u, choices))
-            worker.failed.connect(lambda message: self.catalog_state.setText(message))
-            worker.finished.connect(self._models_finished)
-            worker.start()
-        except (OSError, ValueError) as error:
-            self.catalog_state.setText(str(error))
-
-    def _models_loaded(self, provider: str, url: str, choices: list[str]) -> None:
-        self._model_choices[provider] = choices
-        if self.provider.currentData() != provider or self.api_url.text().rstrip("/") != url:
-            return
-        selected = self.model_id.currentText()
-        self._set_model_choices(choices, selected)
-        note = "当前模型 ID 不在列表中；请检查后再使用。" if selected and selected not in choices else "列表可能含非对话模型。"
-        if provider == "hachimi" and not (self.api_key.text().strip() or load_key("hachimi")):
-            note += " 这是公开目录，实际权限以账号为准。"
-        self.catalog_state.setText(f"已获取 {len(choices)} 个模型；{note}")
-        self.model_id.showPopup()
-
-    def _models_finished(self) -> None:
-        worker = self._model_worker
-        self._model_worker = None
-        self.fetch_button.setEnabled(True)
-        if worker is not None:
-            worker.deleteLater()
-
-    def save_model(self) -> bool:
-        try:
-            settings = replace(
-                load_settings(), provider=self.provider.currentData(),
-                base_url=self.api_url.text(), model=self.model_id.currentText()).validated()
-            if self.api_key.text().strip():
-                save_key(settings.provider, self.api_key.text())
-                self.api_key.clear()
-            save_settings(settings)
-            self.key_state.setText("已保存" if load_key(settings.provider) else "未保存")
-            self.model_feedback.setText("已保存。语音窗口下一轮读取新设置；QQ 桥接需重启。")
-            self.statusBar().showMessage("模型设置已保存", 5000)
-            self.refresh_status()
-            return True
-        except (OSError, ValueError) as error:
-            self.model_feedback.setText(f"保存失败：{error}")
-            return False
-
     def save_qq(self) -> bool:
         temporary = QQ_SETTINGS_FILE.with_suffix(".tmp")
         try:
             data = asdict(replace(QqSettings.load(),
                 ws_url=self.ws_url.text().strip(),
                 allowed_private_ids=frozenset(_ids(self.private_ids.text())),
+                initial_l0_private_ids=frozenset(_ids(self.initial_l0_private_ids.text())),
                 allowed_group_ids=frozenset(_ids(self.group_ids.text())),
                 voice_private_ids=frozenset(_ids(self.voice_private_ids.text())),
                 private_cooldown_seconds=self.private_cooldown.value(),
@@ -1587,8 +1457,17 @@ class Dashboard(QMainWindow):
         except OSError:
             pass
         settings = load_settings()
-        self.model_state.setText(f"模型：{settings.model}")
-        self.api_state.setText("API Key：已保存" if load_key(settings.provider) else "API Key：未保存")
+        reply_candidates = [candidate for candidate in load_routes().reply.candidates
+                            if candidate.enabled]
+        if reply_candidates:
+            primary = reply_candidates[0]
+            self.model_state.setText(f"回复模型：{primary.model}")
+            has_key = (primary.provider == "custom" or
+                       bool(load_route_key(primary.id, primary.provider, primary.base_url)))
+        else:
+            self.model_state.setText(f"回复模型：{settings.model}")
+            has_key = bool(load_key(settings.provider))
+        self.api_state.setText("API Key：已保存" if has_key else "API Key：未保存")
         self.memory_state.setText(
             "旧版长期记忆：已停用（新服务接管）" if new_memory_selected("desktop") else
             "旧版长期记忆：已开启" if settings.memory_enabled else "旧版长期记忆：已关闭")
@@ -1634,6 +1513,9 @@ class Dashboard(QMainWindow):
                                      if events else "本次启动尚无记录")
 
     def closeEvent(self, event) -> None:
+        if self.window_resize_timer.isActive():
+            self.window_resize_timer.stop()
+            self.save_custom_window_size()
         if not self._really_quit and self.tray is not None and self.tray.isVisible():
             event.ignore()
             self.hide()
@@ -1643,9 +1525,6 @@ class Dashboard(QMainWindow):
             return
         self._closing = True
         self.chat_page.shutdown()
-        for worker in (self._model_worker, self._memory_catalog_worker):
-            if worker is not None and worker.isRunning():
-                worker.wait()
         self.timer.stop()
         self.log_timer.stop()
         for process in (self.bridge, self.snowluma, self.tts_server):
@@ -1657,7 +1536,7 @@ class Dashboard(QMainWindow):
 
 STYLE = """
 QWidget#root, QWidget#content, QScrollArea, QStackedWidget#pages { background: #f4f6fa; color: #263247; }
-QWidget#streamPage, QWidget#streamContent, QScrollArea#streamScroll { background: #f4f6fa; color: #263247; }
+QWidget#streamPage, QWidget#streamMain, QWidget#streamContent, QScrollArea#streamScroll { background: #f8f9fc; color: #263247; }
 QWidget { font-family: 'Microsoft YaHei UI'; font-size: 13px; }
 QFrame#sidebar { background: #192338; color: #eef2fa; }
 QFrame#sidebar QLabel { color: #c4cede; background: transparent; }
@@ -1674,17 +1553,35 @@ QLabel#cardTitle { font-size: 17px; font-weight: 700; color: #243149; }
 QLabel#muted { color: #66758b; }
 QFrame#card { background: white; border: 1px solid #e1e7f0; border-radius: 14px; }
 QFrame#card QLabel, QFrame#card QCheckBox { background: transparent; }
-QFrame#streamCard { background: white; border: 1px solid #e1e7f0; border-radius: 13px; }
-QFrame#streamCard QLabel, QFrame#streamThinking QLabel { background: transparent; }
-QLabel#streamMeta { color: #66758b; font-size: 11px; font-weight: 700; }
-QLabel#streamIncoming { color: #253650; font-size: 14px; }
-QLabel#streamSection { color: #365d88; font-size: 12px; font-weight: 700; }
-QLabel#streamReply { color: #263247; font-size: 14px; }
+QFrame#streamRail { background: #edf1f8; border-right: 1px solid #dbe3ef; }
+QLabel#streamRailTitle, QLabel#streamMainTitle { color: #20304a; font-size: 20px; font-weight: 700; }
+QLabel#streamRailCaption { color: #697b93; font-size: 11px; font-weight: 700; }
+QFrame#streamRole { background: white; border: 1px solid #dbe4f1; border-radius: 11px; }
+QFrame#streamRole QLabel { border: 0; background: transparent; }
+QLabel#streamRoleName { color: #253653; font-size: 14px; font-weight: 700; }
+QLabel#streamRoleHint { color: #8492a6; font-size: 11px; }
+QLineEdit#streamSearch { background: white; border: 1px solid #d8e1ee; border-radius: 8px; padding: 7px; }
+QListWidget#streamConversations { background: transparent; border: 0; outline: 0; color: #344760; }
+QListWidget#streamConversations::item { padding: 11px 8px; border-radius: 8px; margin-bottom: 3px; }
+QListWidget#streamConversations::item:hover { background: #e1e8f5; }
+QListWidget#streamConversations::item:selected { background: #dce6f7; color: #23416a; }
+QPushButton#streamJump { background: white; border: 1px solid #dce5f1; border-radius: 8px; color: #557195; padding: 7px 10px; }
+QFrame#streamTurn { background: transparent; border-bottom: 1px solid #dfe6f0; }
+QFrame#streamTurn QLabel, QFrame#streamThinking QLabel, QFrame#streamUserBubble QLabel, QFrame#streamAssistantBubble QLabel { background: transparent; border: 0; }
+QLabel#streamSpeakerName { color: #263d5b; font-size: 12px; font-weight: 700; }
+QLabel#streamSpeakerAvatar { background: #dfe7f3; color: #496684; border-radius: 13px; min-width: 27px; min-height: 27px; max-width: 27px; max-height: 27px; font-size: 11px; font-weight: 700; }
+QFrame#streamUserBubble { background: #e8eef9; border: 1px solid #d8e3f4; border-radius: 10px; }
+QFrame#streamAssistantBubble { background: white; border: 1px solid #e1e7f0; border-radius: 10px; }
+QLabel#streamIncoming, QLabel#streamReply { color: #263247; font-size: 13px; }
+QLabel#streamSection { color: #32788a; font-size: 12px; font-weight: 700; }
+QLabel#streamDecision { color: #7b8d9f; font-size: 11px; }
 QLabel#streamPending, QLabel#streamEmpty { color: #8491a5; }
-QFrame#streamThinking { background: #f2f6fb; border: 1px solid #e0e9f5; border-radius: 9px; }
-QLabel#streamPreview { color: #5d6e83; }
-QPushButton#streamToggle { border: 0; background: transparent; color: #4f68b9; padding: 2px 4px; }
-QPlainTextEdit#streamFull { background: #fbfcff; border: 1px solid #dce5f0; }
+QFrame#streamThinking { background: #f1f7f6; border: 1px solid #d7e9e6; border-radius: 9px; }
+QLabel#streamPreview { color: #58737a; }
+QPushButton#streamToggle { border: 0; background: transparent; color: #3d8a8a; padding: 2px 4px; }
+QPlainTextEdit#streamFull { background: #fbfefe; border: 1px solid #d9e8e6; color: #3d5962; }
+QPlainTextEdit#consoleView { background: #0b1013; color: #d5e0e3; border: 1px solid #24363b; border-radius: 7px; padding: 11px; selection-background-color: #264954; }
+QPlainTextEdit#consoleView:focus { border-color: #3c6871; }
 QFrame#heroCard { background: #e9eefb; border: 1px solid #d5dff4; border-radius: 16px; }
 QFrame#heroCard QLabel { background: transparent; }
 QLabel#pluginStatus { color: #4c617b; font-weight: 600; }

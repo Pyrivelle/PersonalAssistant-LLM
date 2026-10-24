@@ -74,6 +74,21 @@ class LlmTests(unittest.TestCase):
         self.assertEqual(captured["body"]["messages"][0], {"role": "system", "content": DEFAULT_PROMPT})
         self.assertEqual(captured["headers"]["Authorization"], "Bearer test-key")
 
+    def test_manual_thinking_uses_provider_specific_request_field(self):
+        bodies = []
+
+        def fake_open(request, timeout):
+            bodies.append(json.loads(request.data))
+            return FakeResponse()
+
+        with patch.object(llm.urllib.request, "urlopen", side_effect=fake_open):
+            llm.chat(llm.LlmSettings(provider="deepseek", base_url=llm.DEEPSEEK_URL,
+                                     model="deepseek-flash"), "test-key", [], "你好",
+                     thinking="disabled")
+            llm.chat(llm.LlmSettings(), "test-key", [], "你好", thinking="enabled")
+        self.assertEqual(bodies[0]["thinking"], {"type": "disabled"})
+        self.assertTrue(bodies[1]["enable_thinking"])
+
     def test_chat_sends_image_as_multimodal_content(self):
         captured = {}
 

@@ -19,7 +19,7 @@ class ChatCompletionsCurator:
     base_url: str
     model: str
     key: str
-    timeout: float = 60.0
+    timeout: float = 120.0
 
     def __post_init__(self):
         p = urlparse(self.base_url)
@@ -36,14 +36,22 @@ class ChatCompletionsCurator:
         self.base_url = self.base_url.rstrip("/")
 
     def extract(self, *, system_prompt: str, payload: dict) -> str:
-        body = json.dumps({
+        request_body = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ], "stream": False,
             "temperature": 0.1,
-        }, ensure_ascii=False).encode("utf-8")
+        }
+        # SiliconFlow's Kimi models can spend the entire curator timeout in
+        # optional reasoning. Curation already has a strict validation pass;
+        # request bounded direct JSON output for this specific provider/model.
+        if (self.base_url == "https://api.siliconflow.cn/v1"
+                and "/Kimi-" in self.model):
+            request_body.update(enable_thinking=False, max_tokens=3072,
+                                response_format={"type": "json_object"})
+        body = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
         if len(body) > 50000:
             raise ValueError("Curator model payload too large")
         req = Request(self.base_url + "/chat/completions", data=body, method="POST",

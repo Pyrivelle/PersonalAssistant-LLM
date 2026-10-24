@@ -13,7 +13,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QProcess
 from PySide6.QtWidgets import QApplication
 
-from dashboard import Dashboard, PAGE_CHAT, PAGE_STREAM, PAGE_MONITOR, _tts_process_environment, _tts_python
+from dashboard import Dashboard, PAGE_CHAT, PAGE_STREAM, PAGE_MONITOR, PAGE_MODEL, _tts_process_environment, _tts_python
+from model_management_page import ModelManagementPage
 
 
 class DashboardRuntimeTests(unittest.TestCase):
@@ -60,7 +61,7 @@ class DashboardRuntimeTests(unittest.TestCase):
         window = Dashboard()
         try:
             self.assertEqual([button.text() for button in window.nav], [
-                "首页", "聊天", "聊天流", "记忆中心", "角色设置", "模型设置",
+                "首页", "聊天", "聊天流", "记忆中心", "角色设置", "模型管理",
                 "平台连接", "插件管理", "运行监控", "系统设置"])
             window.switch_page(PAGE_CHAT)
             self.assertIs(window.pages.currentWidget(), window.chat_page)
@@ -70,25 +71,15 @@ class DashboardRuntimeTests(unittest.TestCase):
         finally:
             window.quit_app()
 
-    def test_memory_model_editor_preserves_local_identity_settings(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "memory_runtime.json"
-            path.write_text(json.dumps({"enabled": True, "model": "old-model",
-                                        "desktop_user_id": "stable-local-id", "qq_enabled": True}),
-                            encoding="utf-8")
-            with patch("dashboard.MEMORY_RUNTIME_FILE", path), \
-                 patch("dashboard.load_key", return_value="test-only-key"):
-                window = Dashboard()
-                try:
-                    window.memory_model_id.setCurrentText("deepseek-ai/DeepSeek-V4-Flash")
-                    self.assertTrue(window.save_memory_model())
-                    saved = json.loads(path.read_text(encoding="utf-8"))
-                    self.assertEqual(saved["model"], "deepseek-ai/DeepSeek-V4-Flash")
-                    self.assertEqual(saved["desktop_user_id"], "stable-local-id")
-                    self.assertTrue(saved["qq_enabled"])
-                    self.assertNotIn("api_key", saved)
-                finally:
-                    window.quit_app()
+    def test_model_management_page_is_embedded(self):
+        window = Dashboard()
+        try:
+            window.switch_page(PAGE_MODEL)
+            self.assertIsInstance(window.pages.currentWidget(), ModelManagementPage)
+            self.assertEqual(window.pages.currentWidget().tabs.tabText(0), "模型设置")
+            self.assertEqual(window.pages.currentWidget().tabs.tabText(1), "功能分配")
+        finally:
+            window.quit_app()
 
     def test_managed_child_event_reaches_current_session(self):
         window = Dashboard()

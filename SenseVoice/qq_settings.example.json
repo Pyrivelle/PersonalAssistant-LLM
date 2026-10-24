@@ -3,6 +3,7 @@
   "allowed_private_ids": [],
   "allowed_group_ids": [],
   "voice_private_ids": [],
+  "initial_l0_private_ids": [],
   "private_cooldown_seconds": 5,
   "group_cooldown_seconds": 12,
   "private_max_replies_per_hour": 30,

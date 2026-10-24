@@ -10,15 +10,15 @@ RelationshipEvolution 分两个阶段。propose() 只能基于经授权、已验
 
 本模块共享现有 MemoryDatabase / IdentityRepository / TimelineRepository，使用已验证 ChannelIdentity，不匹配昵称。在原有 MemoryClient、Timeline 已授权且当前私聊成功记录之后，QQ 每轮只读取一个 R1 关系快照，Planner 和 Replyer 使用同一个 tier 与 hint；不存在快照则使用 unassigned。原流式模型响应读取方式不变，任何 Planner 中间 token 均不会写入关系数据库。
 
-客户端接口：/v1/relationship/snapshot、/v1/relationship/apply（提交候选，服务端重新验真）。仅管理员 token 可调用 /v1/admin/relationship/enroll（设置初始 L0-L3）和 /v1/admin/relationship/correct（显式修正、最高等级、亲近许可、昵称限制、冻结、单维度锁与关闭）。不要将管理员 token 提供给 QQ 或桌面客户端。
+客户端接口：/v1/relationship/snapshot、/v1/relationship/apply（提交候选，服务端重新验真）。仅管理员 token 可调用 /v1/admin/relationship/enroll（设置初始 L0-L4）和 /v1/admin/relationship/correct（显式修正、最高等级、亲近许可、昵称限制、冻结、单维度锁与关闭）。L4 需要显式设为上限，旧档案不会因分数增长自动升到 L4；现有 SQLite 库通过增加 `l4_opt_in` 列兼容，无需重建资料。不要将管理员 token 提供给 QQ 或桌面客户端。
 
-除了已经存在的 R1-A 和 Memory QQ 开关，启用实际事件候选的额外配置是 relationship_evolution_r1_enabled=true，默认 false。开启后每条已成功投递并记录于 Timeline 的 QQ 私聊最多触发一次额外模型候选调用（在失败情况下路由重试仍可能发生），模型/服务失败不阻断已投递的回复。自动成长只影响低幅度、多日积累的关系维度，不授予发信、工具或查询他人历史的能力。
+除了已经存在的 R1-A 和 Memory QQ 开关，启用实际事件候选的额外配置是 relationship_evolution_r1_enabled=true，默认 false。开启后，已成功投递并记录于 Timeline 的 QQ 私聊按机器人账号和用户账号在本机日历日内最多触发一次额外模型候选评估；当天第一次符合条件的回复占用额度，即使评估失败也不在当天重试。额度持久保存在本地 `private_state/relationship_reviews.sqlite3`，重启后仍有效，用户执行删除记忆命令时一并清除。路由内部失败重试或候选切换仍可能产生不止一个 HTTP 请求。关系快照仍在每轮读取，以便管理员修正立即生效；模型/服务失败不阻断已投递的回复。自动成长只影响低幅度、多日积累的关系维度，不授予发信、工具或查询他人历史的能力。
 
 完整的本地 /forget_me 将关系档案和事件表纳入 MemoryCore 的同一 SQLite 擦除事务。管理员 forget_person 删除对应 Person 时通过外键级联处理。不能覆盖既有外部备份与未集成的旧版记忆文件。
 
 ## R1-E：真实模型测试
 
-原 E1.2 合成私聊测试增加关系参数，不读取真实私聊。可通过 relationship_tier 选择 unassigned / L0 / L1 / L2 / L3；evaluate_events 为 true 时额外记录模型提出的关系候选、原文引用及是否通过基础审查。候选不会在 E1.2 报告生成时入库。
+原 E1.2 合成私聊测试增加关系参数，不读取真实私聊。可通过 relationship_tier 选择 unassigned / L0 / L1 / L2 / L3 / L4；evaluate_events 为 true 时额外记录模型提出的关系候选、原文引用及是否通过基础审查。候选不会在 E1.2 报告生成时入库。
 
 PowerShell 示例：
 

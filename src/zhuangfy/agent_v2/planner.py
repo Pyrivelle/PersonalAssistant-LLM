@@ -167,7 +167,7 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
     """Use existing stage routing; caller handles errors and default fallback."""
     from model_routes import invoke_stage
 
-    if relationship_tier not in ("unassigned", "L0", "L1", "L2", "L3"):
+    if relationship_tier not in ("unassigned", "L0", "L1", "L2", "L3", "L4"):
         raise ValueError("Invalid trusted relationship tier")
     prompt = PLANNER_V2_PROMPT
     if getattr(settings, "system_prompt", ""):

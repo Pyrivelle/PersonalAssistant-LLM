@@ -45,6 +45,7 @@ from zhuangfy.agent_v2.initiative import InitiativeInbox
 from zhuangfy.agent_v2.initiative_policy import InitiativeReviewer, plan_initiative, plan_checkin, timing_gate
 from zhuangfy.agent_v2.proactive_delivery import ProactiveConfig, ProactiveStore
 from zhuangfy.memory.routing import legacy_memory_allowed
+from zhuangfy.channels.qq.relationship_review import DailyRelationshipReview
 from zhuangfy.channels.qq.images import ImageReference, image_data_url
 
 
@@ -89,6 +90,7 @@ class QqSettings:
     group_max_replies_per_hour: int = 8
     quiet_seconds: float = 1.2
     voice_private_ids: frozenset[int] = frozenset()
+    initial_l0_private_ids: frozenset[int] = frozenset()
     private_max_reply_parts: int = 3
     message_debounce_mode: str = "off"  # optional V2; preserve legacy by default
     passive_group_ids: frozenset[int] = frozenset()  # explicit group opt-in
@@ -178,16 +180,28 @@ class QqSettings:
         voice_ids = _ids(raw.get("voice_private_ids", []))
         if not voice_ids.issubset(private_ids):
             raise ValueError("QQ 语音回复账号必须包含在私聊白名单内")
+        l0_ids = _ids(raw.get("initial_l0_private_ids", []))
+        if not l0_ids.issubset(private_ids):
+            raise ValueError("初识 L0 账号必须包含在私聊白名单内")
         return cls(url, private_ids, groups,
-                   voice_private_ids=voice_ids, message_debounce_mode=mode,
+                   voice_private_ids=voice_ids, initial_l0_private_ids=l0_ids,
+                   message_debounce_mode=mode,
                    passive_group_ids=passive_ids, group_reply_frequency=float(frequency),
                    focus_mode=focus_mode, focus_groups=tuple(focus_groups),
                    focus_checkpoint_enabled=checkpoint_enabled,
                    focus_checkpoint_account=checkpoint_account, **values)
 
 
+def starting_relationship_tier(settings: QqSettings, kind: str, user_id: int) -> str:
+    """Trusted QQ configuration can give an unlinked tester only L0 behavior."""
+    return ("L0" if kind == "private" and user_id in settings.allowed_private_ids
+            and user_id in settings.initial_l0_private_ids else "unassigned")
+
+
 MAX_VOICE_CHARS = 160
 MAX_VOICE_BYTES = 12_000_000
+VOICE_REQUEST = re.compile(r"(?:用|发|来|继续用).{0,8}语音(?:回复|回答|说|聊|来)?|语音.{0,5}(?:回复|说|晚安)")
+TEXT_REQUEST = re.compile(r"(?:用|发|改用|只用).{0,8}文字(?:回复|回答|说)?|(?:不要|别|停止).{0,4}语音")
 VOICE_STAGE_CUE = re.compile(
     r"(?:我|她|这就|现在)?(?:给你)?发(?:一条|个)?语音(?:了|吧|给你)?"
     r"|(?:用语音|语音)(?:回复|说)"
@@ -212,6 +226,17 @@ def spoken_reply(text: str) -> str:
             break
         spoken = spoken[match.end():].lstrip()
     return spoken
+
+
+def wants_voice(history: list[dict[str, str]], message: str) -> bool:
+    """Remember the user's latest explicit delivery preference within six turns."""
+    for text in [message] + [entry.get("content", "") for entry in reversed(history[-12:])
+                             if entry.get("role") == "user"]:
+        if TEXT_REQUEST.search(text):
+            return False
+        if VOICE_REQUEST.search(text):
+            return True
+    return False
 
 
 def synthesize_qq_voice(text: str) -> bytes:
@@ -468,6 +493,10 @@ class QqBridge:
         self.reflection_lock = asyncio.Semaphore(1)
         # Explicit opt-in; identity must be pre-verified by the Memory Service.
         self.memory_client = MemoryClient.from_environment(enabled_var="ZHUANGFY_MEMORY_QQ")
+        self.relationship_review_gate = (
+            DailyRelationshipReview(ROOT / "private_state" / "relationship_reviews.sqlite3")
+            if self.memory_client is not None
+            and self.planner_settings.relationship_evolution_r1_enabled else None)
         self.proactive_config = ProactiveConfig.load(ROOT / "proactive_settings.json")
         self.proactive_store = ProactiveStore(ROOT.parent / "data" / "proactive.db")
         self.initiative_inbox = InitiativeInbox(ROOT.parent / "data" / "agent-v2-background.db")
@@ -731,6 +760,9 @@ class QqBridge:
                     related_task = self.relationship_tasks.pop(current.user_id, None)
                     if related_task is not None:
                         related_task.cancel()
+                    if self.relationship_review_gate is not None:
+                        await asyncio.to_thread(self.relationship_review_gate.erase,
+                                                self.bot_id, current.user_id)
                     # Wait for pending background writes before erasing. Otherwise
                     # a late reflection could recreate deleted personal records.
                     if current.user_id in self.planner_settings.memory_private_ids:
@@ -774,14 +806,16 @@ class QqBridge:
                             message_id=current.message_id, content=message)
                     except Exception as error:
                         log_event("记忆", "记录跳过", f"新记忆服务不可用或未授权：{type(error).__name__}")
-                relation_tier, relation_hint = "unassigned", ""
+                relation_tier = starting_relationship_tier(
+                    self.settings, current.kind, current.user_id)
+                relation_hint = ""
                 if (self.planner_settings.relationship_behavior_r1_enabled
                         and self.memory_client is not None and memory_claim is not None
                         and memory_ref is not None and current.kind == "private"):
                     try:
                         relation = await asyncio.to_thread(
                             self.memory_client.relationship_snapshot, memory_claim)
-                        if relation.get("enabled") and relation.get("tier") in ("L0","L1","L2","L3"):
+                        if relation.get("enabled") and relation.get("tier") in ("L0","L1","L2","L3","L4"):
                             relation_tier = relation["tier"]
                             relation_hint = str(relation.get("hint", ""))[:480]
                     except Exception as error:
@@ -799,9 +833,15 @@ class QqBridge:
                     key = load_key(settings.provider)
                     if not can_attempt_stage("reply", settings, key):
                         raise RuntimeError("回复阶段没有可用的模型服务，请检查 API 候选及密钥")
+                    voice_allowed = (image_ref is None and current.kind == "private"
+                                     and current.user_id in self.settings.voice_private_ids)
+                    voice_preferred = voice_allowed and wants_voice(state.context.history, message)
                     settings = replace(settings, memory_enabled=False,
                                        system_prompt=settings.system_prompt + "\n你现在通过 QQ 聊天。简短回应当前发消息的人；不要把其他 QQ 用户当作桌面主人的长期记忆来源。"
-                                       "\n只输出准备发送给对方的对白；不要用（语气……）、（轻声）、（动作……）或其他括号写表演、神情、心理和镜头旁白。"
+                                       + ("\n此私聊已配置真实的本地语音合成和 QQ 语音发送能力。"
+                                          "是否发送由程序在生成对白后决定；不要声称此渠道无法发语音，也不要声称已经发送。"
+                                          if voice_allowed else "")
+                                       + "\n只输出准备发送给对方的对白；不要用（语气……）、（轻声）、（动作……）或其他括号写表演、神情、心理和镜头旁白。"
                                        "平常闲聊使用自然中文，不使用多余 Markdown 双空格、标题或加粗。"
                                        "回答长一些时可以自然分段，不必用空行制造视觉间距。代码、链接或步骤等技术内容可保留必要格式。")
                     visual_context = ""
@@ -818,8 +858,7 @@ class QqBridge:
                     tool_feedback = ""
                     if self.planner_settings.agent_v2_enabled:
                         try:
-                            allow_voice = (image_ref is None and current.kind == "private" and
-                                           current.user_id in self.settings.voice_private_ids)
+                            allow_voice = voice_allowed
                             allow_silence = (
                                 self.planner_settings.agent_v2_allow_silence_group
                                 or (current.kind == "group" and not directed)
@@ -932,8 +971,7 @@ class QqBridge:
                             "不要从头罗列物件、只评一句‘好看’，也不要例行追问‘想聊这张图还是要我判断什么’。"
                             "如果画面意图不明，就只谈实际可见的线索，不替对方决定它的含义。"
                         )
-                    if (current.kind == "private" and
-                            current.user_id in self.settings.voice_private_ids and
+                    if voice_preferred or (voice_allowed and
                             plan.delivery == "voice" and plan.confidence >= 0.5):
                         emotion_prompt += ("\n本轮回复会直接作为语音内容播放。只输出你真正要对用户说的话，"
                                            "不要写‘发语音了’、‘轻声说’等动作、语气或发送方式的旁白；"
@@ -1029,9 +1067,7 @@ class QqBridge:
                     log_event("QQ", "格式问题",
                               f"turn:{turn_id} · 模型只返回了旁白或空文本，已保留用户原文")
                     continue
-                use_voice = (current.kind == "private" and
-                             image_ref is None and
-                             current.user_id in self.settings.voice_private_ids and
+                use_voice = voice_preferred or (voice_allowed and
                              plan.delivery == "voice" and plan.confidence >= 0.5)
                 if use_voice:
                     spoken = spoken_reply(cleaned)
@@ -1176,6 +1212,9 @@ class QqBridge:
                                                delivery: PartialReply) -> None:
         # R1-C only evaluates an actually delivered private turn. This is
         # separately opt-in and cannot grant permissions or write facts.
+        # Background inference must not appear as another Planner round in
+        # the user's chat stream, even though it originates from that turn.
+        set_current_turn("", "")
         if (self.planner_settings.relationship_behavior_r1_enabled
                 and self.planner_settings.relationship_evolution_r1_enabled
                 and self.memory_client is not None and delivery.memory_ref is not None
@@ -1188,6 +1227,10 @@ class QqBridge:
                 if (state_now.get("enabled") and state_now.get("auto_growth")
                         and not state_now.get("frozen")
                         and type(state_now.get("version")) is int):
+                    if (self.relationship_review_gate is None or not await asyncio.to_thread(
+                            self.relationship_review_gate.claim,
+                            self.bot_id, current.user_id)):
+                        return
                     src_id = delivery.memory_ref["entry_id"]
                     def _valid_relation_json(value):
                         try:

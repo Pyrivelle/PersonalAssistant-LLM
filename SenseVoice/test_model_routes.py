@@ -113,6 +113,46 @@ class ModelRoutesTests(unittest.TestCase):
                                PlannerSettings(enabled=True))
         self.assertEqual(result.tone, "关切")
         self.assertEqual(fn.call_count, 2)
+        correction = fn.call_args
+        self.assertIn("只输出一个 JSON 对象", correction.args[3])
+        self.assertEqual(correction.args[2][-1]["content"], "not-json")
+        self.assertFalse(correction.kwargs["force_json"])
+
+    def test_siliconflow_planner_correction_uses_json_mode(self):
+        from llm import SILICONFLOW_URL
+        route = ModelCandidate("planner_sf", "siliconflow", SILICONFLOW_URL, "model-1")
+        routes = ModelRoutes(planner=StagePolicy((route,), retries=0))
+        with patch.object(model_routes, "chat", side_effect=["prose", '{"action":"reply","confidence":0.9}']) as request, \
+             patch.object(model_routes, "load_route_key", return_value="key"):
+            invoke_stage("planner", LlmSettings(), "", [], "你好", routes=routes,
+                         response_validator=lambda text: text.startswith("{"))
+        self.assertFalse(request.call_args_list[0].kwargs.get("force_json", False))
+        self.assertTrue(request.call_args_list[1].kwargs["force_json"])
+
+    def test_siliconflow_planner_backup_starts_in_json_mode(self):
+        from llm import SILICONFLOW_URL
+        fallback = ModelCandidate("planner_backup", "siliconflow", SILICONFLOW_URL, "backup-model")
+        routes = ModelRoutes(planner=StagePolicy(
+            (candidate("planner_primary"), fallback), retries=0))
+        with patch.object(model_routes, "chat", side_effect=[
+            "prose", "still prose", '{"action":"reply","confidence":0.9}'
+        ]) as request, patch.object(model_routes, "load_route_key", return_value="key"):
+            result = invoke_stage("planner", LlmSettings(), "", [], "你好", routes=routes,
+                                  response_validator=lambda text: text.startswith("{"))
+        self.assertTrue(result.startswith("{"))
+        self.assertTrue(request.call_args_list[2].kwargs["force_json"])
+
+    def test_planner_invalid_correction_falls_back_to_next_api(self):
+        routes = ModelRoutes(planner=StagePolicy(
+            (candidate("planner_1"), candidate("planner_2")),
+            retries=0, timeout=5, total_timeout=20))
+        with patch.object(model_routes, "chat", side_effect=[
+            "not-json", "still prose", '{"action":"wait","confidence":0.9}'
+        ]) as request, patch.object(model_routes, "load_route_key", return_value="key"):
+            result = invoke_stage("planner", LlmSettings(), "", [], "等一下",
+                                  routes=routes, response_validator=lambda text: text.startswith('{'))
+        self.assertTrue(result.startswith('{'))
+        self.assertEqual(request.call_count, 3)
 
     def test_planner_no_route_success_raises_for_caller_to_downgrade(self):
         config = ModelRoutes(planner=StagePolicy((candidate("planner_1"),), retries=0))

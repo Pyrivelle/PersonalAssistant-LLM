@@ -12,14 +12,17 @@ class ActivityLogTests(unittest.TestCase):
     def setUp(self):
         self.events_patch = patch.object(activity_log, "_EVENTS", deque(maxlen=2000))
         self.revision_patch = patch.object(activity_log, "_REVISION", 0)
+        self.journal_patch = patch.object(activity_log, "_CHAT_JOURNAL", None)
         self.env_patch = patch.dict("os.environ", {"ZHUANGFY_EVENT_PORT": "", "ZHUANGFY_EVENT_TOKEN": ""})
         self.events_patch.start()
         self.revision_patch.start()
+        self.journal_patch.start()
         self.env_patch.start()
 
     def tearDown(self):
         self.env_patch.stop()
         self.revision_patch.stop()
+        self.journal_patch.stop()
         self.events_patch.stop()
 
     def test_current_session_stream_redacts_credentials(self):

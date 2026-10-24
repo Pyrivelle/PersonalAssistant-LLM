@@ -12,7 +12,7 @@ from typing import Literal
 
 from .character_core_v2 import is_zhuangfangyi_prompt
 
-Tier = Literal["unassigned", "L0", "L1", "L2", "L3"]
+Tier = Literal["unassigned", "L0", "L1", "L2", "L3", "L4"]
 Channel = Literal["chat", "qq_private", "qq_group", "initiative"]
 STYLE = Literal["conversation", "technical_concise", "technical_detail", "creative"]
 
@@ -48,6 +48,7 @@ _TIER = {
     "L1": "熟悉：可以轻松与适度关切，不预设私密约定。",
     "L2": "信任：可更直接关心、表达观点；记忆引用仍需实际证据。",
     "L3": "亲近：在对方明确欢迎的前提下可温柔、带一点私心与松弛，不自称独占、不可虚构共同经历。",
+    "L4": "更亲近：可自然表达想念、偏爱与轻微调侃，称呼随对方习惯；不必每轮暧昧，不宣称独占，不虚构共同经历，也不替对方做决定。",
 }
 _CHANNEL = {
     "chat": "当前为单人实时聊天，除用户另有要求外，回答应像正在交谈。",

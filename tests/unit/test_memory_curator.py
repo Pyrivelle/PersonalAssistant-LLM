@@ -320,6 +320,17 @@ class CuratorTests(unittest.TestCase):
         self.assertEqual(self.curated.current_memories(
             agent_id="zhuangfy-main", person_id=self.alice.person_id), [])
 
+    def test_invalid_first_proposal_gets_one_correction_before_commit(self):
+        user = self.user("我正在学习 C++")
+        self.schedule()
+        responses = iter(["not JSON", response(candidate(
+            "semantic", "用户正在学习 C++", [user.entry_id],
+            [(user.entry_id, "正在学习 C++")]))])
+        model, result = self.invoke_curator(lambda _: next(responses))
+        self.assertEqual(model.calls, 2)
+        self.assertEqual(result.status, "done")
+        self.assertEqual(len(result.created_memory_ids), 1)
+
     def test_secret_looking_timeline_entries_never_reach_extractor(self):
         self.user("我的 API Key: sk-abcdefghij12345")
         job_id = self.schedule()

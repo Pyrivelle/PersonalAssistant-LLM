@@ -34,12 +34,15 @@ class ModelCandidate:
     base_url: str
     model: str
     enabled: bool = True
+    thinking: str = "auto"
 
     def validated(self) -> "ModelCandidate":
         if not IDENTIFIER.fullmatch(self.id):
             raise ValueError("模型候选 ID 必须是小写英文字母、数字或下划线")
         if type(self.enabled) is not bool:
             raise ValueError("模型候选的启用设置须为布尔值")
+        if self.thinking not in {"auto", "enabled", "disabled"}:
+            raise ValueError("模型候选的思考设置无效")
         normalized = LlmSettings(self.provider, self.base_url, self.model).validated()
         return replace(self, base_url=normalized.base_url, model=normalized.model)
 
@@ -83,13 +86,13 @@ class ModelRoutes:
         return getattr(self, stage)
 
     def validated(self) -> "ModelRoutes":
-        used = set()
+        used: dict[str, ModelCandidate] = {}
         for stage in STAGES:
             policy = self.for_stage(stage).validated()
             for item in policy.candidates:
-                if item.id in used:
-                    raise ValueError("各阶段候选 ID 不能重复")
-                used.add(item.id)
+                if item.id in used and used[item.id] != item:
+                    raise ValueError("同一 API 编号在各阶段必须指向相同供应商和模型")
+                used[item.id] = item
         return self
 
 
@@ -119,7 +122,7 @@ def _read_policy(raw: object, stage: str) -> StagePolicy:
             raise ValueError("候选模型字段格式错误")
         candidates.append(ModelCandidate(
             item["id"], item["provider"], item["base_url"], item["model"],
-            item.get("enabled", True)).validated())
+            item.get("enabled", True), item.get("thinking", "auto")).validated())
     fallback = getattr(ModelRoutes(), stage)
     kwargs = {field: raw.get(field, getattr(fallback, field))
               for field in ("retries", "retry_delay", "timeout", "total_timeout")}
@@ -144,7 +147,7 @@ def save_routes(config: ModelRoutes, path: Path = ROUTES_FILE) -> None:
         policy = config.for_stage(stage)
         raw[stage] = {
             "candidates": [dict(id=item.id, provider=item.provider, base_url=item.base_url,
-                                model=item.model, enabled=item.enabled)
+                                model=item.model, enabled=item.enabled, thinking=item.thinking)
                            for item in policy.candidates],
             "retries": policy.retries,
             "retry_delay": policy.retry_delay,
@@ -185,7 +188,23 @@ def load_route_key(route_id: str, provider: str, base_url: str) -> str:
                 stored[key.strip()] = value.strip().strip('"').strip("'")
     except OSError:
         pass
-    # The override is only valid for the provider/address it was saved for.
+    # A model-management provider can supply one key to several model IDs.
+    # Prefer an explicitly configured provider connection to imported legacy
+    # per-route secrets, so editing its key changes the active credential.
+    try:
+        from .model_registry import REGISTRY_FILE, load_provider_key, load_registry
+        if REGISTRY_FILE.is_file():
+            registry = load_registry()
+            model = next((item for item in registry.models if item.id == route_id), None)
+            connection = next((item for item in registry.providers
+                               if model is not None and item.id == model.provider_id), None)
+            if connection and (connection.kind, connection.base_url) == (provider, base_url.rstrip("/")):
+                provider_key = load_provider_key(connection.id, provider, base_url)
+                if provider_key:
+                    return provider_key
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    # Legacy per-route overrides remain valid for their original endpoint.
     if stored.get(name + "_TARGET") == _route_target(provider, base_url):
         return stored.get(name, "")
     # Official providers have fixed validated URLs, so old provider secrets
@@ -290,7 +309,7 @@ def invoke_stage(
     deadline = time.monotonic() + policy.total_timeout
     failures: list[tuple[str, str]] = []
     label = STAGE_NAMES[stage]
-    for item in candidates:
+    for candidate_index, item in enumerate(candidates):
         selected_settings = replace(
             settings, provider=item.provider, base_url=item.base_url,
             model=item.model, system_prompt=system_prompt if system_prompt is not None else settings.system_prompt,
@@ -311,9 +330,40 @@ def invoke_stage(
                     selected_settings, key, history, user_text, memories=memories,
                     emotion_context=emotion_context, context_notes=context_notes,
                     timeout=timeout, stage=label,
+                    **({"thinking": item.thinking} if item.thinking != "auto" else {}),
+                    **({"force_json": True} if stage == "planner" and candidate_index > 0
+                       and selected_settings.provider == "siliconflow" else {}),
                     **({"visual_context": visual_context} if visual_context else {}),
                     **({"image_data_url": image_data_url} if image_data_url is not None else {}))
                 if response_validator is not None and not response_validator(result):
+                    if stage == "planner":
+                        # Retry once as a continuation of this exact exchange.
+                        # Repeating the original prompt often makes a prose-first
+                        # model repeat prose; an explicit correction is more useful.
+                        remaining = deadline - time.monotonic()
+                        if remaining >= 1:
+                            log_event("模型路由", "格式补救",
+                                      f"{trace_id} · {label} · {item.id} · 要求仅返回规划 JSON")
+                            correction_history = history[-10:] + [
+                                {"role": "user", "content": user_text[:1500]},
+                                {"role": "assistant", "content": result[:1200]},
+                            ]
+                            repaired = chat(
+                                selected_settings, key, correction_history,
+                                "上一条不是有效的规划 JSON。请依据刚才的用户消息和系统给定字段，"
+                                "重新输出且只输出一个 JSON 对象；必须包含 action、confidence、"
+                                "delivery，不要自然语言回答、解释或 Markdown。",
+                                emotion_context=emotion_context,
+                                context_notes=context_notes,
+                                timeout=min(float(policy.timeout), remaining), stage=label,
+                                force_json=selected_settings.provider == "siliconflow",
+                                **({"thinking": item.thinking} if item.thinking != "auto" else {}),
+                                **({"visual_context": visual_context} if visual_context else {}))
+                            if response_validator(repaired):
+                                log_event("模型路由", "格式补救成功",
+                                          f"{trace_id} · {label} · {item.id}")
+                                log_event("模型路由", "成功", f"{trace_id} · {label} · {item.id}")
+                                return repaired
                     raise ModelRequestError(
                         "模型输出格式不符合本阶段要求", kind="protocol", retryable=True)
                 log_event("模型路由", "成功", f"{trace_id} · {label} · {item.id}")

@@ -1,7 +1,8 @@
-"""Bounded, current-process activity stream for the desktop console.
+"""Current-process console events and a separate durable chat timeline.
 
-Managed child processes can forward events over a local UDP socket. Nothing is
-written to disk; a new console launch begins with an empty view.
+Managed child processes can forward events over a local UDP socket.
+The console begins empty each launch; only bounded conversation events are
+stored locally so the chat stream can survive a dashboard restart.
 """
 
 from __future__ import annotations
@@ -9,16 +10,27 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import socket
 import threading
 from collections import deque
 from contextvars import ContextVar
 from datetime import datetime
 
+from .chat_journal import ChatJournal, is_chat_event
+
 
 _LOCK = threading.Lock()
 _EVENTS: deque[dict] = deque(maxlen=2000)
 _REVISION = 0
+try:
+    _CHAT_JOURNAL = ChatJournal() if not os.environ.get("ZHUANGFY_EVENT_PORT") else None
+    _CHAT_EVENTS: deque[dict] = deque(
+        _CHAT_JOURNAL.recent() if _CHAT_JOURNAL is not None else [], maxlen=5000)
+except (OSError, sqlite3.Error):
+    _CHAT_JOURNAL = None
+    _CHAT_EVENTS = deque(maxlen=5000)
+_CHAT_REVISION = len(_CHAT_EVENTS)
 _CURRENT_TURN: ContextVar[tuple[str, str]] = ContextVar("zhuangfy_current_turn", default=("", ""))
 _SECRET = re.compile(
     r"(?i)(Bearer\s+)[^\s]+|(sk-[A-Za-z0-9_-]{8,})|"
@@ -32,10 +44,18 @@ def redact(value: object) -> str:
 
 
 def _append(entry: dict) -> None:
-    global _REVISION
+    global _REVISION, _CHAT_REVISION
     with _LOCK:
         _EVENTS.append(entry)
         _REVISION += 1
+        if is_chat_event(entry):
+            _CHAT_EVENTS.append(entry)
+            _CHAT_REVISION += 1
+            if _CHAT_JOURNAL is not None:
+                try:
+                    _CHAT_JOURNAL.append(entry)
+                except (OSError, sqlite3.Error):
+                    pass
 
 
 def set_current_turn(turn_id: str, channel: str) -> None:
@@ -95,6 +115,11 @@ def receive_event(packet: bytes, token: str) -> bool:
 def session_snapshot() -> tuple[int, list[dict]]:
     with _LOCK:
         return _REVISION, list(_EVENTS)
+
+
+def chat_snapshot() -> tuple[int, list[dict]]:
+    with _LOCK:
+        return _CHAT_REVISION, list(_CHAT_EVENTS)
 
 
 def format_event(event: dict) -> str:

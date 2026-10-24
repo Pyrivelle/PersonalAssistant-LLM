@@ -29,6 +29,7 @@ on:
           - L1
           - L2
           - L3
+          - L4
       evaluate_events:
         description: Also ask model for relationship event candidates (additional calls)
         type: boolean

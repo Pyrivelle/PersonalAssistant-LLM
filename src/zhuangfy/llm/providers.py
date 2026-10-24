@@ -214,8 +214,12 @@ def _read_completion_stream(response) -> tuple[str, str]:
     return "".join(content_parts), "".join(reasoning_parts)
 
 
-def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", visual_context: str = "", timeout: float = 60, stage: str = "回复", image_data_url: str | None = None) -> str:
+def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", visual_context: str = "", timeout: float = 60, stage: str = "回复", image_data_url: str | None = None, force_json: bool = False, thinking: str = "auto") -> str:
     settings = settings.validated()
+    if thinking not in {"auto", "enabled", "disabled"}:
+        raise ValueError("无效的模型思考设置")
+    if thinking != "auto" and settings.provider not in {"deepseek", "siliconflow"}:
+        raise ValueError("当前供应商尚未接入手动思考设置")
     if not user_text.strip():
         raise ValueError("请先输入消息")
     if image_data_url is not None and (
@@ -268,7 +272,15 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
         ]
     messages.append({"role": "user", "content": content})
     stream = stage == "思考"
-    payload = json.dumps({"model": settings.model, "messages": messages, "stream": stream}, ensure_ascii=False).encode("utf-8")
+    request_body = {"model": settings.model, "messages": messages, "stream": stream}
+    if thinking != "auto":
+        if settings.provider == "deepseek":
+            request_body["thinking"] = {"type": thinking}
+        else:
+            request_body["enable_thinking"] = thinking == "enabled"
+    if force_json and settings.provider == "siliconflow":
+        request_body["response_format"] = {"type": "json_object"}
+    payload = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if stream else "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"

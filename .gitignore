@@ -21,6 +21,7 @@ dist/
 **/llm_settings.json
 **/persona_backup_*.json
 **/settings.json
+**/dashboard_settings.json
 **/qq_settings.json
 **/.qq_bridge.lock
 **/memory_data/
@@ -37,6 +38,8 @@ data/*
 
 # Candidate API routing metadata (credentials stay in .env.local).
 **/model_routes.json
+**/api_profiles.json
+**/model_registry.json
 
 # Local skill grants; never commit enabled external plugin policies.
 **/skills_settings.json
@@ -46,3 +49,4 @@ data/*
 **/proactive_settings.json
 **/private_state/
 **/background*.sqlite3*
+**/relationship_reviews.sqlite3*
