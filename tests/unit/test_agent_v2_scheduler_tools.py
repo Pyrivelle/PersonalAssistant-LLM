@@ -183,5 +183,31 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("证据不足", message["content"])
 
 
+    async def test_ordered_events_and_stop_prevents_reply(self):
+        events = []
+        reg = build_builtin_registry()
+        async def planner(receipts):
+            if not receipts:
+                return PlanDecision(action="tool", confidence=.95,
+                                    tool_name="calculator.evaluate",
+                                    tool_arguments={"expression": "3+4"})
+            return PlanDecision(action="stop", confidence=.95)
+        result = await AgentCycleEngine().run(
+            planner, registry=reg, allow_tools=True, allow_silence=True,
+            on_event=lambda event, round_no, detail: events.append((event, round_no, detail)))
+        self.assertEqual(result.action, "stop")
+        self.assertEqual([x[0] for x in events],
+                         ["plan", "tool_start", "tool_end", "plan", "action"])
+        self.assertIn("7", result.tool_feedback())
+
+    async def test_private_silence_requires_host_permission(self):
+        async def planner(receipts):
+            return PlanDecision(action="stop", confidence=.95)
+        denied = await AgentCycleEngine().run(planner, allow_silence=False)
+        allowed = await AgentCycleEngine().run(planner, allow_silence=True)
+        self.assertEqual(denied.action, "reply")
+        self.assertEqual(allowed.action, "stop")
+
+
 if __name__ == "__main__":
     unittest.main()
