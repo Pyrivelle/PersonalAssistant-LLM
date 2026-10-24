@@ -43,6 +43,10 @@ def extract_report(text: str) -> tuple[str, str, bool] | None:
     """Rule-only proposal; ambiguity requires review, never invented facts."""
     if not isinstance(text, str) or len(text) > MAX_TEXT_CHARS:
         return None
+    if CORRECTION_CUES.search(text):
+        # Negated/corrected reports require explicit correction review, never
+        # silently turn an earlier completion report into a fresh completion.
+        return None
     for kind, pattern in RULES:
         if pattern.search(text):
             state = {
