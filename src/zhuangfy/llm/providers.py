@@ -214,7 +214,7 @@ def _read_completion_stream(response) -> tuple[str, str]:
     return "".join(content_parts), "".join(reasoning_parts)
 
 
-def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", visual_context: str = "", timeout: float = 60, stage: str = "回复", image_data_url: str | None = None, force_json: bool = False, thinking: str = "auto") -> str:
+def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", visual_context: str = "", timeout: float = 60, stage: str = "回复", image_data_url: str | None = None, force_json: bool = False, thinking: str = "auto", structured_format: dict | None = None) -> str:
     settings = settings.validated()
     if thinking not in {"auto", "enabled", "disabled"}:
         raise ValueError("无效的模型思考设置")
