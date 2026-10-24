@@ -198,9 +198,11 @@ class QqSettings:
 
 
 def starting_relationship_tier(settings: QqSettings, kind: str, user_id: int) -> str:
-    """Trusted QQ configuration can give an unlinked tester only L0 behavior."""
-    return ("L0" if kind == "private" and user_id in settings.allowed_private_ids
-            and user_id in settings.initial_l0_private_ids else "unassigned")
+    """All new private chats start with conservative L0 *expression* guidance.
+
+    Higher / persisted R1 tiers still require separately enrolled profiles.
+    """
+    return "L0" if kind == "private" else "unassigned"
 
 
 MAX_VOICE_CHARS = 160
@@ -507,6 +509,8 @@ class QqBridge:
         # Identity is still rechecked by the Memory Service for protected actions.
         self._memory_onboarded_accounts: set[tuple[int, int]] = set()
         self._memory_timeline_accounts: set[tuple[int, int]] = set()
+        self._memory_capture_locks: dict[tuple[int, int], asyncio.Lock] = {}
+        self._memory_capture_tasks: dict[tuple[int, int, str], asyncio.Task] = {}
         self.relationship_review_gate = (
             DailyRelationshipReview(ROOT / "private_state" / "relationship_reviews.sqlite3")
             if self.memory_client is not None
@@ -569,6 +573,37 @@ class QqBridge:
                 elif data.get("post_type") == "message" and len(self.early_events) < 32:
                     self.early_events.append(data)
 
+    async def _capture_private_message(self, incoming: Incoming) -> dict | None:
+        """Persist each real QQ private text event, independently of reply timing.
+
+        Only admitted, deduplicated messages enter this function. Both identity
+        and Timeline consent are rechecked by the Memory Service.
+        """
+        if self.memory_client is None or not incoming.message_id:
+            return None
+        account = (self.bot_id, incoming.user_id)
+        lock = self._memory_capture_locks.setdefault(account, asyncio.Lock())
+        async with lock:
+            claim = MemoryChannel("qq", str(account[0]), str(account[1]))
+            try:
+                if account not in self._memory_onboarded_accounts:
+                    registration = await asyncio.to_thread(
+                        self.memory_client.onboard_qq, claim, incoming.nickname)
+                    self._memory_onboarded_accounts.add(account)
+                    if registration.get("timeline_consent") is True:
+                        self._memory_timeline_accounts.add(account)
+                    if registration.get("created"):
+                        log_event("记忆", "自动建档", f"QQ私聊身份已建立：{incoming.user_id}")
+                if account not in self._memory_timeline_accounts:
+                    return None
+                return await asyncio.to_thread(
+                    self.memory_client.receive, claim,
+                    chat_id=f"private:{incoming.user_id}",
+                    message_id=incoming.message_id, content=incoming.text)
+            except Exception as error:
+                log_event("记忆", "采集跳过", f"服务不可用或未授权：{type(error).__name__}")
+                return None
+
     def accept(self, event: dict) -> bool:
         incoming = parse_message(event, self.bot_id, self.settings)
         if incoming is None:
@@ -629,6 +664,22 @@ class QqBridge:
                                     is_bare_image=normalized.is_bare_image,
                                     is_pure_emoji=normalized.is_pure_emoji,
                                     mentioned=(incoming.kind == "group" and incoming.directed))
+        if (self.memory_client is not None and incoming.kind == "private"
+                and incoming.message_id and incoming.image is None
+                and incoming.text.strip() not in {
+                    "/forget_me", "/删除我的记忆", "/continue", "/discard", "/retry"
+                }):
+            # Capture every original message before debouncing, rate limits or
+            # Planner silence can discard a reply. Never record fake batch IDs.
+            capture_key = (self.bot_id, incoming.user_id, incoming.message_id)
+            self._memory_capture_tasks[capture_key] = asyncio.create_task(
+                self._capture_private_message(incoming))
+            if len(self._memory_capture_tasks) > 1024:
+                for key, task in list(self._memory_capture_tasks.items()):
+                    if task.done():
+                        self._memory_capture_tasks.pop(key, None)
+                    if len(self._memory_capture_tasks) <= 512:
+                        break
         if state.task is None or state.task.done():
             state.task = asyncio.create_task(self.process(state))
         print("已接收私聊" if incoming.kind == "private" else "已接收白名单群 @", flush=True)
@@ -795,6 +846,13 @@ class QqBridge:
                     state.last_failed_image = None
                     remote_notice = ""
                     if self.memory_client is not None:
+                        # Resolve older pending receives before erasing: a
+                        # late in-flight write must not race with deletion.
+                        pending_captures = [task for (bot, user, _), task
+                                            in self._memory_capture_tasks.items()
+                                            if bot == self.bot_id and user == current.user_id]
+                        if pending_captures:
+                            await asyncio.gather(*pending_captures, return_exceptions=True)
                         try:
                             claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
                             result = await asyncio.to_thread(self.memory_client.erase_self, claim)
@@ -811,33 +869,21 @@ class QqBridge:
                 memory_ref = None
                 memory_claim = None
                 if self.memory_client is not None and current.kind == "private":
-                    # First admitted private message provisions only an empty
-                    # Person + verified channel identity. No consent is granted.
-                    account_key = (self.bot_id, current.user_id)
-                    if account_key not in self._memory_onboarded_accounts:
-                        claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
-                        try:
-                            registration = await asyncio.to_thread(
-                                self.memory_client.onboard_qq, claim, current.nickname)
-                            self._memory_onboarded_accounts.add(account_key)
-                            if registration.get("timeline_consent") is True:
-                                self._memory_timeline_accounts.add(account_key)
-                            if registration.get("created"):
-                                log_event("记忆", "自动建档", f"QQ私聊身份已建立：{current.user_id}")
-                        except Exception as error:
-                            log_event("记忆", "建档跳过", f"新记忆服务不可用：{type(error).__name__}")
-                if (self.memory_client is not None and current.kind == "private"
-                        and (self.bot_id, current.user_id) in self._memory_timeline_accounts
-                        and image_ref is None
-                        and current.message_id and message == current.text):
-                    memory_claim = MemoryChannel("qq", str(self.bot_id), str(current.user_id))
-                    try:
-                        memory_ref = await asyncio.to_thread(
-                            self.memory_client.receive, memory_claim,
-                            chat_id=f"private:{current.user_id}",
-                            message_id=current.message_id, content=message)
-                    except Exception as error:
-                        log_event("记忆", "记录跳过", f"新记忆服务不可用或未授权：{type(error).__name__}")
+                    # The input capture is independent from batching and reply
+                    # delivery. Anchor the eventual reply to the last real
+                    # incoming message in this batch.
+                    for event_id in reversed(event_ids):
+                        capture_key = (self.bot_id, current.user_id, event_id)
+                        capture = self._memory_capture_tasks.get(capture_key)
+                        if capture is not None:
+                            try:
+                                memory_ref = await asyncio.shield(capture)
+                            except Exception as error:
+                                log_event("记忆", "记录跳过", type(error).__name__)
+                            if memory_ref is not None:
+                                memory_claim = MemoryChannel(
+                                    "qq", str(self.bot_id), str(current.user_id))
+                                break
                 relation_tier = starting_relationship_tier(
                     self.settings, current.kind, current.user_id)
                 relation_hint = ""
