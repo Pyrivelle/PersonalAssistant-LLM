@@ -65,7 +65,7 @@ class ImageMeaningStore:
                            *, minutes: int = 10) -> str:
         """Do not bind ambiguous or old images to a new clarification."""
         with closing(sqlite3.connect(self.path)) as db:
-            rows = db.execute("""SELECT image_hash FROM image_mentions
+            rows = db.execute("""SELECT DISTINCT image_hash FROM image_mentions
                 WHERE conversation_id=? AND sender_id=?
                 AND seen_at >= datetime('now',?)
                 ORDER BY seen_at DESC, rowid DESC LIMIT 2""",
