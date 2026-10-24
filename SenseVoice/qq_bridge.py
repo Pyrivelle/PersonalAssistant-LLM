@@ -1006,14 +1006,14 @@ class QqBridge:
                                     cache.store(message_key, digest, model_signature, visual_context)
                                 except (OSError, sqlite3.Error) as error:
                                     log_event("QQ", "识图缓存", f"保存跳过 · {type(error).__name__}")
-                        if image_meaning_store is not None and digest:
+                        if current.kind == "private" and image_meaning_store is not None and digest:
                             try:
                                 image_meaning_store.record_image(
                                     image_meaning_scope, str(current.user_id),
                                     stable_message_id, digest)
                             except (OSError, sqlite3.Error, ValueError):
                                 pass
-                        if image_meaning_store is not None and digest:
+                        if current.kind == "private" and image_meaning_store is not None and digest:
                             try:
                                 clarified = image_meaning_store.lookup(image_meaning_scope, digest)
                                 if clarified:
@@ -1261,7 +1261,8 @@ class QqBridge:
                         log_event("记忆", "读取", f"{current.scope} · QQ 个人记忆 {'已提供' if member_snapshot else '暂无'}")
                     # Bind an explicit correction to the most recent visual
                     # observation in this conversation, never across sessions.
-                    if image_ref is None and image_meaning_store is not None:
+                    if (image_ref is None and current.kind == "private"
+                            and image_meaning_store is not None):
                         meaning = explicit_image_meaning(message)
                         if meaning:
                             try:
