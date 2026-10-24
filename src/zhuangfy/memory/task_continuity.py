@@ -156,6 +156,10 @@ class TaskContinuity:
                  "relation": "possible_related"}
                 for _, item in historical[:3]
             ]
+            progress = (self.events.snapshot(
+                agent_id=agent_id, identity=identity,
+                task_id=origin["task_id"], limit=5)
+                if getattr(self, "events", None) is not None else None)
             result.append({
                 "task_id": origin["task_id"],
                 "origin": {"entry_id": origin["origin_entry_id"],
