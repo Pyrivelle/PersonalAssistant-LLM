@@ -26,14 +26,14 @@ from .vector import FastEmbedProvider
 MAX_REQUEST_BYTES = 18_000
 PUBLIC_ENDPOINTS = frozenset({
     "/v1/onboard-qq", "/v1/receive", "/v1/recall", "/v1/complete-reply", "/v1/erase-self",
-    "/v1/relationship/snapshot", "/v1/relationship/apply",
+    "/v1/relationship/snapshot", "/v1/relationship/apply", "/v1/task-origin",
 })
 ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/create-person", "/v1/admin/link", "/v1/admin/consent",
     "/v1/admin/list-people", "/v1/admin/list-memories",
     "/v1/admin/sync-index", "/v1/admin/reflect-one",
     "/v1/admin/evidence", "/v1/admin/correct", "/v1/admin/forget-memory",
-    "/v1/admin/forget-person", "/v1/admin/link-episodes",
+    "/v1/admin/forget-person", "/v1/admin/link-episodes", "/v1/admin/bind-goal-origin",
     "/v1/admin/list-jobs", "/v1/admin/retry-job",
     "/v1/admin/relationship/enroll", "/v1/admin/relationship/correct",
     "/v1/admin/relationship/get", "/v1/admin/relationship/events",
@@ -97,6 +97,8 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.onboard_qq(**payload)
                 elif path == "/v1/receive":
                     result = core.receive(**payload)
+                elif path == "/v1/task-origin":
+                    result = core.task_origin(**payload)
                 elif path == "/v1/recall":
                     result = core.recall(**payload)
                 elif path == "/v1/complete-reply":
@@ -137,6 +139,8 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.admin_forget_memory(**payload)
                 elif path == "/v1/admin/forget-person":
                     result = core.admin_forget_person(**payload)
+                elif path == "/v1/admin/bind-goal-origin":
+                    result = core.admin_bind_goal_origin(**payload)
                 elif path == "/v1/admin/link-episodes":
                     result = core.admin_link_episodes(**payload)
                 elif path == "/v1/admin/list-jobs":

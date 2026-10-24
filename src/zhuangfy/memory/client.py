@@ -93,6 +93,18 @@ class MemoryClient:
             "identity": identity.as_payload(), "display_name": display_name,
         })
 
+    def task_origin(self, identity: MemoryChannel, task_id: str) -> dict:
+        return self.request("/v1/task-origin", {
+            "identity": identity.as_payload(), "task_id": task_id,
+        })
+
+    def admin_bind_goal_origin(self, identity: MemoryChannel, *, task_id: str,
+                               owner_scope: str, source_entry_id: str) -> dict:
+        return self.request("/v1/admin/bind-goal-origin", {
+            "identity": identity.as_payload(), "task_id": task_id,
+            "owner_scope": owner_scope, "source_entry_id": source_entry_id,
+        })
+
     def receive(self, identity: MemoryChannel, *, chat_id: str,
                 message_id: str, content: str) -> dict:
         return self.request("/v1/receive", {

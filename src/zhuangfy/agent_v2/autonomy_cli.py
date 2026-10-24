@@ -18,6 +18,8 @@ import time
 
 from .autonomy import BackgroundGoalRunner, GoalGrant
 from .goals import GoalStore
+from .task_memory_bridge import link_existing_qq_goal
+from zhuangfy.memory.client import MemoryClient
 from .initiative import InitiativeGrant, InitiativeInbox
 from .tools import build_builtin_registry
 
@@ -98,6 +100,10 @@ def main() -> None:
     add.add_argument("--consent-confirmed", action="store_true", required=True)
     add.add_argument("--allow-inquiry", action="store_true")
     add.add_argument("--inquiry-topic", default="")
+    add.add_argument("--link-memory", action="store_true",
+                     help="operator binds source-event-id as a real Memory Timeline entry_id")
+    add.add_argument("--memory-bot-id", default="")
+    add.add_argument("--memory-user-id", default="")
     commands.add_parser("once", help="run one tick, only if policy enabled")
     commands.add_parser("serve", help="run explicit background process, only if policy enabled")
     inspect = commands.add_parser("inspect", help="inspect goal and drafts without running code")
@@ -133,6 +139,19 @@ def main() -> None:
             inquiry_allowed=args.allow_inquiry, inquiry_topic=args.inquiry_topic,
         )
         print("created" if created else "already exists")
+        if args.link_memory:
+            if not args.memory_bot_id or not args.memory_user_id:
+                parser.error("--link-memory requires --memory-bot-id and --memory-user-id")
+            admin = MemoryClient.from_environment(
+                enabled_var="ZHUANGFY_MEMORY_TASK_LINK", admin=True)
+            if admin is None:
+                parser.error("set ZHUANGFY_MEMORY_TASK_LINK=1 and the local admin token")
+            # Safe to retry after a failed bind: GoalStore.create was idempotent.
+            link = link_existing_qq_goal(
+                goals=GoalStore(args.database), admin=admin,
+                goal_id=args.goal_id, bot_id=args.memory_bot_id,
+                user_id=args.memory_user_id)
+            print("memory_link=" + ("created" if link["created"] else "already exists"))
     elif args.action == "inspect":
         store = GoalStore(args.database)
         print(json.dumps(store.inspect(args.goal_id), ensure_ascii=False, indent=2))
