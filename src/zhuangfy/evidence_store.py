@@ -62,3 +62,10 @@ class EvidenceStore:
         with self._db() as db:
             db.execute("DELETE FROM evidence WHERE created_at < datetime('now', ?)",
                        (f"-{max(1,min(days,365))} days",))
+
+    def erase_conversation(self, conversation_id: str) -> None:
+        """Erase all derivative evidence for an exact host-scoped conversation."""
+        if not conversation_id:
+            raise ValueError("missing conversation id")
+        with self._db() as db:
+            db.execute("DELETE FROM evidence WHERE conversation_id=?", (conversation_id,))
