@@ -34,7 +34,7 @@ $env:ZHUANGFY_MEMORY_TOKEN = "与服务端一致的客户端令牌"
 $env:ZHUANGFY_MEMORY_QQ = "1"
 ```
 
-仅 QQ 白名单**私聊**、已验证账号、经授权人物可写入。单个有稳定 OneBot message ID 的真实消息写入 Timeline，合并的多段 QQ 输入不冒充某一条真实消息。只有 QQ 全部回复气泡成功确认发送后，助手回复才标记 delivered。群聊与尚未验明的人不会自动建档。设置 `ZHUANGFY_MEMORY_QQ=1` 后，QQ 桥接不再读取、写入或反思旧 `qq_members.sqlite3`；旧数据保留但尚未迁移。新服务临时离线时也不会回退到旧库。
+QQ **通过准入的私聊**可自动建立空 Person 档案并绑定已由 OneBot 私聊事件确认的 QQ 身份。昵称仅作首次展示名，身份键为 `(qq, bot_id, qq_user_id)`，同名不同账号绝不自动合并。白名单用户首次真实私聊时建档；启用 QQ 配置中的 `allow_all_private=true` 时，新私聊者同样首次发消息才建档。**建档不会开启 Timeline 或 Curator 同意，也不会隐式关联其它渠道。** 管理员仍需分别授权 `timeline` 与 `curation` 后才能保存或提炼对话。已建立的身份幂等复用，手动关联的人物不会被覆盖，QQ 昵称更新暂不自动覆盖管理员选择的名称。只有经授权人物可写入。单个有稳定 OneBot message ID 的真实消息写入 Timeline，合并的多段 QQ 输入不冒充某一条真实消息。只有 QQ 全部回复气泡成功确认发送后，助手回复才标记 delivered。群聊与尚未验明的人不会自动建档。设置 `ZHUANGFY_MEMORY_QQ=1` 后，QQ 桥接不再读取、写入或反思旧 `qq_members.sqlite3`；旧数据保留但尚未迁移。新服务临时离线时也不会回退到旧库。
 
 桌面语音：
 
