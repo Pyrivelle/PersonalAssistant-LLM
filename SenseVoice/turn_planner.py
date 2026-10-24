@@ -40,6 +40,7 @@ class PlannerSettings:
     character_knowledge_v1_enabled: bool = False  # independent opt-in
     relationship_behavior_r1_enabled: bool = False  # opt-in, no user tier inferred
     relationship_evolution_r1_enabled: bool = False  # separate opt-in for LLM event proposals
+    agent_v3_enabled: bool = False  # opt-in structured decisions and deferred discovery
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
@@ -75,6 +76,9 @@ class PlannerSettings:
         lore_v1 = raw.get("character_knowledge_v1_enabled", False)
         r1 = raw.get("relationship_behavior_r1_enabled", False)
         r1_evolution = raw.get("relationship_evolution_r1_enabled", False)
+        v3_enabled = raw.get("agent_v3_enabled", False)
+        if type(v3_enabled) is not bool or (v3_enabled and not v2_enabled):
+            raise ValueError("Planner V3 requires enabled Agent V2")
         if type(core_v2) is not bool:
             raise ValueError("CCV2 开关必须是布尔值")
         if type(lore_v1) is not bool:
@@ -94,7 +98,7 @@ class PlannerSettings:
         return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop,
                    frozenset(memory_ids), skill, v2_enabled, silent_private,
                    silent_group, wait_max, tools_enabled, max_rounds, max_tools,
-                   core_v2, lore_v1, r1, r1_evolution)
+                   core_v2, lore_v1, r1, r1_evolution, v3_enabled)
 
 
 @dataclass(frozen=True)

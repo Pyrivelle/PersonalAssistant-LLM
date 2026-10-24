@@ -92,5 +92,67 @@ class PlannerV2Tests(unittest.TestCase):
             '{"action":"reply","confidence":0.9}'))
 
 
+
+class PlannerV3Tests(unittest.TestCase):
+    @staticmethod
+    def decision(**changes):
+        value = {
+            "schema_version": 3, "action": "reply", "confidence": 0.94,
+            "intent": "朋友分享近况", "tone": "自然", "attention": "",
+            "reply_style": "short", "delivery": "text", "wait_seconds": 0,
+            "tool_name": "", "tool_arguments_json": "{}",
+            "selection_reason": "普通交流，无需使用工具",
+        }
+        value.update(changes)
+        return json.dumps(value, ensure_ascii=False)
+
+    def test_v3_strict_envelope_and_v2_replyer_compatibility(self):
+        from zhuangfy.agent_v2.planner_v3 import valid_plan_v3, parse_plan_v3
+        raw = self.decision()
+        self.assertTrue(valid_plan_v3(raw))
+        plan = parse_plan_v3(raw)
+        self.assertEqual(plan.action, "reply")
+        self.assertEqual(plan.social_intent, "朋友分享近况")
+        self.assertIn("朋友分享近况", plan.prompt())
+        self.assertEqual(plan.selection_reason, "普通交流，无需使用工具")
+        self.assertFalse(valid_plan_v3(self.decision(schema_version=2)))
+        self.assertFalse(valid_plan_v3(self.decision(confidence=True)))
+        self.assertFalse(valid_plan_v3(self.decision(confidence=float("nan"))))
+        self.assertFalse(valid_plan_v3(self.decision(tool_name="secret.command")))
+        self.assertFalse(valid_plan_v3(self.decision(tool_arguments_json="not json")))
+        self.assertFalse(valid_plan_v3(self.decision(tool_arguments_json="[]")))
+        self.assertFalse(valid_plan_v3(self.decision(wait_seconds=5)))
+        self.assertFalse(valid_plan_v3(self.decision(unexpected="injection")))
+        self.assertEqual(parse_plan_v3("garbage"), PlanDecision())
+
+    def test_v3_tool_is_explicitly_shown_and_still_requires_executor(self):
+        from zhuangfy.agent_v2.planner_v3 import valid_plan_v3, parse_plan_v3
+        raw = self.decision(
+            action="tool", tool_name="text_stats.length",
+            tool_arguments_json='{"text":"你好"}',
+            selection_reason="用户要求统计字符")
+        self.assertFalse(valid_plan_v3(raw))
+        self.assertTrue(valid_plan_v3(raw, allowed_tools=("text_stats.length",)))
+        plan = parse_plan_v3(raw, allowed_tools=("text_stats.length",))
+        self.assertEqual(plan.tool_arguments, {"text": "你好"})
+        self.assertEqual(choose_action(plan), "reply")
+        self.assertEqual(choose_action(plan, tools_enabled=True), "tool")
+
+    def test_v3_router_receives_first_turn_schema(self):
+        from zhuangfy.agent_v2.planner import plan_turn_v3
+        from zhuangfy.agent_v2.planner_v3 import DECISION_SCHEMA
+        captured = {}
+        def invoke(*args, **kwargs):
+            captured.update(kwargs)
+            return self.decision()
+        with patch.dict(sys.modules, {"model_routes": SimpleNamespace(invoke_stage=invoke)}):
+            plan = plan_turn_v3(SimpleNamespace(system_prompt="庄方宜"), "key",
+                                [], "今天怎么样？")
+        self.assertEqual(plan.action, "reply")
+        self.assertEqual(captured["planner_schema"], DECISION_SCHEMA)
+        self.assertTrue(captured["response_validator"](self.decision()))
+        self.assertFalse(captured["response_validator"]('{"action":"reply"}'))
+
+
 if __name__ == "__main__":
     unittest.main()

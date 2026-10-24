@@ -34,7 +34,8 @@ from emotion import EmotionState
 from llm import LlmSettings
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
 from zhuangfy.agent_v2 import MessageDebouncer, from_qq_incoming
-from zhuangfy.agent_v2.planner import plan_turn_v2, choose_action, PlanDecision
+from zhuangfy.agent_v2.planner import plan_turn_v2, plan_turn_v3, choose_action, PlanDecision
+from zhuangfy.agent_v2.discovery import SkillDiscovery
 from zhuangfy.agent_v2.runtime import AgentCycleEngine
 from zhuangfy.agent_v2.scheduler import UnifiedTurnScheduler, SchedulerConfig
 from zhuangfy.agent_v2.turn_trigger import TurnEvent
@@ -946,18 +947,29 @@ class QqBridge:
                             tools_enabled = self.planner_settings.agent_v2_tools_enabled
                             names = (self.tool_registry.public_names(scope=current.kind)
                                      if tools_enabled else ())
+                            if tools_enabled and self.planner_settings.agent_v3_enabled:
+                                # No external retrieval and no loading disabled skills.
+                                # Expose only core tools and strongly matched, enabled
+                                # deferred skills; the executor rechecks scope/schema.
+                                discovery = SkillDiscovery(self.tool_registry).select(
+                                    message, scope=current.kind, allow_mutation=False)
+                                names = discovery.names
+                                log_event("技能", "按需发现",
+                                          f"{current.scope} · Core={len(discovery.core_names)} "
+                                          f"· Deferred={len(discovery.deferred_names)}")
                             if tools_enabled and names:
                                 # The tool results are passed back as untrusted context.
                                 # The model cannot register capabilities or mutate devices.
                                 async def _next_plan(receipts):
                                     feedback = "\n".join(item.as_context() for item in receipts)[:1200]
                                     return await asyncio.to_thread(
-                                        plan_turn_v2, settings, key, state.context.history, message,
+                                        (plan_turn_v3 if self.planner_settings.agent_v3_enabled else plan_turn_v2),
+                                        settings, key, state.context.history, message,
                                         allow_voice=allow_voice, visual_context=visual_context,
                                         trace_id=turn_id, tool_feedback=feedback,
                                         available_tools=names,
                                         tool_catalog=self.tool_registry.prompt_catalog(
-                                            scope=current.kind),
+                                            scope=current.kind, names=names),
                                         character_core_v2=self.planner_settings.character_core_v2_enabled,
                                         character_channel="qq_group" if current.kind == "group" else "qq_private",
                                         relationship_behavior_r1=self.planner_settings.relationship_behavior_r1_enabled,
@@ -978,7 +990,8 @@ class QqBridge:
                                           f"{current.scope} · 轮数={result.rounds} · 工具={len(result.receipts)} · 结果={result.reason or '完成'}")
                             else:
                                 plan = await asyncio.to_thread(
-                                    plan_turn_v2, settings, key, state.context.history, message,
+                                    (plan_turn_v3 if self.planner_settings.agent_v3_enabled else plan_turn_v2),
+                                    settings, key, state.context.history, message,
                                     allow_voice=allow_voice,
                                     visual_context=visual_context, trace_id=turn_id,
                                     character_core_v2=self.planner_settings.character_core_v2_enabled,

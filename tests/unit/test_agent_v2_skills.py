@@ -180,5 +180,83 @@ class ActivationTests(unittest.IsolatedAsyncioTestCase):
                                ToolBinding("new.same", callback)])
 
 
+
+class DiscoveryV3Tests(unittest.IsolatedAsyncioTestCase):
+    async def test_shortlists_only_enabled_keyword_matches(self):
+        from zhuangfy.agent_v2.discovery import SkillDiscovery
+        from zhuangfy.agent_v2.tools import build_builtin_registry
+        reg = build_builtin_registry()
+        async def echo(args): return args["text"]
+        for i in range(40):
+            reg.register(ToolBinding(
+                name=f"skill_{i}.read", handler=echo,
+                scopes=frozenset({"private"}), visibility="deferred",
+                description="很长的技能说明，不能全发给 Planner",
+                discovery_terms=(f"技能编号_{i}",),
+                parameters={"type":"object","properties":{"text":{"type":"string"}}}))
+        reg.register(ToolBinding(
+            name="text_stats.length", handler=echo, scopes=frozenset({"private"}),
+            visibility="deferred", discovery_terms=("字数", "字符统计"),
+            parameters={"type":"object","properties":{"text":{"type":"string"}},
+                        "required":["text"],"additionalProperties":False}))
+        reg.register(ToolBinding(
+            name="device.turn_on", handler=echo, scopes=frozenset({"private"}),
+            mutating=True, visibility="deferred", discovery_terms=("开灯",)))
+        finder = SkillDiscovery(reg)
+        social = finder.select("方宜，我今天有点疲惫", scope="private")
+        self.assertEqual(social.deferred_names, ())
+        chosen = finder.select("帮我统计这段文字的字数", scope="private")
+        self.assertEqual(chosen.deferred_names, ("text_stats.length",))
+        self.assertNotIn("device.turn_on", chosen.names)
+        catalog = reg.prompt_catalog(scope="private", names=chosen.names)
+        self.assertIn("text_stats.length", catalog)
+        self.assertNotIn("skill_4.read", catalog)
+        self.assertFalse((await reg.invoke("device.turn_on", {}, scope="private")).success)
+        self.assertEqual(finder.select("开灯", scope="private").deferred_names, ())
+        self.assertEqual(finder.select("开灯", scope="private",
+                                      allow_mutation=True).deferred_names, ("device.turn_on",))
+
+    async def test_enabled_manifest_is_deferred_by_default(self):
+        from zhuangfy.agent_v2.discovery import SkillDiscovery
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skills"
+            root.mkdir()
+            folder = write_skill(root)
+            manifest = json.loads((folder / "skill.json").read_text())
+            manifest["keywords"] = ["统计", "字数"]
+            (folder / "skill.json").write_text(json.dumps(manifest), encoding="utf-8")
+            cfg = Path(tmp) / "settings.json"
+            cfg.write_text(json.dumps({"skills": {"demo": {
+                "enabled": True, "scopes": ["private"]}}}), encoding="utf-8")
+            registry, manager = build_skill_runtime(root, cfg, activate=True)
+            self.assertTrue(manager.statuses[0].loaded)
+            finder = SkillDiscovery(registry)
+            self.assertNotIn("demo.read", finder.select("今天天气不错", scope="private").names)
+            self.assertIn("demo.read", finder.select("统计字数", scope="private").names)
+            self.assertNotIn("demo.read", finder.select("统计字数", scope="group").names)
+
+    async def test_nested_schema_fails_closed(self):
+        async def echo(args): return "ok"
+        reg = AuthorizedToolRegistry()
+        reg.register(ToolBinding(
+            "demo.nested", echo, parameters={
+                "type": "object", "required": ["query"],
+                "additionalProperties": False, "properties": {
+                    "query": {"type": "object",
+                              "required": ["tags", "limit"],
+                              "additionalProperties": False,
+                              "properties": {
+                                  "tags": {"type": "array", "maxItems": 3,
+                                           "items": {"type": "string", "maxLength": 8}},
+                                  "limit": {"type": "integer", "minimum": 1, "maximum": 5}
+                              }}}}))
+        good = {"query": {"tags": ["OSG"], "limit": 2}}
+        self.assertTrue((await reg.invoke("demo.nested", good, scope="private")).success)
+        for bad in ({"query":{"tags":["OSG"],"limit":99}},
+                    {"query":{"tags":[{"unexpected":True}],"limit":1}},
+                    {"query":{"tags":["OK"],"limit":2,"owner":"other"}},
+                    {"query":{"tags":["veryverylongtag"],"limit":1}}):
+            self.assertFalse((await reg.invoke("demo.nested", bad, scope="private")).success)
+
 if __name__ == "__main__":
     unittest.main()

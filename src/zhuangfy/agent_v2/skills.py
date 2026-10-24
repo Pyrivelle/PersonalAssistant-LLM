@@ -31,6 +31,8 @@ class SkillManifest:
     root: Path
     entry: str = "skill.py"
     api_version: int = 1
+    core_tool: bool = False
+    keywords: tuple[str, ...] = ()
 
     @classmethod
     def read(cls, directory: Path) -> "SkillManifest":
@@ -61,8 +63,16 @@ class SkillManifest:
             raise ValueError("invalid skill description")
         if data.get("api_version", 1) != 1:
             raise ValueError("unsupported skill API version")
+        core_tool = data.get("core_tool", False)
+        keywords = data.get("keywords", [])
+        if type(core_tool) is not bool:
+            raise ValueError("core_tool must be boolean")
+        if (not isinstance(keywords, list) or len(keywords) > 20 or
+                any(not isinstance(x, str) or not 2 <= len(x) <= 48
+                    or any(ch in x for ch in "\n\r\t") for x in keywords)):
+            raise ValueError("invalid skill discovery keywords")
         return cls(directory.name, name, version, description, directory,
-                   entry, 1)
+                   entry, 1, core_tool, tuple(keywords))
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +210,10 @@ class SkillManager:
                         continue
                     if not binding.description or not isinstance(binding.parameters, dict):
                         raise ValueError("missing skill tool description/schema")
-                    selected.append(replace(binding, scopes=frozenset(allowed)))
+                    selected.append(replace(
+                        binding, scopes=frozenset(allowed),
+                        visibility="core" if manifest.core_tool else "deferred",
+                        discovery_terms=manifest.keywords))
                 if not selected:
                     raise ValueError("no tools permitted by skill policy")
                 registry.register_many(selected)

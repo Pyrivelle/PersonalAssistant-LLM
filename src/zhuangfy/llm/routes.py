@@ -35,12 +35,15 @@ class ModelCandidate:
     model: str
     enabled: bool = True
     thinking: str = "auto"
+    planner_format: str = "auto"  # auto/prompt/json_object/json_schema
 
     def validated(self) -> "ModelCandidate":
         if not IDENTIFIER.fullmatch(self.id):
             raise ValueError("模型候选 ID 必须是小写英文字母、数字或下划线")
         if type(self.enabled) is not bool:
             raise ValueError("模型候选的启用设置须为布尔值")
+        if self.planner_format not in {"auto", "prompt", "json_object", "json_schema"}:
+            raise ValueError("Planner structured format invalid")
         if self.thinking not in {"auto", "enabled", "disabled"}:
             raise ValueError("模型候选的思考设置无效")
         normalized = LlmSettings(self.provider, self.base_url, self.model).validated()
@@ -122,7 +125,8 @@ def _read_policy(raw: object, stage: str) -> StagePolicy:
             raise ValueError("候选模型字段格式错误")
         candidates.append(ModelCandidate(
             item["id"], item["provider"], item["base_url"], item["model"],
-            item.get("enabled", True), item.get("thinking", "auto")).validated())
+            item.get("enabled", True), item.get("thinking", "auto"),
+            item.get("planner_format", "auto")).validated())
     fallback = getattr(ModelRoutes(), stage)
     kwargs = {field: raw.get(field, getattr(fallback, field))
               for field in ("retries", "retry_delay", "timeout", "total_timeout")}
@@ -147,7 +151,8 @@ def save_routes(config: ModelRoutes, path: Path = ROUTES_FILE) -> None:
         policy = config.for_stage(stage)
         raw[stage] = {
             "candidates": [dict(id=item.id, provider=item.provider, base_url=item.base_url,
-                                model=item.model, enabled=item.enabled, thinking=item.thinking)
+                                model=item.model, enabled=item.enabled, thinking=item.thinking,
+                                planner_format=item.planner_format)
                            for item in policy.candidates],
             "retries": policy.retries,
             "retry_delay": policy.retry_delay,
@@ -283,6 +288,7 @@ def invoke_stage(
     on_attempt: Callable[[str, int, str], None] | None = None,
     response_validator: Callable[[str], bool] | None = None,
     image_data_url: str | None = None,
+    planner_schema: dict | None = None,
 ) -> str:
     """Try the stage's ordered endpoints. Only retries generation, never delivery.
 
@@ -290,6 +296,8 @@ def invoke_stage(
     fails, raise ModelRoutesFailed; callers decide whether to show an error or
     (for Planner only) proceed with a default plan.
     """
+    if planner_schema is not None and (stage != "planner" or not isinstance(planner_schema, dict)):
+        raise ValueError("Structured schema only allowed for Planner")
     if stage not in STAGES:
         raise ValueError("未知模型阶段")
     if (stage == "vision") != (image_data_url is not None):
@@ -331,8 +339,23 @@ def invoke_stage(
                     emotion_context=emotion_context, context_notes=context_notes,
                     timeout=timeout, stage=label,
                     **({"thinking": item.thinking} if item.thinking != "auto" else {}),
-                    **({"force_json": True} if stage == "planner" and candidate_index > 0
-                       and selected_settings.provider == "siliconflow" else {}),
+                    **({"force_json": True} if stage == "planner"
+                       and item.planner_format != "prompt" and (
+                           planner_schema is not None and (
+                               item.planner_format == "json_object"
+                               or (item.planner_format == "auto" and
+                                   selected_settings.provider == "siliconflow"))
+                           or planner_schema is None and candidate_index > 0
+                           and selected_settings.provider == "siliconflow") else {}),
+                    **({"structured_format": {
+                        "type": "json_schema",
+                        "json_schema": {"name": "planner_decision_v3",
+                                        "strict": True, "schema": planner_schema},
+                    }} if stage == "planner" and planner_schema is not None
+                    and item.planner_format == "json_schema" else
+                    {"structured_format": {"type": "json_object"}}
+                    if stage == "planner" and planner_schema is not None
+                    and item.planner_format == "json_object" else {}),
                     **({"visual_context": visual_context} if visual_context else {}),
                     **({"image_data_url": image_data_url} if image_data_url is not None else {}))
                 if response_validator is not None and not response_validator(result):
@@ -356,7 +379,17 @@ def invoke_stage(
                                 emotion_context=emotion_context,
                                 context_notes=context_notes,
                                 timeout=min(float(policy.timeout), remaining), stage=label,
-                                force_json=selected_settings.provider == "siliconflow",
+                                force_json=selected_settings.provider == "siliconflow"
+                                and item.planner_format != "prompt",
+                                **({"structured_format": {
+                                    "type": "json_schema",
+                                    "json_schema": {"name": "planner_decision_v3",
+                                                    "strict": True, "schema": planner_schema},
+                                }} if planner_schema is not None
+                                and item.planner_format == "json_schema" else
+                                {"structured_format": {"type": "json_object"}}
+                                if planner_schema is not None and
+                                item.planner_format == "json_object" else {}),
                                 **({"thinking": item.thinking} if item.thinking != "auto" else {}),
                                 **({"visual_context": visual_context} if visual_context else {}))
                             if response_validator(repaired):

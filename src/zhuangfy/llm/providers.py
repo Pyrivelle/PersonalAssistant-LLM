@@ -214,7 +214,7 @@ def _read_completion_stream(response) -> tuple[str, str]:
     return "".join(content_parts), "".join(reasoning_parts)
 
 
-def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", visual_context: str = "", timeout: float = 60, stage: str = "回复", image_data_url: str | None = None, force_json: bool = False, thinking: str = "auto") -> str:
+def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_text: str, *, memories: list[dict] | None = None, emotion_context: str = "", context_notes: str = "", visual_context: str = "", timeout: float = 60, stage: str = "回复", image_data_url: str | None = None, force_json: bool = False, thinking: str = "auto", structured_format: dict | None = None) -> str:
     settings = settings.validated()
     if thinking not in {"auto", "enabled", "disabled"}:
         raise ValueError("无效的模型思考设置")
@@ -278,7 +278,19 @@ def chat(settings: LlmSettings, key: str, history: list[dict[str, str]], user_te
             request_body["thinking"] = {"type": thinking}
         else:
             request_body["enable_thinking"] = thinking == "enabled"
-    if force_json and settings.provider == "siliconflow":
+    if structured_format is not None:
+        if (stage != "思考" or not isinstance(structured_format, dict) or
+                structured_format.get("type") not in {"json_object", "json_schema"}):
+            raise ValueError("Invalid Planner response format")
+        if structured_format["type"] == "json_schema":
+            wrapped = structured_format.get("json_schema")
+            if (not isinstance(wrapped, dict) or
+                    wrapped.get("name") != "planner_decision_v3" or
+                    wrapped.get("strict") is not True or
+                    not isinstance(wrapped.get("schema"), dict)):
+                raise ValueError("Invalid Planner JSON schema")
+        request_body["response_format"] = structured_format
+    elif force_json and settings.provider == "siliconflow":
         request_body["response_format"] = {"type": "json_object"}
     payload = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "text/event-stream" if stream else "application/json"}
