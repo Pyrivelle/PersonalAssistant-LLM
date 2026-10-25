@@ -49,6 +49,6 @@ python scripts/chat_engine.py run --engine zhuangfy
 python scripts/chat_engine.py run --engine maibot --confirm-exclusive-channel
 ```
 
-第三种 `hybrid` 已建立只读 QQ/Persona/PersonID/Memory 共享上下文契约，**原生 Maisaka 的运行时桥接尚未完成，因此故意禁止启动**，不会悄悄退化成 ZhuangFY 并冒充融合成功。
+第三种 `hybrid` 已提供**单 QQ 白名单测试账号、需显式确认的原生 Maisaka 私聊实验入口**，支持上游 Planner–Reply–Wait 和原版 ImageManager；尚未通过真实 QQ/模型联调，因此不允许设为默认，也不会悄悄退化为 ZhuangFY。
 
 具体依赖、独立配置和安全边界见 [Maisaka 双引擎实验说明](docs/maisaka-native-transplant.md)。
