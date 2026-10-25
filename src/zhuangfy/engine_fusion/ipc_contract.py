@@ -16,7 +16,7 @@ MAX_WIRE_BYTES = 20_000
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 CONVERSATION_RE = re.compile(r"^qq:([1-9][0-9]*):private:([1-9][0-9]*)$")
 KINDS = frozenset({"hello", "ingress", "cancel", "delivery_ack", "shutdown"})
-RESULT_KINDS = frozenset({"hello_ack", "unavailable", "cancel_ack", "ack_result", "error", "bye"})
+RESULT_KINDS = frozenset({"hello_ack", "accepted", "unavailable", "cancel_ack", "ack_result", "error", "bye"})
 
 
 class ProtocolError(ValueError):
@@ -121,7 +121,9 @@ class Envelope:
             _id(p["reply_id"], "reply id")
             if type(p["delivered"]) is not bool:
                 raise ProtocolError("invalid delivered flag")
-            if not isinstance(p["platform_message_id"], str):
+            if (not isinstance(p["platform_message_id"], str)
+                    or len(p["platform_message_id"]) > 128
+                    or (p["delivered"] and not p["platform_message_id"])):
                 raise ProtocolError("invalid platform message id")
         elif self.kind == "hello":
             if set(p) != {"upstream_sha"} or not isinstance(p["upstream_sha"], str):
