@@ -55,3 +55,7 @@ storage_migration_result.json
 
 # Isolated native MaiBot experimental instance (may contain keys, chat and media)
 .maisaka-experiment/
+
+# Local engine selection and cross-engine launcher lock
+chat_engine_settings.json
+.chat_engine_switch.lock
