@@ -48,10 +48,17 @@ def stage_image(instance: Path, raw: bytes) -> str:
     folder = staging_dir(instance)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / (asset_id + ".bin")
+    if path.is_symlink():
+        raise ValueError("image stage symlink forbidden")
     if path.exists():
         # Existing file is never blindly trusted; heal corrupted stage content.
-        if validate_image(path.read_bytes()) == digest:
-            return asset_id
+        try:
+            with path.open("rb") as handle:
+                previous = handle.read(MAX_IMAGE_BYTES + 1)
+            if validate_image(previous) == digest:
+                return asset_id
+        except ValueError:
+            pass
     temp = folder / ("." + uuid.uuid4().hex + ".tmp")
     try:
         with temp.open("xb") as handle:
