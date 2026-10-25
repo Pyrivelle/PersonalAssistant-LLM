@@ -33,6 +33,10 @@ class NativeMaisakaAdapter:
             raise RuntimeError(
                 "Hybrid must disable upstream maim_message to prevent a second QQ channel"
             )
+        if global_config.experimental.passive_replyer:
+            raise RuntimeError(
+                "Hybrid reply/wait/stop pilot requires Maisaka passive_replyer=false"
+            )
         from src.main import MainSystem
         from src.services import send_service
         from src.maisaka.runtime import MaisakaHeartFlowChatting
