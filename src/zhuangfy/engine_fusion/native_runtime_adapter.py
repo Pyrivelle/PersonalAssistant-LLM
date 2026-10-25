@@ -22,6 +22,8 @@ class NativeMaisakaAdapter:
         self.runtime = None
         self.conversation_id: str | None = None
         self._original_platform_send = None
+        self._original_register_tools = None
+        self._original_list_tools = None
         self._seen: set[str] = set()
         self._active_event_id = ""
 
@@ -39,6 +41,29 @@ class NativeMaisakaAdapter:
             raise RuntimeError("pinned Maisaka wait/timer API unavailable")
         await (system := MainSystem()).initialize()
         self.system = system
+        # Native Planner/Wait/Reply are retained; all other upstream tool
+        # providers must stay behind ZhuangFY's host authorization boundary.
+        from src.maisaka.builtin_tool.provider import MaisakaBuiltinToolProvider
+        SAFE_TOOLS = frozenset({"reply", "wait", "stop"})
+        self._original_register_tools = MaisakaHeartFlowChatting._register_tool_providers
+        self._original_list_tools = MaisakaBuiltinToolProvider.list_tools
+
+        def register_safe_tools(runtime):
+            handlers = runtime._reasoning_engine.build_builtin_tool_handlers()
+            safe = {name: handler for name, handler in handlers.items()
+                    if name in SAFE_TOOLS}
+            if set(safe) != SAFE_TOOLS:
+                raise RuntimeError("pinned upstream reply/wait/stop tools missing")
+            runtime._tool_registry.register_provider(MaisakaBuiltinToolProvider(safe))
+            runtime._chat_loop_service.set_tool_registry(runtime._tool_registry)
+
+        original_list_tools = self._original_list_tools
+        async def safe_list_tools(provider, context=None):
+            specs = await original_list_tools(provider, context)
+            return [spec for spec in specs if spec.name in SAFE_TOOLS]
+
+        MaisakaHeartFlowChatting._register_tool_providers = register_safe_tools
+        MaisakaBuiltinToolProvider.list_tools = safe_list_tools
         self._original_platform_send = send_service._send_via_platform_io
         send_service._send_via_platform_io = self._send_by_zhuangfy
 
@@ -140,3 +165,11 @@ class NativeMaisakaAdapter:
             from src.services import send_service
             send_service._send_via_platform_io = self._original_platform_send
             self._original_platform_send = None
+        if self._original_register_tools is not None:
+            from src.maisaka.runtime import MaisakaHeartFlowChatting
+            MaisakaHeartFlowChatting._register_tool_providers = self._original_register_tools
+            self._original_register_tools = None
+        if self._original_list_tools is not None:
+            from src.maisaka.builtin_tool.provider import MaisakaBuiltinToolProvider
+            MaisakaBuiltinToolProvider.list_tools = self._original_list_tools
+            self._original_list_tools = None
