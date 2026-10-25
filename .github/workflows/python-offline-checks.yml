@@ -230,4 +230,4 @@ jobs:
           PYTHONPATH: src
         run: |
           python -m compileall -q scripts/chat_engine.py scripts/maisaka_native_experiment.py src/zhuangfy/engine_fusion
-          python -m unittest -v tests.unit.test_chat_engine_switch tests.unit.test_maisaka_native_experiment tests.unit.test_shared_engine_context
+          python -m unittest -v tests.unit.test_chat_engine_switch tests.unit.test_maisaka_native_experiment tests.unit.test_shared_engine_context tests.unit.test_hybrid_ipc
