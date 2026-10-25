@@ -8,6 +8,7 @@ Do not use with production data until the local end-to-end checklist passes.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import asyncio
 import os
 from pathlib import Path
@@ -22,6 +23,10 @@ from zhuangfy.engine_fusion.shared_context import (
     SharedContextProvider, VerifiedPrivateQQ, VerifiedQQMemoryIdentity,
 )
 from zhuangfy.engine_fusion.native_transport import NativeMaisakaClient
+from zhuangfy.channels.qq.images import ImageReference, original_image_bytes
+from zhuangfy.evidence_store import EvidenceStore
+from zhuangfy.image_meaning import ImageMeaningStore, explicit_image_meaning
+from zhuangfy.paths import Paths
 
 SOURCE = Path(__file__).resolve().parents[1] / "third_party" / "MaiBot"
 INSTANCE = Path(__file__).resolve().parents[1] / ".maisaka-hybrid-preview"
@@ -55,6 +60,20 @@ class HybridQQBridge(QqBridge):
         # Maisaka may continue to plan after wait, but ZhuangFY's separate
         # proactive campaign must not run concurrently with that same identity.
         return
+
+    async def _original_image(self, reference: ImageReference) -> bytes:
+        """Use ZhuangFY's QQ-authorized URL resolution, without JPEG conversion."""
+        url = reference.url
+        if reference.file:
+            try:
+                info = await self.action("get_image", {"file": reference.file})
+                url = str(info.get("url") or info.get("file") or url)
+            except (OSError, RuntimeError, asyncio.TimeoutError):
+                if not url:
+                    raise
+        if not url and reference.file.startswith(("http://", "https://")):
+            url = reference.file
+        return await asyncio.to_thread(original_image_bytes, url)
 
     async def _qq_delivery(self, conversation_id: str,
                            reply_id: str, text: str) -> str:
@@ -149,13 +168,20 @@ class HybridQQBridge(QqBridge):
                 if client:
                     await client.close()
                 continue
+            if not (text.strip() or images) or not self.bot_id:
+                continue
+            # Original bytes, not legacy JPEG VLM input. Fetch before native
+            # ingress; a download/validation failure is a rejected input.
+            image_bytes = []
             if images:
-                # Never pretend the text-only native path recognized the image.
-                log_event("Hybrid", "图片暂缓",
-                          "原版 ImageManager 尚未完成 AssetID→图像字节接入，拒绝吞图")
-                continue
-            if not text.strip() or not self.bot_id:
-                continue
+                try:
+                    if len(images) > 2:
+                        raise ValueError("too many images")
+                    image_bytes = [await self._original_image(ref) for ref in images]
+                except (OSError, ValueError, RuntimeError) as error:
+                    log_event("Hybrid", "原图接入失败",
+                              f"{incoming.scope} · {type(error).__name__}")
+                    continue
             scope = f"qq:{self.bot_id}:private:{incoming.user_id}"
             try:
                 person_source = (
@@ -181,10 +207,45 @@ class HybridQQBridge(QqBridge):
                 client = await self._client(scope)
                 # The native worker now owns reply->wait->timer->Planner cycles.
                 # Ingress acceptance is NOT counted as delivery.
-                await client.submit(
+                # QQ message IDs may be negative; the IPC requires a stable
+                # canonical ID and must never derive identity from message text.
+                original_id = str(events[-1])
+                message_key = "m_" + hashlib.sha256(
+                    (scope + ":" + original_id).encode("utf-8")).hexdigest()
+                result = await client.submit(
                     context, event_id=uuid.uuid4().hex,
-                    message_id=events[-1], text=text[:3500],
+                    message_id=message_key, text=text[:3500],
+                    images=image_bytes,
                 )
+                # Persist native VLM observations as input evidence associated
+                # with this verified QQ message; not a synthetic user turn.
+                if image_bytes:
+                    evidence_root = Paths.current().project_data_root / "evidence"
+                    ev = EvidenceStore(evidence_root / "context.sqlite3")
+                    meanings = ImageMeaningStore(
+                        evidence_root / "image_meanings.sqlite3")
+                    for item in result.payload.get("observations", []):
+                        asset_id = item["asset_id"]
+                        digest = asset_id.removeprefix("img_")
+                        meanings.record_image(
+                            scope, str(incoming.user_id), message_key, digest)
+                        if item["description_ready"]:
+                            ev.save(scope, message_key, "vision",
+                                    item["description"][:900])
+                        log_event("Hybrid", "Maisaka识图",
+                                  f"{scope} · {digest[:12]} · "
+                                  f"缓存={'命中' if item['cache_hit'] else '新识别'} · "
+                                  f"描述={'可用' if item['description_ready'] else '未生成'}")
+                else:
+                    explanation = explicit_image_meaning(text)
+                    if explanation:
+                        evidence_root = Paths.current().project_data_root / "evidence"
+                        meanings = ImageMeaningStore(
+                            evidence_root / "image_meanings.sqlite3")
+                        digest = meanings.latest_unambiguous(
+                            scope, str(incoming.user_id))
+                        if digest:
+                            meanings.save(scope, digest, explanation, message_key)
             except (RuntimeError, ValueError, PermissionError, OSError) as exc:
                 log_event("Hybrid", "原生会话失败", f"{scope} · {type(exc).__name__}")
 
