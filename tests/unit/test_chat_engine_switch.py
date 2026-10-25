@@ -49,7 +49,7 @@ class ChatEngineSwitchTests(unittest.TestCase):
 
     def test_hybrid_is_reserved_but_cannot_silently_run_legacy(self):
         with tempfile.TemporaryDirectory() as folder:
-            with self.assertRaisesRegex(RuntimeError, "未实现真正的"):
+            with self.assertRaisesRegex(RuntimeError, "尚未通过真实 QQ 验收"):
                 launcher.build_command("hybrid", root=Path(folder))
             config = Path(folder) / "engine.json"
             with patch.object(launcher, "CONFIG", config):
@@ -57,6 +57,21 @@ class ChatEngineSwitchTests(unittest.TestCase):
                     launcher.main(["set-default", "--engine", "hybrid"])
                 self.assertEqual(raised.exception.code, 2)
                 self.assertFalse(config.exists())
+
+    def test_hybrid_requires_both_explicit_preview_and_channel_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "SenseVoice").mkdir()
+            (root / "SenseVoice" / "hybrid_qq_bridge.py").write_text("# test", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                launcher.build_command("hybrid", root=root, confirmed=True)
+            with self.assertRaises(RuntimeError):
+                launcher.build_command("hybrid", root=root, hybrid_preview=True)
+            command = launcher.build_command(
+                "hybrid", root=root, confirmed=True,
+                hybrid_preview=True, python=Path(sys.executable))
+            self.assertEqual(command[-1], "--confirm-experimental-hybrid")
+            self.assertEqual(Path(command[1]), root / "SenseVoice" / "hybrid_qq_bridge.py")
 
     def test_maibot_launch_requires_separate_python(self):
         with tempfile.TemporaryDirectory() as folder:
