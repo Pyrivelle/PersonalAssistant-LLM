@@ -16,7 +16,7 @@ MAX_WIRE_BYTES = 20_000
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 CONVERSATION_RE = re.compile(r"^qq:([1-9][0-9]*):private:([1-9][0-9]*)$")
 KINDS = frozenset({"hello", "ingress", "cancel", "delivery_ack", "shutdown"})
-RESULT_KINDS = frozenset({"hello_ack", "accepted", "unavailable", "cancel_ack", "ack_result", "error", "bye"})
+RESULT_KINDS = frozenset({"hello_ack", "accepted", "outbound", "unavailable", "cancel_ack", "ack_result", "error", "bye"})
 
 
 class ProtocolError(ValueError):
@@ -111,6 +111,20 @@ class Envelope:
             bot = CONVERSATION_RE.fullmatch(self.conversation_id).group(1)
             if context["qq_channel_id"] != f"qq:{bot}":
                 raise ProtocolError("cross-channel context")
+        elif self.kind == "outbound":
+            if set(p) != {"reply_id", "text", "cause_event_id"}:
+                raise ProtocolError("invalid native outbound fields")
+            _id(p["reply_id"], "native reply id")
+            _id(p["cause_event_id"], "cause event id")
+            if (not isinstance(p["text"], str) or
+                    not 0 < len(p["text"]) <= 3500):
+                raise ProtocolError("invalid native reply text")
+        elif self.kind == "accepted":
+            if set(p) != {"message_id", "native_runtime"}:
+                raise ProtocolError("invalid native acceptance")
+            _id(p["message_id"], "accepted message id")
+            if p["native_runtime"] is not True:
+                raise ProtocolError("cannot claim native acceptance without runtime")
         elif self.kind == "cancel":
             if set(p) != {"target_request_id"}:
                 raise ProtocolError("invalid cancel")
