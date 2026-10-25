@@ -36,7 +36,6 @@ class NativeMaisakaClient:
     @classmethod
     async def launch(cls, delivery: DeliverToQQ, *, source: Path, instance: Path,
                      python: Path, handshake_timeout: float = 120) -> "NativeMaisakaClient":
-        from .ipc_contract import ProtocolError
         if (not source.is_dir() or not instance.is_dir()
                 or not (source / "src/maisaka/runtime.py").is_file()
                 or not (instance / "config/bot_config.toml").is_file()
@@ -46,8 +45,11 @@ class NativeMaisakaClient:
         if not 5 <= handshake_timeout <= 180:
             raise ValueError("invalid initialization timeout")
         # Verify the exact submodule revision. No implicit upstream updates.
-        from scripts.maisaka_native_experiment import verify_source
-        verify_source(source)
+        import subprocess
+        git = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        if git.stdout.strip() != UPSTREAM_SHA:
+            raise HybridTransportUnavailable("pinned Maisaka submodule SHA drift")
         env = os.environ.copy()
         env["MAIBOT_INSTANCE_DIR"] = str(instance.resolve())
         env["ZHUANGFY_MAIBOT_SOURCE"] = str(source.resolve())
