@@ -25,6 +25,7 @@ class NativeMaisakaAdapter:
         self._original_register_tools = None
         self._original_list_tools = None
         self._seen: set[str] = set()
+        self._wait_count = 0
         self._active_event_id = ""
 
     async def initialize(self) -> None:
@@ -58,6 +59,20 @@ class NativeMaisakaAdapter:
                     if name in SAFE_TOOLS}
             if set(safe) != SAFE_TOOLS:
                 raise RuntimeError("pinned upstream reply/wait/stop tools missing")
+            from src.core.tooling import ToolExecutionResult
+            original_wait = safe["wait"]
+
+            async def bounded_native_wait(invocation, context=None):
+                raw_seconds = invocation.arguments.get("seconds")
+                if (type(raw_seconds) is not int or not 10 <= raw_seconds <= 1800
+                        or self._wait_count >= 12):
+                    return ToolExecutionResult(
+                        tool_name="wait", success=False,
+                        error_message="Hybrid 等待超出安全预算；请选择 stop 或正常回复。")
+                self._wait_count += 1
+                return await original_wait(invocation, context)
+
+            safe["wait"] = bounded_native_wait
             runtime._tool_registry.register_provider(MaisakaBuiltinToolProvider(safe))
             runtime._chat_loop_service.set_tool_registry(runtime._tool_registry)
 
@@ -116,6 +131,7 @@ class NativeMaisakaAdapter:
             raise PermissionError("native process is bound to another verified QQ user")
         if message_id in self._seen:
             return
+        self._wait_count = 0
         if len(self._seen) > 5000:
             raise RuntimeError("native session replay cache full; restart session")
         _, bot, _, user = conversation_id.split(":")
