@@ -69,8 +69,10 @@ class ChatEngineSwitchTests(unittest.TestCase):
                 launcher.build_command("hybrid", root=root, hybrid_preview=True)
             command = launcher.build_command(
                 "hybrid", root=root, confirmed=True,
-                hybrid_preview=True, python=Path(sys.executable))
-            self.assertEqual(command[-1], "--confirm-experimental-hybrid")
+                hybrid_preview=True, hybrid_user_id="123456",
+                python=Path(sys.executable))
+            self.assertEqual(command[-3:],
+                             ["--confirm-experimental-hybrid", "--user-id", "123456"])
             self.assertEqual(Path(command[1]), root / "SenseVoice" / "hybrid_qq_bridge.py")
 
     def test_maibot_launch_requires_separate_python(self):
