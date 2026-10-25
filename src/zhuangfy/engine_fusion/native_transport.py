@@ -70,6 +70,7 @@ class NativeMaisakaClient:
                     or hello.payload.get("upstream_sha") != UPSTREAM_SHA):
                 raise HybridTransportUnavailable("native Maisaka startup not ready")
             client.ready = True
+            client.image_instance = instance
             return client
         except BaseException:
             await client.close()
@@ -143,21 +144,50 @@ class NativeMaisakaClient:
              "delivered": bool(platform_id), "platform_message_id": platform_id},
         ))
 
-    async def submit(self, context, *, event_id: str, message_id: str, text: str) -> Envelope:
+    async def submit(self, context, *, event_id: str, message_id: str,
+                     text: str = "", images: list[bytes] | None = None) -> Envelope:
+        """Transfer original image bytes by authenticated SHA asset IDs.
+
+        No paths, URLs, base64 blobs or secret-bearing config cross JSONL.
+        The worker rechecks the digest before handing bytes to ImageManager.
+        """
         if not self.ready:
             raise HybridTransportUnavailable("native worker not ready")
         if self.conversation and context.conversation_id != self.conversation:
             raise PermissionError("worker already bound to another QQ person")
-        if not isinstance(text, str) or not 0 < len(text) <= 3500:
-            raise ValueError("native Planner currently supports text only")
-        self.conversation = context.conversation_id
-        request = inbound_from_host(
-            context, event_id=event_id, message_id=message_id,
-            components=[{"id":"text-1", "type":"text", "content":text}])
-        result = await self.request(request, timeout=30)
-        if result.kind != "accepted" or result.payload.get("native_runtime") is not True:
-            raise HybridTransportUnavailable("native Maisaka did not accept the QQ turn")
-        return result
+        if not isinstance(text, str) or len(text) > 3500:
+            raise ValueError("invalid native message text")
+        if images is None:
+            images = []
+        if not isinstance(images, list) or len(images) > 2 or not text.strip() and not images:
+            raise ValueError("native message needs text or up to two images")
+        from .image_assets import stage_image, discard_staged_image
+        components = []
+        staged = []
+        try:
+            if text.strip():
+                components.append({"id":"text-1", "type":"text", "content":text})
+            for index, raw in enumerate(images):
+                asset_id = stage_image(self.image_instance, raw)
+                staged.append(asset_id)
+                components.append({"id":f"image-{index}", "type":"image",
+                                   "asset_id":asset_id})
+            envelope = inbound_from_host(
+                context, event_id=event_id, message_id=message_id,
+                components=components)
+            self.conversation = context.conversation_id
+            result = await self.request(
+                envelope, timeout=150 if images else 30)
+            if result.kind != "accepted" or result.payload.get("native_runtime") is not True:
+                raise HybridTransportUnavailable(
+                    "native Maisaka did not accept and process the QQ turn")
+            if len(result.payload.get("observations", [])) != len(images):
+                raise HybridTransportUnavailable(
+                    "native ImageManager observation count mismatch")
+            return result
+        finally:
+            for asset_id in staged:
+                discard_staged_image(self.image_instance, asset_id)
 
     async def cancel(self, *, target_request_id: str) -> None:
         if not self.conversation:
