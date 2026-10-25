@@ -37,7 +37,7 @@
 
 M1/M2 目前只是独立运行的记忆内核，不会自动采集 QQ/桌面聊天，也尚未把提炼结果投影到 Qdrant；实际接入须另行完成身份验证、授权、模型路由和跨进程协调。
 
-## 实验性双引擎启动（PR #54，仅实验分支）
+## 实验性双引擎启动与第三融合引擎规划（PR #54，仅实验分支）
 
 项目保留 ZhuangFY 自有引擎，同时提供原版 MaiBot/ Maisaka 独立引擎；
 **目前按启动进程二选一，角色记忆和配置尚不共享**。
@@ -48,5 +48,7 @@ python scripts/chat_engine.py run --engine zhuangfy
 # 停止 ZhuangFY QQ Bridge 后；需配置 MaiBot 独立环境
 python scripts/chat_engine.py run --engine maibot --confirm-exclusive-channel
 ```
+
+第三种 `hybrid` 已建立只读 QQ/Persona/PersonID/Memory 共享上下文契约，**原生 Maisaka 的运行时桥接尚未完成，因此故意禁止启动**，不会悄悄退化成 ZhuangFY 并冒充融合成功。
 
 具体依赖、独立配置和安全边界见 [Maisaka 双引擎实验说明](docs/maisaka-native-transplant.md)。
