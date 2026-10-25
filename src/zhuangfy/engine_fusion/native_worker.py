@@ -24,7 +24,7 @@ class NativeWorker:
         self.input = source or sys.stdin.buffer
         self.output = sink or sys.stdout.buffer
         self.writer_lock = asyncio.Lock()
-        self.pending_delivery: dict[str, asyncio.Future[str]] = {}
+        self.pending_delivery: dict[str, tuple[str, asyncio.Future[str]]] = {}
         self.adapter = NativeMaisakaAdapter(self.deliver)
         self.ready = False
         self.stopped = False
@@ -41,7 +41,7 @@ class NativeWorker:
             return ""
         request_id = uuid4().hex
         future = asyncio.get_running_loop().create_future()
-        self.pending_delivery[request_id] = future
+        self.pending_delivery[request_id] = (reply_id, future)
         try:
             await self.emit(Envelope("outbound", request_id, self.conversation, {
                 "reply_id": reply_id, "text": text,
@@ -80,12 +80,14 @@ class NativeWorker:
                                      {"reason": "native_not_ready"}))
             return
         if event.kind == "delivery_ack":
-            promise = self.pending_delivery.get(event.request_id)
-            if promise is not None and not promise.done() and event.conversation_id == self.conversation:
-                if event.payload["delivered"]:
-                    promise.set_result(event.payload["platform_message_id"])
-                else:
-                    promise.set_result("")
+            match = self.pending_delivery.get(event.request_id)
+            if match is not None:
+                reply_id, promise = match
+                if (not promise.done() and event.conversation_id == self.conversation
+                        and event.payload["reply_id"] == reply_id):
+                    promise.set_result(
+                        event.payload["platform_message_id"] if event.payload["delivered"] else ""
+                    )
             return
         if event.kind == "ingress":
             if self.conversation and self.conversation != event.conversation_id:
@@ -122,7 +124,7 @@ class NativeWorker:
             return
         if event.kind == "cancel":
             await self.adapter.cancel()
-            for future in self.pending_delivery.values():
+            for _reply_id, future in self.pending_delivery.values():
                 if not future.done():
                     future.set_result("")
             self.pending_delivery.clear()
@@ -154,7 +156,7 @@ class NativeWorker:
                 await self.handle(event)
             return 0
         finally:
-            for fut in self.pending_delivery.values():
+            for _reply_id, fut in self.pending_delivery.values():
                 if not fut.done():
                     fut.set_result("")
             await self.adapter.shutdown()
