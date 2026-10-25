@@ -52,6 +52,45 @@ Vision Manager，而不是 ZhuangFY 自行仿写的循环。启动器要求不�
 不会读取或写入 ZhuangFY 的长期记忆。检查脚本要求本地子模块精确位于上述
 revision，防止实验结果受上游更新影响。
 
+## 三引擎战略：ZhuangFY 逐步吸收 Maisaka
+
+> 这一节是 **当前 PR 内新的设计与共享上下文契约**，不是已成功启动的完整融合引擎。
+
+| 模式 | QQ 传输 | Planner/Vision | PersonID/长期记忆 | 当前可运行 |
+| --- | --- | --- | --- | --- |
+| zhuangfy | ZhuangFY OneBot | ZhuangFY | 原有 ZhuangFY 服务 | 原有方式 |
+| maibot | MaiBot 原生通道 | MaiBot 原生 | MaiBot 独立存储 | 原生独立实例（需配置） |
+| hybrid | **计划由 ZhuangFY QQ Bridge 持有** | **计划经适配器调用 Maisaka** | **计划统一用 ZhuangFY 已核验的身份、授权和记忆服务** | **未接通；启动器明确拒绝，以免误认为已经融合** |
+
+`scripts/chat_engine.py status --engine hybrid` 可显示第三模式候选，
+但不允许设为默认或运行；等待真正的桥接实现后才解锁。
+**保持原 ZhuangFY 引擎、原版 MaiBot 引擎的启动路径不变。**
+
+### 已建立的共享契约
+
+`src/zhuangfy/engine_fusion/shared_context.py` 增加了只读投影：
+
+- `VerifiedPrivateQQ`：QQ bot ID 与 QQ user ID 必须由可信通道确认，不能使用模型或昵称推测；
+- `SharedContextProvider`：由宿主注入已经通过 `QqSettings` 验证的准入政策、当前 `LlmSettings.system_prompt`、现有 `IdentityRepository` 和 `MemoryClient`；
+- `SharedConversationContext`：含统一 `qq:<bot>:private:<user>` 对话 ID、PersonID、Persona、注明低信任的长期记忆摘要；
+- 长期记忆检索必须使用已经核验的 QQ 身份与 `timeline` 授权，走既有 loopback Memory Service；**不让 Maisaka 绕过服务直接读取或写入 SQLite**，不向子引擎共享 admin token。
+
+这份契约让将来的三套引擎可以使用相同的**逻辑事实来源**，
+并不意味着未经改造的 MaiBot 现在已经能够调用它。
+真正的 MaiBot adapter、QQ event / ACK / deletion 双向同步仍需实现。
+
+### 数据与能力的归属
+
+- **QQ 配置**：ZhuangFY `QqSettings` 是 Hybrid 的唯一可信来源；独立原生 MaiBot 现阶段仍使用它自己的通道配置，不能机械复制 OneBot WS URL 作为 MaiBot 协议参数。
+- **人物画像**：ZhuangFY `LlmSettings.system_prompt` 是 Hybrid 的权威来源；用户自己编辑的设定不被上游 MaiBot 默认人格覆盖。导出时需明确区分人格指导和低信任历史资料。
+- **PersonID**：只经现有已验证 `ChannelIdentity` 映射读取；未关联则返回空，不按昵称建人。
+- **长期记忆**：同一 `MemoryClient`、同一已核验的 QQ channel key 检索，遵循既有撤回及 `/forget_me` 机制；记忆内容不是指令。
+- **Vision**：未来按 `MessageComponent / Observation / AssetID` 将图像转交 Maisaka，结果写回同一 ZhuangFY 用户消息，而不是新建用户发言。
+
+下一阶段必须实现`Hybrid QQ Host → native Maisaka subprocess` 的带会话 ID、
+event ID、ACK 结果、超时/取消及幂等控制的 IPC 连接，然后接通
+共享 Context 与删除联动；在此之前 Hybrid 严禁冒充已启用。
+
 ## 双引擎版本选择（本 PR 新增）
 
 我们**保留 ZhuangFY 原有引擎**，MaiBot 作为另外一套实验引擎。
