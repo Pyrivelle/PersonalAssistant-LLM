@@ -94,23 +94,33 @@ class NativeWorker:
                 await self.emit(Envelope("error", event.request_id, event.conversation_id,
                                          {"reason": "cross_conversation_denied"}))
                 return
-            # This stage intentionally accepts ONLY text. ImageManager wiring
-            # follows via explicit asset bytes retrieval; never drop an image.
             components = event.payload["components"]
-            if any(part["type"] != "text" for part in components):
+            asset_ids = [part["asset_id"] for part in components
+                         if part["type"] == "image"]
+            if len(asset_ids) > 2:
                 await self.emit(Envelope("unavailable", event.request_id, event.conversation_id, {
-                    "reason": "native_image_asset_fetch_not_connected",
-                    "delivered": False,
+                    "reason": "too_many_images", "delivered": False,
+                }))
+                return
+            try:
+                from zhuangfy.engine_fusion.image_assets import load_staged_image
+                instance = Path(os.environ["MAIBOT_INSTANCE_DIR"])
+                images = [(asset_id, load_staged_image(instance, asset_id))
+                          for asset_id in asset_ids]
+            except (OSError, ValueError, KeyError) as error:
+                await self.emit(Envelope("unavailable", event.request_id, event.conversation_id, {
+                    "reason": "image_asset_unavailable_or_invalid", "delivered": False,
                 }))
                 return
             self.conversation = event.conversation_id
             p = event.payload
             ctx = p["context"]
             try:
-                await self.adapter.receive(
+                observations = await self.adapter.receive(
                     event.request_id, p["message_id"], event.conversation_id,
-                    "\n".join(part["content"] for part in components),
-                    ctx["persona"], ctx["memory_context"],
+                    "\n".join(part["content"] for part in components
+                              if part["type"] == "text"),
+                    ctx["persona"], ctx["memory_context"], images=images,
                 )
             except Exception as exc:
                 await self.emit(Envelope("error", event.request_id, event.conversation_id, {
@@ -120,6 +130,7 @@ class NativeWorker:
                 return
             await self.emit(Envelope("accepted", event.request_id, event.conversation_id, {
                 "message_id": p["message_id"], "native_runtime": True,
+                "observations": observations or [],
             }))
             return
         if event.kind == "cancel":
