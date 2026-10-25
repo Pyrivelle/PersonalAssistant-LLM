@@ -1,0 +1,3 @@
+[submodule "third_party/MaiBot"]
+	path = third_party/MaiBot
+	url = https://github.com/Mai-with-u/MaiBot.git

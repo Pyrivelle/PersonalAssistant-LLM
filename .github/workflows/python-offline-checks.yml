@@ -217,3 +217,17 @@ jobs:
           path: build/character-e1-report/
           retention-days: 30
           if-no-files-found: error
+
+  test-hybrid-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate engine switching and privacy boundaries (offline)
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m compileall -q scripts/chat_engine.py scripts/hybrid_probe.py scripts/maisaka_native_experiment.py src/zhuangfy/engine_fusion SenseVoice/hybrid_qq_bridge.py
+          python -m unittest -v tests.unit.test_chat_engine_switch tests.unit.test_maisaka_native_experiment tests.unit.test_shared_engine_context tests.unit.test_hybrid_ipc tests.unit.test_native_maisaka_adapter tests.unit.test_hybrid_native_images tests.unit.test_native_image_manager_adapter

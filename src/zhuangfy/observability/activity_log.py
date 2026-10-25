@@ -18,11 +18,15 @@ from contextvars import ContextVar
 from datetime import datetime
 
 from .chat_journal import ChatJournal, is_chat_event
+from .external_events import ExternalEvents
 
 
 _LOCK = threading.Lock()
 _EVENTS: deque[dict] = deque(maxlen=2000)
 _REVISION = 0
+_EXTERNAL_WRITER = os.environ.get("ZHUANGFY_EXTERNAL_EVENT_WRITER") == "1"
+_EXTERNAL_EVENTS = None
+_EXTERNAL_CURSOR = 0
 try:
     _CHAT_JOURNAL = ChatJournal() if not os.environ.get("ZHUANGFY_EVENT_PORT") else None
     _CHAT_EVENTS: deque[dict] = deque(
@@ -43,7 +47,7 @@ def redact(value: object) -> str:
     return _SECRET.sub(lambda match: (match.group(1) or match.group(3) or "") + "[已隐藏]", text)
 
 
-def _append(entry: dict) -> None:
+def _append(entry: dict, *, persist_chat: bool = True) -> None:
     global _REVISION, _CHAT_REVISION
     with _LOCK:
         _EVENTS.append(entry)
@@ -51,7 +55,7 @@ def _append(entry: dict) -> None:
         if is_chat_event(entry):
             _CHAT_EVENTS.append(entry)
             _CHAT_REVISION += 1
-            if _CHAT_JOURNAL is not None:
+            if persist_chat and _CHAT_JOURNAL is not None:
                 try:
                     _CHAT_JOURNAL.append(entry)
                 except (OSError, sqlite3.Error):
@@ -77,6 +81,11 @@ def log_event(source: str, phase: str, detail: object = "", *,
         "channel": (channel or current_channel)[:32],
     }
     _append(entry)
+    if _EXTERNAL_WRITER:
+        try:
+            ExternalEvents().append(entry)
+        except (OSError, sqlite3.Error):
+            pass
     port = os.environ.get("ZHUANGFY_EVENT_PORT", "")
     token = os.environ.get("ZHUANGFY_EVENT_TOKEN", "")
     if port.isdecimal() and token:
@@ -110,6 +119,30 @@ def receive_event(packet: bytes, token: str) -> bool:
         return True
     except (ValueError, TypeError, KeyError):
         return False
+
+
+def import_external_events() -> int:
+    """Bring sanitized Hybrid events into the dashboard's normal live timeline."""
+    global _EXTERNAL_EVENTS, _EXTERNAL_CURSOR
+    if _EXTERNAL_WRITER:
+        return 0
+    try:
+        if _EXTERNAL_EVENTS is None:
+            _EXTERNAL_EVENTS = ExternalEvents()
+            # Console is current-launch only; chat history is already durable.
+            rows = _EXTERNAL_EVENTS.since(0, limit=5000)
+            _EXTERNAL_CURSOR = rows[-1][0] if rows else 0
+            return 0
+        rows = _EXTERNAL_EVENTS.since(_EXTERNAL_CURSOR)
+        for event_id, event in rows:
+            _EXTERNAL_CURSOR = event_id
+            if not all(isinstance(event.get(k), str) for k in
+                       ("time", "source", "phase", "detail", "turn_id", "channel")):
+                continue
+            _append(event, persist_chat=False)
+        return len(rows)
+    except (OSError, sqlite3.Error):
+        return 0
 
 
 def session_snapshot() -> tuple[int, list[dict]]:

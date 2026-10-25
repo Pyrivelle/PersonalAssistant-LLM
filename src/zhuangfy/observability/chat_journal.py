@@ -12,7 +12,9 @@ from zhuangfy.paths import Paths
 
 DEFAULT_PATH = Paths.current().project_data_root / "chat_stream.sqlite3"
 MAX_EVENTS = 5000
-_VISIBLE = {"消息", "思考V2", "思考", "搜索结果", "等待V2", "静默V2",
+_VISIBLE = {"消息", "上下文", "身份关系", "长期记忆内容", "跨入口对话内容", "阶段", "规划",
+            "输入历史", "模型推理", "规划正文", "工具执行", "行为结论",
+            "思考V2", "思考", "搜索结果", "等待V2", "静默V2",
             "回复", "语音回复", "失败", "模型全部失败", "识图"}
 
 

@@ -321,7 +321,8 @@ class ChatWindow(QMainWindow):
         except (OSError, ValueError, TypeError) as error:
             self.status.setText(f"模型路由配置有误：{error}")
             return
-        self.worker = ChatWorker(settings, key, list(self.history), message, self,
+        from zhuangfy.core.recent_context import desktop_history
+        self.worker = ChatWorker(settings, key, desktop_history(self.history), message, self,
                                  emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt(), source="文字")
         self.worker.replied.connect(self.show_reply)
         self.worker.failed.connect(self.show_error)
@@ -353,6 +354,12 @@ class ChatWindow(QMainWindow):
                 print(f"桌面上下文保存失败：{type(error).__name__}")
         self.transcript.appendPlainText(f"你：{message}\n庄方宜：{reply}\n")
         log_event("文字", "回复", reply)
+        if not self.worker.memory_command:
+            try:
+                from zhuangfy.core.recent_context import record_desktop_turn
+                record_desktop_turn("text", message, reply, self.worker.turn_id)
+            except (OSError, ValueError) as error:
+                log_event("短期上下文", "写入失败", type(error).__name__)
         self.input.clear()
         self.status.setText("回复完成")
         if (not self.worker.memory_command and self.worker.remote_memory_ref is not None

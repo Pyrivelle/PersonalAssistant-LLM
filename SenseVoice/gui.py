@@ -1023,7 +1023,8 @@ class MainWindow(QMainWindow):
         self.retry_failed_button.setEnabled(False)
         self.speech_started_at = None
         self.set_interaction_state(InteractionState.THINKING)
-        worker = ChatWorker(settings, key, list(self.chat_history), message, self,
+        from zhuangfy.core.recent_context import desktop_history
+        worker = ChatWorker(settings, key, desktop_history(self.chat_history), message, self,
                             emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt(), source="语音")
         self.chat_worker = worker
         self.chat_workers[turn] = worker
@@ -1070,6 +1071,13 @@ class MainWindow(QMainWindow):
         self.result_edit.appendPlainText(f"庄方宜：{reply}\n")
         log_event("语音", "回复", reply,
                   turn_id=getattr(worker, "turn_id", ""), channel="语音")
+        if worker is not None and not getattr(worker, "memory_command", False):
+            try:
+                from zhuangfy.core.recent_context import record_desktop_turn
+                record_desktop_turn("voice", answered_message, reply,
+                                    getattr(worker, "turn_id", f"voice:{turn}"))
+            except (OSError, ValueError) as error:
+                log_event("短期上下文", "写入失败", type(error).__name__)
         # UI acceptance/display is the delivery evidence for desktop text.
         # A discarded/stale LLM reply never reaches this write path.
         if (worker is not None and not getattr(worker, "memory_command", False)

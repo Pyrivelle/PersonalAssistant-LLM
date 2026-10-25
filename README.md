@@ -36,3 +36,19 @@
 - [M2：可验证的 MemoryCurator 与后台反思](docs/architecture/memory-curator.md)（PR #6）
 
 M1/M2 目前只是独立运行的记忆内核，不会自动采集 QQ/桌面聊天，也尚未把提炼结果投影到 Qdrant；实际接入须另行完成身份验证、授权、模型路由和跨进程协调。
+
+## 实验性双引擎启动与第三融合引擎规划（PR #54，仅实验分支）
+
+项目保留 ZhuangFY 自有引擎，同时提供原版 MaiBot/ Maisaka 独立引擎；
+**目前按启动进程二选一，角色记忆和配置尚不共享**。
+
+```powershell
+python scripts/chat_engine.py status
+python scripts/chat_engine.py run --engine zhuangfy
+# 停止 ZhuangFY QQ Bridge 后；需配置 MaiBot 独立环境
+python scripts/chat_engine.py run --engine maibot --confirm-exclusive-channel
+```
+
+第三种 `hybrid` 已提供**单 QQ 白名单测试账号、需显式确认的原生 Maisaka 私聊实验入口**，支持上游 Planner–Reply–Wait 和原版 ImageManager；尚未通过真实 QQ/模型联调，因此不允许设为默认，也不会悄悄退化为 ZhuangFY。
+
+具体依赖、独立配置和安全边界见 [Maisaka 双引擎实验说明](docs/maisaka-native-transplant.md)。

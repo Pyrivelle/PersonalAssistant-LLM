@@ -85,6 +85,8 @@ class MemoryCore:
             initial_timeline=self.auto_qq_timeline)
         return {
             "created": created,
+            # Authenticated loopback QQ client may reuse this stable verified ID.
+            "person_id": person.person_id,
             "display_name": person.display_name,
             "timeline_consent": self.identities.has_consent(person.person_id, "timeline"),
             "curation_consent": self.identities.has_consent(person.person_id, "curation"),
