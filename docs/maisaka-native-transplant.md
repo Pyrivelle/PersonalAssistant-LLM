@@ -91,6 +91,53 @@ revision，防止实验结果受上游更新影响。
 event ID、ACK 结果、超时/取消及幂等控制的 IPC 连接，然后接通
 共享 Context 与删除联动；在此之前 Hybrid 严禁冒充已启用。
 
+## Hybrid 原生 Planner–Reply–Wait：私聊预览
+
+现在除了先前的 IPC 探针，还增加**真正的上游 Maisaka 运行时适配器**：
+
+- [native_runtime_adapter.py](../src/zhuangfy/engine_fusion/native_runtime_adapter.py)：实例化原版 `MaisakaHeartFlowChatting`，调用 `start()/register_message()`。原版 Planner、Replyer、`wait` 计时器及超时后重规划均由上游实现。
+- [native_worker.py](../src/zhuangfy/engine_fusion/native_worker.py) / [native_transport.py](../src/zhuangfy/engine_fusion/native_transport.py)：使用原版 MaiBot 的独立 Python 环境，通过双向 IPC 接收/回复 QQ 消息。必须收到 ZhuangFY 的真实 OneBot `message_id` 才返回成功。
+- [hybrid_qq_bridge.py](../SenseVoice/hybrid_qq_bridge.py)：**单个指定 QQ 测试用户、私聊文字、非默认**的预览宿主。沿用 ZhuangFY 的 OneBot 鉴权、白名单、回复限速和人格/授权记忆读取。不给上游 Maisaka 开第二条 QQ 连接。
+- [test_native_maisaka_adapter.py](../tests/unit/test_native_maisaka_adapter.py)：双向 ACK/原生调用边界的离线测试。
+
+**这是供真实 QQ 联调的代码，不等于已经验证实际 LLM 与 wait 多轮行为。** CI 无法运行你的本地 QQ/模型配置；PR 继续保持 Draft。
+
+### 单人隔离的实际试验
+
+```powershell
+git switch experiment/maisaka-full-runtime
+git submodule update --init third_party/MaiBot
+uv sync --project third_party/MaiBot --locked
+$maiPy = "./third_party/MaiBot/.venv/Scripts/python.exe"
+python scripts/maisaka_native_experiment.py init --instance .maisaka-hybrid-preview --python $maiPy
+```
+
+编辑 `.maisaka-hybrid-preview/config/{bot_config.toml,model_config.toml}`，
+**必须关闭 MaiBot 的 `maim_message.enabled`**，使用原版 Planner/Replyer 模型配置。
+ZhuangFY 的 `SenseVoice/qq_settings.json` 需要针对预览用户启用私聊白名单、
+关闭 `allow_all_private`。停止原来的 QQ Bridge，确保同一账号没有其他连接后运行：
+
+```powershell
+python scripts/chat_engine.py run --engine hybrid `
+  --hybrid-user-id <你的QQ号> `
+  --confirm-unstable-hybrid --confirm-exclusive-channel
+```
+
+不能把 `hybrid` 设为默认。独立 MaiBot 原生对照实例使用另一份
+`.maisaka-experiment/`，Hybrid 使用专属 `.maisaka-hybrid-preview/`，
+原始 ZhuangFY 记忆不直接被 Maisaka 写入。
+
+**隐私限制**：原版 Maisaka 会存储自己的本地聊天/记忆记录。
+`/forget_me` 可处理 ZhuangFY 自身记录，但不会自动清除上游实验目录；
+实验回复会明确提示残余数据。需要关闭预览后按需清理
+`.maisaka-hybrid-preview/`，不能把两份系统的删除状态混为一谈。
+
+**图片尚未接通**：预览入口只投递普通文字，对未能交给原版
+ImageManager 的图片明确拒绝，不使用 ZhuangFY 自己的 Vision 冒充原版。
+后续使用 AssetID、安全图像字节传输和上游
+`src/chat/image_system/image_manager.py` 接收图像，然后检验哈希复用、
+异步 VLM、描述缓存、来源及删除。
+
 ## Hybrid IPC v1：已接通独立 Worker 握手（未接通 Maisaka）
 
 此阶段已提交一条**实际启动子进程并通过 JSONL/stdio 通信**的链路：
