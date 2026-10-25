@@ -111,3 +111,32 @@ class SharedContextProvider:
             1, f"qq:{verified.bot_id}:private:{verified.user_id}", engine,
             person_id, persona[:8000], memory_text, f"qq:{verified.bot_id}",
         )
+
+
+class VerifiedQQMemoryIdentity:
+    """PersonID/consent adapter backed by the trusted local Memory Service.
+
+    This is for authenticated, admitted QQ private events ONLY. The server
+    resolves the identity and never joins by name. It may provision a new
+    person according to its existing QQ onboarding policy.
+    """
+
+    def __init__(self, memory_client: Any, display_name: str = "QQ 用户"):
+        self.client = memory_client
+        self.display_name = display_name[:80]
+        self.consents: dict[str, bool] = {}
+
+    def resolve(self, identity: Any) -> str | None:
+        from zhuangfy.memory.client import MemoryChannel
+        channel = MemoryChannel(identity.platform,
+                                identity.channel_account_id,
+                                identity.external_user_id)
+        response = self.client.onboard_qq(channel, self.display_name)
+        person_id = response.get("person_id")
+        if not isinstance(person_id, str) or not person_id:
+            return None
+        self.consents[person_id] = response.get("timeline_consent") is True
+        return person_id
+
+    def has_consent(self, person_id: str, purpose: str) -> bool:
+        return purpose == "timeline" and self.consents.get(person_id) is True
