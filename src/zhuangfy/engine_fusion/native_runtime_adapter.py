@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import asyncio
+import hashlib
 from typing import Awaitable, Callable, Any
 
 AckSender = Callable[[str, str], Awaitable[str]]
@@ -113,13 +114,14 @@ class NativeMaisakaAdapter:
 
     async def receive(self, event_id: str, message_id: str,
                       conversation_id: str, text: str,
-                      persona: str, memory_context: str) -> None:
+                      persona: str, memory_context: str,
+                      images: list[tuple[str, bytes]] | None = None) -> list[dict]:
         from src.config.config import global_config
         from src.chat.message_receive.chat_manager import chat_manager
         from src.chat.message_receive.message import SessionMessage
         from src.common.data_models.mai_message_data_model import MessageInfo, UserInfo
         from src.common.data_models.message_component_data_model import (
-            MessageSequence, TextComponent,
+            MessageSequence, TextComponent, ImageComponent,
         )
         from src.maisaka.runtime import MaisakaHeartFlowChatting
 
@@ -130,7 +132,7 @@ class NativeMaisakaAdapter:
         if self.conversation_id != conversation_id:
             raise PermissionError("native process is bound to another verified QQ user")
         if message_id in self._seen:
-            return
+            return []
         self._wait_count = 0
         if len(self._seen) > 5000:
             raise RuntimeError("native session replay cache full; restart session")
@@ -155,8 +157,36 @@ class NativeMaisakaAdapter:
             user_info=UserInfo(user_id=user, user_nickname="用户", user_cardname=None),
             group_info=None, additional_config={},
         )
-        message.raw_message = MessageSequence([TextComponent(text=inbound_text)])
-        message.processed_plain_text = inbound_text
+        parts = [TextComponent(text=inbound_text)] if inbound_text.strip() else []
+        observations: list[dict] = []
+        observed_notes: list[str] = []
+        if images:
+            from src.chat.image_system.image_manager import image_manager
+            for asset_id, image_bytes in images:
+                digest = hashlib.sha256(image_bytes).hexdigest()
+                if asset_id != "img_" + digest:
+                    raise ValueError("original QQ image bytes do not match asset ID")
+                cached = bool(image_manager.get_cached_image_description(digest))
+                # Native ImageManager owns save, SHA cache, async VLM and DB.
+                desc = await image_manager.get_image_description(
+                    image_bytes=image_bytes, wait_for_build=True)
+                desc = str(desc or "").strip()[:2500]
+                parts.append(ImageComponent(binary_hash=digest, content=desc,
+                                            binary_data=image_bytes))
+                observations.append({"asset_id":asset_id, "description":desc,
+                                     "cache_hit":cached,
+                                     "description_ready":bool(desc)})
+                if desc:
+                    observed_notes.append(
+                        f"[系统视觉观察，非用户原话，图片SHA256={digest}：{desc}]")
+                else:
+                    observed_notes.append(
+                        f"[图片SHA256={digest}，原生VLM暂未提供描述；不要猜测画面]")
+        message.raw_message = MessageSequence(parts)
+        message.processed_plain_text = (
+            inbound_text + ("\\n" if observed_notes else "")
+            + "\\n".join(observed_notes)
+        ).strip()
         message.initialized = True
         chat_manager.register_message(message)
         session = await chat_manager.get_or_create_session(
@@ -170,6 +200,7 @@ class NativeMaisakaAdapter:
         await self.runtime.register_message(message)
         self._seen.add(message_id)
         self._active_event_id = event_id
+        return observations
 
     async def cancel(self) -> None:
         if self.runtime is not None:
