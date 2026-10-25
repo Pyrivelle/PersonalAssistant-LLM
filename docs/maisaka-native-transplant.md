@@ -52,6 +52,59 @@ Vision Manager，而不是 ZhuangFY 自行仿写的循环。启动器要求不�
 不会读取或写入 ZhuangFY 的长期记忆。检查脚本要求本地子模块精确位于上述
 revision，防止实验结果受上游更新影响。
 
+## 双引擎版本选择（本 PR 新增）
+
+我们**保留 ZhuangFY 原有引擎**，MaiBot 作为另外一套实验引擎。
+这里的“切换”是**在启动前选择两个独立进程中的一个**，而不是热替换
+当前进程的 Planner，亦不是共享聊天历史。默认始终是 `zhuangfy`。
+
+先检查：
+
+```powershell
+python scripts/chat_engine.py status
+```
+
+启动**原有 ZhuangFY QQ 引擎**：
+
+```powershell
+python scripts/chat_engine.py run --engine zhuangfy
+```
+
+切换到**完整的 MaiBot 原生引擎**（须先初始化子模块、
+安装独立 `uv` 环境、配置 MaiBot 私有实例，且停止同 QQ 账号的旧引擎）：
+
+```powershell
+python scripts/chat_engine.py run --engine maibot --confirm-exclusive-channel
+```
+
+可以单独设置下次的默认选项，不会启动或终止正在运行的进程：
+
+```powershell
+python scripts/chat_engine.py set-default --engine maibot
+python scripts/chat_engine.py run --confirm-exclusive-channel
+# 想切回原版：
+python scripts/chat_engine.py set-default --engine zhuangfy
+python scripts/chat_engine.py run
+```
+
+上游虚拟环境未安装到默认位置时，用
+`--maibot-python "./third_party/MaiBot/.venv/Scripts/python.exe"`
+指定解释器，也可随 `set-default` 保存路径。
+
+切换器配置位于仓库下的 `chat_engine_settings.json`，该文件不应提交到
+Git；不涉及密钥。实验运行时的数据仍分别存在 **ZhuangFY 当前目录**
+和 **`.maisaka-experiment/`**。实验配置、QQ 白名单、API 模型路由、
+角色设定、PersonID 和记忆目前**没有自动同步**。
+
+切换器使用独占文件锁，能阻止**另一份通过同一切换器启动**的引擎并行。
+但它不能阻止用户从旧 bat/命令直接启动 `qq_bridge.py`，也无法拦截
+其他机器同时登录相同账号，因此切换前仍须确保旧连接已退出。对原版
+MaiBot 要求 `--confirm-exclusive-channel` 明确确认。
+
+下一步我们可以保持此双引擎开关不变，通过事件适配桥接统一 QQ、
+PersonID/Memory 与图片语义数据，按测试情况逐步共享能力，
+**不删除 ZhuangFY 自有 Planner/Replyer 实现**。
+
 ## 集成路线与不可逾越的边界
 
 | 阶段 | 范围 | 状态 |
@@ -59,7 +112,8 @@ revision，防止实验结果受上游更新影响。
 | A. 固定完整上游 + 独立原生实例 | 保留完整 GPL 源码、原生图片缓存、Planner/Reply/Wait/Stop | 已提交启动器与离线测试；真实模型/QQ 未验收 |
 | B. 上游进程到 ZhuangFY 事件边界 | QQ MessageComponent / Observation / ToolResult 投影、真实投递 ACK 回传 | 未实现 |
 | C. 合并 ZhuangFY Persona / PersonID / Memory | 双向读取映射、撤回/删除、会话隔离、权限一致 | 未实现 |
-| D. 真正的实验主路径切换 | `experimental_maisaka_enabled` 开关、超时/错误回退、退出清理 | 未实现 |
+| D. 启动前独立双引擎选择 | CLI 选择启动原版 ZhuangFY 或完整 MaiBot；不覆盖任何引擎 | 已提交启动器，真实 QQ 尚未验证 |
+| D2. 同一 ZhuangFY Runtime 内部切换 | 共享 QQ 通道、Persona、PersonID/Memory、超时回退 | 未实现；目前按独立进程切换 |
 | E. 原生图片处理接管 | 完整 hash/cache/async VLM 及跨模型失效；兼容 QQ 图片 | 仅原版实例可试验，ZhuangFY 尚未接管 |
 
 这里 **不宣称 B–E 已经实现**。即使子模块已经包含全套源码，
