@@ -97,9 +97,11 @@ class HybridQQBridge(QqBridge):
             platform_id = record.get("message_id")
             # Only an actual OneBot acknowledgement qualifies as delivered.
             if (type(platform_id) not in (str, int)
-                    or not str(platform_id).strip()):
+                    or not str(platform_id).strip()
+                    or (str(platform_id).strip().isdecimal()
+                        and int(platform_id) <= 0)):
                 return ""
-            receipt = str(platform_id)
+            receipt = str(platform_id).strip()
             self.limiter.mark_sent(incoming, time.monotonic())
             self._reply_receipts[key] = receipt
             log_event("Hybrid", "真实回执", f"qq:{self.bot_id}:private:{user_id} · 回复已确认")
