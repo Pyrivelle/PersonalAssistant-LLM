@@ -1,4 +1,4 @@
-"""Hybrid host<->Maisaka process protocol, v1.
+"""Hybrid host<->Maisaka process protocol, v2.
 
 ZhuangFY is the authoritative QQ sender and keeper of conversation identity.
 These envelopes are DATA, not model instructions; native runtime activation is
@@ -11,12 +11,12 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-VERSION = 1
+VERSION = 2
 MAX_WIRE_BYTES = 20_000
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 CONVERSATION_RE = re.compile(r"^qq:([1-9][0-9]*):private:([1-9][0-9]*)$")
 KINDS = frozenset({"hello", "ingress", "cancel", "delivery_ack", "shutdown"})
-RESULT_KINDS = frozenset({"hello_ack", "accepted", "outbound", "unavailable", "cancel_ack", "ack_result", "error", "bye"})
+RESULT_KINDS = frozenset({"hello_ack", "accepted", "outbound", "telemetry", "unavailable", "cancel_ack", "ack_result", "error", "bye"})
 
 
 class ProtocolError(ValueError):
@@ -93,9 +93,9 @@ class Envelope:
             context = p["context"]
             required = {"schema_version", "conversation_id", "source_engine",
                         "person_id", "persona", "memory_context", "qq_channel_id"}
-            if not isinstance(context, dict) or set(context) != required:
+            if not isinstance(context, dict) or set(context) != required | {"recent_context", "social"}:
                 raise ProtocolError("invalid shared context")
-            if (context["schema_version"] != 1
+            if (context["schema_version"] != 2
                     or context["conversation_id"] != self.conversation_id
                     or context["source_engine"] != "hybrid"):
                 raise ProtocolError("inconsistent shared context")
@@ -108,6 +108,46 @@ class Envelope:
                     or not isinstance(context["memory_context"], str)
                     or len(context["memory_context"]) > 2000):
                 raise ProtocolError("context budget exceeded")
+            if (not isinstance(context["recent_context"], str)
+                    or len(context["recent_context"]) > 1600):
+                raise ProtocolError("recent context budget exceeded")
+            social = context["social"]
+            required_social = {"person_id", "display_name", "preferred_name",
+                               "relationship_status", "relationship_enabled",
+                               "relationship_tier", "relationship_version",
+                               "relationship_hint", "relationship_definition"}
+            if not isinstance(social, dict) or set(social) != required_social:
+                raise ProtocolError("invalid social context")
+            if social["person_id"] != context["person_id"]:
+                raise ProtocolError("cross-person social context")
+            for name, limit in (("display_name", 80), ("preferred_name", 80),
+                                ("relationship_tier", 16), ("relationship_definition", 300)):
+                value = social[name]
+                if value is not None and (not isinstance(value, str) or len(value) > limit):
+                    raise ProtocolError("invalid social " + name)
+            if social["relationship_status"] not in {
+                "ready", "unenrolled", "no_consent", "unavailable",
+            }:
+                raise ProtocolError("invalid relationship status")
+            if type(social["relationship_enabled"]) is not bool:
+                raise ProtocolError("invalid relationship enabled flag")
+            version = social["relationship_version"]
+            if version is not None and (type(version) is not int or version < 0):
+                raise ProtocolError("invalid relationship version")
+            if not isinstance(social["relationship_hint"], str) or len(social["relationship_hint"]) > 1200:
+                raise ProtocolError("invalid relationship hint")
+            if social["relationship_status"] != "ready" and (
+                social["relationship_enabled"] or social["relationship_tier"] is not None
+                or version is not None or social["relationship_hint"]
+                or social["relationship_definition"] is not None
+            ):
+                raise ProtocolError("unverified relationship content")
+            if social["relationship_status"] == "ready" and (
+                not social["relationship_enabled"] or
+                social["relationship_tier"] not in {"L0", "L1", "L2", "L3", "L4"}
+                or version is None
+            ):
+                raise ProtocolError("incomplete relationship snapshot")
             bot = CONVERSATION_RE.fullmatch(self.conversation_id).group(1)
             if context["qq_channel_id"] != f"qq:{bot}":
                 raise ProtocolError("cross-channel context")
@@ -141,6 +181,15 @@ class Envelope:
                             or type(item["cache_hit"]) is not bool
                             or type(item["description_ready"]) is not bool):
                         raise ProtocolError("invalid native image observation fields")
+        elif self.kind == "telemetry":
+            if set(p) != {"phase", "summary", "cause_event_id"}:
+                raise ProtocolError("invalid native telemetry fields")
+            if (p["phase"] not in {"阶段", "规划", "输入历史", "模型推理",
+                                   "规划正文", "工具执行", "行为结论"}
+                    or not isinstance(p["summary"], str)
+                    or len(p["summary"]) > 1200):
+                raise ProtocolError("invalid native telemetry summary")
+            _id(p["cause_event_id"], "telemetry cause")
         elif self.kind == "cancel":
             if set(p) != {"target_request_id"}:
                 raise ProtocolError("invalid cancel")

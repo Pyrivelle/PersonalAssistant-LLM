@@ -15,17 +15,21 @@ from typing import Awaitable, Callable
 from uuid import uuid4
 
 from .ipc_contract import Envelope, ProtocolError, inbound_from_host
+from .ipc_contract import VERSION
 from .ipc_transport import HybridTransportUnavailable
 from .worker import UPSTREAM_SHA
 
 ROOT = Path(__file__).resolve().parents[3]
-DeliverToQQ = Callable[[str, str, str], Awaitable[str]]
+DeliverToQQ = Callable[[str, str, str, str], Awaitable[str]]
+TelemetryCallback = Callable[[str, dict], Awaitable[None]]
 
 
 class NativeMaisakaClient:
-    def __init__(self, process: asyncio.subprocess.Process, delivery: DeliverToQQ):
+    def __init__(self, process: asyncio.subprocess.Process, delivery: DeliverToQQ,
+                 telemetry: TelemetryCallback | None = None):
         self.process = process
         self.delivery = delivery
+        self.telemetry = telemetry
         self.ready = False
         self.conversation = ""
         self.pending: dict[str, asyncio.Future[Envelope]] = {}
@@ -35,7 +39,8 @@ class NativeMaisakaClient:
 
     @classmethod
     async def launch(cls, delivery: DeliverToQQ, *, source: Path, instance: Path,
-                     python: Path, handshake_timeout: float = 120) -> "NativeMaisakaClient":
+                     python: Path, handshake_timeout: float = 120,
+                     telemetry: TelemetryCallback | None = None) -> "NativeMaisakaClient":
         if (not source.is_dir() or not instance.is_dir()
                 or not (source / "src/maisaka/runtime.py").is_file()
                 or not (instance / "config/bot_config.toml").is_file()
@@ -60,12 +65,13 @@ class NativeMaisakaClient:
             stderr=asyncio.subprocess.DEVNULL, cwd=instance,
             env=env, limit=20_001,
         )
-        client = cls(proc, delivery)
+        client = cls(proc, delivery, telemetry)
         try:
             hello = await client.request(
                 Envelope("hello", uuid4().hex, "", {"upstream_sha": UPSTREAM_SHA}),
                 timeout=handshake_timeout)
             if (hello.kind != "hello_ack"
+                    or hello.payload.get("protocol") != VERSION
                     or hello.payload.get("native_runtime_ready") is not True
                     or hello.payload.get("upstream_sha") != UPSTREAM_SHA):
                 raise HybridTransportUnavailable("native Maisaka startup not ready")
@@ -106,6 +112,14 @@ class NativeMaisakaClient:
                 if not data:
                     break
                 packet = Envelope.from_line(data)
+                if packet.kind == "telemetry":
+                    if (self.ready and packet.conversation_id == self.conversation
+                            and self.telemetry is not None):
+                        try:
+                            await self.telemetry(packet.conversation_id, packet.payload)
+                        except (OSError, RuntimeError, ValueError):
+                            pass
+                    continue
                 if packet.kind == "outbound":
                     if not self.ready or packet.conversation_id != self.conversation:
                         # Fail closed. No messages to wrong/unknown recipients.
@@ -130,7 +144,8 @@ class NativeMaisakaClient:
         try:
             platform_id = await asyncio.wait_for(
                 self.delivery(packet.conversation_id, packet.payload["reply_id"],
-                              packet.payload["text"]), timeout=18)
+                              packet.payload["text"],
+                              packet.payload["cause_event_id"]), timeout=18)
             if not isinstance(platform_id, str) or len(platform_id) > 128:
                 platform_id = ""
         except (OSError, RuntimeError, asyncio.TimeoutError):

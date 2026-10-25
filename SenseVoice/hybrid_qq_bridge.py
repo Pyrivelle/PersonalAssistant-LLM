@@ -11,13 +11,15 @@ import argparse
 import hashlib
 import asyncio
 import os
+os.environ["ZHUANGFY_EXTERNAL_EVENT_WRITER"] = "1"
 from pathlib import Path
 import time
 import uuid
 from dataclasses import replace
+from types import SimpleNamespace
 
 from activity_log import log_event
-from llm import load_settings
+from llm import load_key, load_settings
 from qq_bridge import (QqBridge, QqSettings, Incoming, Conversation,
                        parse_message, single_instance, ROOT)
 from zhuangfy.engine_fusion.shared_context import (
@@ -28,6 +30,8 @@ from zhuangfy.channels.qq.images import ImageReference, original_image_bytes
 from zhuangfy.evidence_store import EvidenceStore
 from zhuangfy.image_meaning import ImageMeaningStore, explicit_image_meaning
 from zhuangfy.paths import Paths
+from zhuangfy.memory.client import MemoryChannel
+from zhuangfy.core.recent_context import RecentContextStore, owner_scope
 
 SOURCE = Path(__file__).resolve().parents[1] / "third_party" / "MaiBot"
 INSTANCE = Path(__file__).resolve().parents[1] / ".maisaka-hybrid-preview"
@@ -43,10 +47,26 @@ class HybridQQBridge(QqBridge):
                 or test_user_id not in settings.allowed_private_ids):
             raise ValueError("Hybrid preview requires one explicitly allowed private QQ user")
         super().__init__(settings)
+        log_event("Hybrid", "记忆接入",
+                  "QQ Memory Service 客户端已启用" if self.memory_client is not None
+                  else "QQ Memory Service 客户端未启用；身份与关系本轮不可用")
         self.test_user_id = test_user_id
         self._hybrid_erasing = False
         self._native: dict[str, NativeMaisakaClient] = {}
         self._reply_receipts: dict[tuple[str, str], str] = {}
+        self._turn_by_scope: dict[str, str] = {}
+        self._memory_ref_by_turn: dict[str, dict] = {}
+        self._user_text_by_turn: dict[str, str] = {}
+        self._relation_reviewed_turns: set[str] = set()
+
+    async def _native_telemetry(self, scope: str, payload: dict) -> None:
+        if scope != f"qq:{self.bot_id}:private:{self.test_user_id}":
+            return
+        turn_id = payload["cause_event_id"]
+        if turn_id == "native-timer":
+            turn_id = self._turn_by_scope.get(scope, "")
+        log_event("QQ", payload["phase"], f"private:0:{self.test_user_id} · "
+                  + payload["summary"], turn_id=turn_id, channel="QQ")
 
     def accept(self, event: dict) -> bool:
         verified = parse_message(event, self.bot_id, self.settings)
@@ -77,7 +97,7 @@ class HybridQQBridge(QqBridge):
         return await asyncio.to_thread(original_image_bytes, url)
 
     async def _qq_delivery(self, conversation_id: str,
-                           reply_id: str, text: str) -> str:
+                           reply_id: str, text: str, cause_event_id: str) -> str:
         expected = f"qq:{self.bot_id}:private:"
         if not conversation_id.startswith(expected):
             return ""
@@ -124,7 +144,45 @@ class HybridQQBridge(QqBridge):
             receipt = str(platform_id).strip()
             self.limiter.mark_sent(incoming, time.monotonic())
             self._reply_receipts[key] = receipt
+            memory_ref = self._memory_ref_by_turn.get(cause_event_id)
+            if self.memory_client is not None and memory_ref is not None:
+                try:
+                    claim = MemoryChannel("qq", str(self.bot_id), str(user_id))
+                    await asyncio.to_thread(
+                        self.memory_client.complete_reply, claim,
+                        conversation_id=memory_ref["conversation_id"],
+                        entry_id=memory_ref["entry_id"],
+                        reply_id=reply_id, content=text)
+                    log_event("记忆", "送达记录", "Hybrid QQ 回复已写入时间线")
+                except (OSError, RuntimeError, ValueError, KeyError) as error:
+                    log_event("记忆", "送达记录失败", f"Hybrid QQ · {type(error).__name__}")
+                else:
+                    if (cause_event_id not in self._relation_reviewed_turns
+                            and self.planner_settings.relationship_behavior_r1_enabled
+                            and self.planner_settings.relationship_evolution_r1_enabled):
+                        try:
+                            settings = load_settings()
+                            review = SimpleNamespace(
+                                memory_ref=memory_ref, settings=settings,
+                                api_key=load_key(settings.provider),
+                                user_text=self._user_text_by_turn.get(cause_event_id, ""),
+                                turn_id=cause_event_id)
+                            previous = self.relationship_tasks.get(user_id)
+                            if previous is None or previous.done():
+                                self._relation_reviewed_turns.add(cause_event_id)
+                                self.relationship_tasks[user_id] = asyncio.create_task(
+                                    self._review_relationship_after_delivery(incoming, review))
+                        except (OSError, RuntimeError, ValueError) as error:
+                            log_event("关系R1", "排队跳过", type(error).__name__)
+            if conversation_id == owner_scope():
+                try:
+                    RecentContextStore().append(conversation_id, "qq", "assistant",
+                                                text, "qq:reply:" + reply_id)
+                except (OSError, ValueError) as error:
+                    log_event("短期上下文", "写入失败", type(error).__name__)
             log_event("Hybrid", "真实回执", f"qq:{self.bot_id}:private:{user_id} · 回复已确认")
+            log_event("QQ", "回复", f"private:0:{user_id} · {text}",
+                      turn_id=self._turn_by_scope.get(conversation_id, ""), channel="QQ")
             return receipt
 
     async def _client(self, scope: str) -> NativeMaisakaClient:
@@ -136,6 +194,7 @@ class HybridQQBridge(QqBridge):
         client = await NativeMaisakaClient.launch(
             self._qq_delivery, source=SOURCE, instance=INSTANCE,
             python=MAI_PYTHON, handshake_timeout=120,
+            telemetry=self._native_telemetry,
         )
         self._native[scope] = client
         return client
@@ -168,6 +227,11 @@ class HybridQQBridge(QqBridge):
                     f"qq:{self.bot_id}:private:{incoming.user_id}", None)
                 if client:
                     await client.close()
+                if f"qq:{self.bot_id}:private:{incoming.user_id}" == owner_scope():
+                    RecentContextStore().delete(owner_scope())
+                self._memory_ref_by_turn.clear()
+                self._user_text_by_turn.clear()
+                self._relation_reviewed_turns.clear()
                 continue
             if not (text.strip() or images) or not self.bot_id:
                 continue
@@ -184,6 +248,16 @@ class HybridQQBridge(QqBridge):
                               f"{incoming.scope} · {type(error).__name__}")
                     continue
             scope = f"qq:{self.bot_id}:private:{incoming.user_id}"
+            turn_id = uuid.uuid4().hex
+            self._turn_by_scope[scope] = turn_id
+            if len(self._memory_ref_by_turn) > 500:
+                old_turn = next(iter(self._memory_ref_by_turn))
+                self._memory_ref_by_turn.pop(old_turn, None)
+                self._user_text_by_turn.pop(old_turn, None)
+                self._relation_reviewed_turns.discard(old_turn)
+            log_event("QQ", "消息", f"{incoming.scope} · "
+                      + (text or f"[图片 {len(image_bytes)} 张]"),
+                      turn_id=turn_id, channel="QQ")
             try:
                 person_source = (
                     VerifiedQQMemoryIdentity(self.memory_client, incoming.nickname)
@@ -205,6 +279,39 @@ class HybridQQBridge(QqBridge):
                     persona=load_settings().system_prompt,
                     query=text[:300], engine="hybrid",
                 )
+                capture = self._memory_capture_tasks.get(
+                    (self.bot_id, incoming.user_id, str(events[-1])))
+                if capture is not None and context.person_id:
+                    try:
+                        memory_ref = await asyncio.wait_for(
+                            asyncio.shield(capture), timeout=2.5)
+                    except (asyncio.TimeoutError, OSError, RuntimeError, ValueError):
+                        memory_ref = None
+                    if (isinstance(memory_ref, dict)
+                            and memory_ref.get("conversation_id")
+                            and memory_ref.get("entry_id")):
+                        self._memory_ref_by_turn[turn_id] = memory_ref
+                        self._user_text_by_turn[turn_id] = text[:1200]
+                log_event("QQ", "上下文", f"{incoming.scope} · "
+                          f"人物={'已关联' if context.person_id else '本轮不可用'}；"
+                          f"关系={context.social.relationship_tier or context.social.relationship_status}；"
+                          f"长期记忆={len(context.memory_context)} 字；"
+                          f"跨入口近期对话={len(context.recent_context)} 字；"
+                          "Maisaka 历史条数以每轮 Planner 回报为准",
+                          turn_id=turn_id, channel="QQ")
+                social = context.social
+                identity_lines = [
+                    f"PersonID：{social.person_id or '本轮不可用'}",
+                    f"档案显示名称：{social.display_name or '未设置'}",
+                    f"偏好称呼：{social.preferred_name or '未确认'}",
+                    f"关系状态：{social.relationship_status}",
+                ]
+                if social.relationship_enabled:
+                    identity_lines += [
+                        f"关系层级：{social.relationship_tier}（版本 {social.relationship_version}）",
+                        f"关系定义：{social.relationship_definition or '未单独确认'}",
+                        f"表达建议：{social.relationship_hint or '无'}",
+                    ]
                 if image_bytes:
                     # Per-conversation, user-taught image meaning is separate
                     # from Maisaka's objective VLM description. Do not assume
@@ -226,6 +333,13 @@ class HybridQQBridge(QqBridge):
                         context = replace(
                             context, memory_context=(
                                 context.memory_context + "\\n" + suffix).strip()[:2000])
+                for phase, body in (
+                    ("身份关系", "\n".join(identity_lines)),
+                    ("长期记忆内容", context.memory_context or "本轮未检索到相关长期记忆"),
+                    ("跨入口对话内容", context.recent_context or "本轮没有跨入口近期对话"),
+                ):
+                    log_event("QQ", phase, f"{incoming.scope} · {body}",
+                              turn_id=turn_id, channel="QQ")
                 client = await self._client(scope)
                 # The native worker now owns reply->wait->timer->Planner cycles.
                 # Ingress acceptance is NOT counted as delivery.
@@ -235,10 +349,13 @@ class HybridQQBridge(QqBridge):
                 message_key = "m_" + hashlib.sha256(
                     (scope + ":" + original_id).encode("utf-8")).hexdigest()
                 result = await client.submit(
-                    context, event_id=uuid.uuid4().hex,
+                    context, event_id=turn_id,
                     message_id=message_key, text=text[:3500],
                     images=image_bytes,
                 )
+                if scope == owner_scope() and text.strip():
+                    RecentContextStore().append(scope, "qq", "user", text,
+                                                "qq:message:" + message_key)
                 # Persist native VLM observations as input evidence associated
                 # with this verified QQ message; not a synthetic user turn.
                 if image_bytes:
@@ -270,6 +387,8 @@ class HybridQQBridge(QqBridge):
                             meanings.save(scope, digest, explanation, message_key)
             except (RuntimeError, ValueError, PermissionError, OSError) as exc:
                 log_event("Hybrid", "原生会话失败", f"{scope} · {type(exc).__name__}")
+                log_event("QQ", "失败", f"{incoming.scope} · {type(exc).__name__}",
+                          turn_id=turn_id, channel="QQ")
 
     async def send_reply(self, incoming: Incoming, reply: str, *,
                          voice: bool = False, continuation: bool = False) -> bool:

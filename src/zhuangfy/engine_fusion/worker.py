@@ -7,7 +7,7 @@ that Planner->Reply->Wait is functioning.
 from __future__ import annotations
 
 import sys
-from zhuangfy.engine_fusion.ipc_contract import Envelope, ProtocolError, MAX_WIRE_BYTES
+from zhuangfy.engine_fusion.ipc_contract import Envelope, ProtocolError, MAX_WIRE_BYTES, VERSION
 
 UPSTREAM_SHA = "062d45cf8bd4272ac57d7ec03fcf405e5a458211"
 
@@ -24,7 +24,7 @@ class WorkerSession:
             valid = request.payload["upstream_sha"] == UPSTREAM_SHA
             self.started = valid
             return Envelope("hello_ack", request.request_id, "", {
-                "upstream_sha": UPSTREAM_SHA, "protocol": 1,
+                "upstream_sha": UPSTREAM_SHA, "protocol": VERSION,
                 "transport_ready": valid,
                 "native_runtime_ready": False,
                 "capabilities": ["qq_ingress_contract", "cancel_contract", "delivery_ack_contract"],

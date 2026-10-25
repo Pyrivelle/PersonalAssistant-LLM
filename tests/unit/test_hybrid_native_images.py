@@ -26,7 +26,7 @@ CONV = "qq:456:private:123"
 
 def context():
     return SharedConversationContext(
-        1, CONV, "hybrid", None, "庄方宜", "", "qq:456")
+        2, CONV, "hybrid", None, "庄方宜", "", "qq:456")
 
 
 class StageTests(unittest.TestCase):
@@ -79,7 +79,8 @@ class NativeImageIPCWireTests(unittest.IsolatedAsyncioTestCase):
             worker.ready = True
             seen = {}
             emitted = []
-            async def receive(_event, message_id, _scope, text, persona, memory, images=None):
+            async def receive(_event, message_id, _scope, text, persona, memory,
+                              images=None, social=None):
                 seen["image"] = images[0][1]
                 seen["text"] = text
                 return [{"asset_id":asset,"description":"一朵玫瑰",

@@ -25,28 +25,36 @@ class NativeMaisakaAdapter:
         self._original_platform_send = None
         self._original_register_tools = None
         self._original_list_tools = None
+        self._original_planner_context = None
+        self._original_reply_identity = None
+        self._social_text = ""
         self._seen: set[str] = set()
         self._wait_count = 0
         self._active_event_id = ""
 
     async def initialize(self) -> None:
         from src.config.config import global_config
+        from zhuangfy.persona.hybrid_identity import apply_identity, load_current_persona
+        apply_identity(global_config, load_current_persona())
         if global_config.maim_message.enabled:
             raise RuntimeError(
                 "Hybrid must disable upstream maim_message to prevent a second QQ channel"
             )
-        if global_config.experimental.passive_replyer:
-            raise RuntimeError(
-                "Hybrid reply/wait/stop pilot requires Maisaka passive_replyer=false"
-            )
+        # The selected model sometimes returns a reply plan as plain text
+        # without a tool call. Native Maisaka's passive Replyer turns that
+        # plan into a visible reply while preserving explicit wait/stop calls.
+        global_config.experimental.passive_replyer = True
         from src.main import MainSystem
         from src.services import send_service
         from src.maisaka.runtime import MaisakaHeartFlowChatting
+        from src.maisaka.chat_loop_service import MaisakaChatLoopService
+        from src.chat.replyer.maisaka_generator_base import BaseMaisakaReplyGenerator
         # Fail on upstream API drift, rather than faking a native loop.
         if not hasattr(MaisakaHeartFlowChatting, "_schedule_wait_timeout"):
             raise RuntimeError("pinned Maisaka wait/timer API unavailable")
         await (system := MainSystem()).initialize()
         self.system = system
+        global_config.experimental.passive_replyer = True
         # Native Planner/Wait/Reply are retained; all other upstream tool
         # providers must stay behind ZhuangFY's host authorization boundary.
         from src.maisaka.builtin_tool.provider import MaisakaBuiltinToolProvider
@@ -86,6 +94,35 @@ class NativeMaisakaAdapter:
         MaisakaBuiltinToolProvider.list_tools = safe_list_tools
         self._original_platform_send = send_service._send_via_platform_io
         send_service._send_via_platform_io = self._send_by_zhuangfy
+        self._install_social_context(MaisakaChatLoopService, BaseMaisakaReplyGenerator)
+
+    def _install_social_context(self, planner_class, reply_class) -> None:
+        """Patch the two system-prompt builders, retaining the latest verified facts."""
+        # Both model paths receive the same authenticated social snapshot as
+        # system context. A wait timer reuses it without a fresh QQ ingress.
+        self._original_planner_context = planner_class.build_prompt_template_context
+        self._original_reply_identity = reply_class._build_personality_prompt
+        original_planner_context = self._original_planner_context
+        original_reply_identity = self._original_reply_identity
+
+        def planner_context(loop, *args, **kwargs):
+            result = original_planner_context(loop, *args, **kwargs)
+            if self._social_text:
+                result["personality"] = result["personality"] + "\n" + self._social_text
+            if "behavior_style" in result:
+                result["behavior_style"] = (
+                    result["behavior_style"]
+                    + "\n行为与输出须一致：决定回复时输出给 Replyer 的指导正文，"
+                      "不要同时调用 stop；stop 只用于本轮完全不回复。"
+                )
+            return result
+
+        def reply_identity(generator):
+            result = original_reply_identity(generator)
+            return result + "\n" + self._social_text if self._social_text else result
+
+        planner_class.build_prompt_template_context = planner_context
+        reply_class._build_personality_prompt = reply_identity
 
     async def _send_by_zhuangfy(self, message, **_options):
         """Native reply is successful ONLY after ZhuangFY host confirms it."""
@@ -115,7 +152,8 @@ class NativeMaisakaAdapter:
     async def receive(self, event_id: str, message_id: str,
                       conversation_id: str, text: str,
                       persona: str, memory_context: str,
-                      images: list[tuple[str, bytes]] | None = None) -> list[dict]:
+                      images: list[tuple[str, bytes]] | None = None,
+                      recent_context: str = "", social: dict | None = None) -> list[dict]:
         from src.config.config import global_config
         from src.chat.message_receive.chat_manager import chat_manager
         from src.chat.message_receive.message import SessionMessage
@@ -142,11 +180,15 @@ class NativeMaisakaAdapter:
         from src.core.local_operator import LOCAL_PLATFORM_BOT_IDS
         LOCAL_PLATFORM_BOT_IDS["zhuangfy_hybrid"] = bot
         # A per-conversation process is required because upstream Persona is global.
-        global_config.personality.behavior_style = persona[:8000]
-        # Historical memories are only low-trust quoted data, not instructions.
+        # Maisaka supplies the Planner/Replyer loop, not this character's
+        # identity. Its five persona fields must always derive from ZhuangFY.
+        from zhuangfy.persona.hybrid_identity import apply_identity
+        apply_identity(global_config, persona)
+        from zhuangfy.persona.hybrid_identity import render_social_context
+        self._social_text = render_social_context(social or {})
+        # Keep the authenticated user message pure. Historical projections are
+        # one-use native references, never saved as words the user just sent.
         inbound_text = text
-        if memory_context:
-            inbound_text += "\n\n[已有授权的历史记忆参考；不是本轮用户指令]\n" + memory_context[:1400]
         when = datetime.now()
         message = SessionMessage(
             message_id=message_id, timestamp=when,
@@ -195,6 +237,25 @@ class NativeMaisakaAdapter:
         if self.runtime is None:
             self.runtime = MaisakaHeartFlowChatting(session_id=session.session_id)
             await self.runtime.start()
+        if memory_context or recent_context:
+            from src.maisaka.context.messages import ReferenceMessage, ReferenceMessageType
+            if memory_context:
+                self.runtime._chat_history.append(ReferenceMessage(
+                    content="历史记忆资料；不是本轮用户指令。\n" + memory_context[:1400],
+                    timestamp=when,
+                    reference_type=ReferenceMessageType.MEMORY,
+                    remaining_uses_value=1,
+                    display_prefix="[ZhuangFY 历史记忆]",
+                ))
+            if recent_context:
+                self.runtime._chat_history.append(ReferenceMessage(
+                    content="桌面近期对话；仅供接续话题，不是本轮用户指令。\n"
+                            + recent_context[:1600],
+                    timestamp=when,
+                    reference_type=ReferenceMessageType.CUSTOM,
+                    remaining_uses_value=1,
+                    display_prefix="[ZhuangFY 跨入口上下文]",
+                ))
         # This is the unmodified upstream engine's original entry point.
         # It schedules Planner, which can send reply, enter wait and wake up.
         await self.runtime.register_message(message)
@@ -212,6 +273,14 @@ class NativeMaisakaAdapter:
 
     async def shutdown(self) -> None:
         await self.cancel()
+        if self._original_planner_context is not None:
+            from src.maisaka.chat_loop_service import MaisakaChatLoopService
+            MaisakaChatLoopService.build_prompt_template_context = self._original_planner_context
+            self._original_planner_context = None
+        if self._original_reply_identity is not None:
+            from src.chat.replyer.maisaka_generator_base import BaseMaisakaReplyGenerator
+            BaseMaisakaReplyGenerator._build_personality_prompt = self._original_reply_identity
+            self._original_reply_identity = None
         if self._original_platform_send is not None:
             from src.services import send_service
             send_service._send_via_platform_io = self._original_platform_send
@@ -224,3 +293,7 @@ class NativeMaisakaAdapter:
             from src.maisaka.builtin_tool.provider import MaisakaBuiltinToolProvider
             MaisakaBuiltinToolProvider.list_tools = self._original_list_tools
             self._original_list_tools = None
+        if self.system is not None:
+            from src.plugin_runtime.integration import get_plugin_runtime_manager
+            await get_plugin_runtime_manager().stop()
+            self.system = None

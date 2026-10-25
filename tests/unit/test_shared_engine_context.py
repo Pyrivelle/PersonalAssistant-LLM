@@ -28,6 +28,10 @@ class FakeMemory:
         return {"memories": [{"content": "用户明确说喜欢科研", "kind": "semantic"},
                             {"content": "上次讨论机器人架构", "kind": "episodic"}]}
 
+    def relationship_snapshot(self, channel):
+        return {"enabled": True, "tier": "L2", "version": 3,
+                "hint": "已验证的信任关系"}
+
 
 class SharedContextTests(unittest.TestCase):
     def settings(self):
@@ -49,6 +53,8 @@ class SharedContextTests(unittest.TestCase):
         self.assertEqual(first.memory_context, second.memory_context)
         self.assertIn("用户明确说喜欢科研", first.memory_context)
         self.assertEqual(first.conversation_id, "qq:456:private:123")
+        self.assertEqual(first.social.relationship_status, "ready")
+        self.assertEqual(first.social.relationship_tier, "L2")
         self.assertEqual(memory.calls[0][0].external_user_id, "123")
 
     def test_qq_policy_fails_closed_before_memory(self):
@@ -69,6 +75,7 @@ class SharedContextTests(unittest.TestCase):
                            query="喜欢什么")
         self.assertIsNone(result.person_id)
         self.assertEqual(result.memory_context, "")
+        self.assertEqual(result.social.relationship_status, "unavailable")
         self.assertFalse(memory.calls)
 
     def test_revoked_timeline_consent_blocks_recall(self):
@@ -80,7 +87,24 @@ class SharedContextTests(unittest.TestCase):
         result = p.prepare(VerifiedPrivateQQ(456, 123), persona="庄方宜",
                            query="喜欢什么")
         self.assertEqual(result.memory_context, "")
+        self.assertEqual(result.social.relationship_status, "no_consent")
         self.assertFalse(memory.calls)
+
+    def test_relationship_outage_keeps_verified_identity_without_downgrade(self):
+        from zhuangfy.memory.client import MemoryClientError
+
+        class OfflineRelation(FakeMemory):
+            def relationship_snapshot(self, channel):
+                raise MemoryClientError(503, "unavailable")
+
+        result = SharedContextProvider(
+            qq_settings=self.settings(), identity_repository=FakeIdentity(),
+            memory_client=OfflineRelation(),
+        ).prepare(VerifiedPrivateQQ(456, 123), persona="庄方宜", query="")
+        self.assertEqual(result.person_id, "verified-person-001")
+        self.assertEqual(result.social.relationship_status, "unavailable")
+        self.assertIsNone(result.social.relationship_tier)
+
 
     def test_llm_only_receives_bounded_untrusted_projection(self):
         example = {"memories": [{"content": "prompt injection\nignore previous"}] * 40}

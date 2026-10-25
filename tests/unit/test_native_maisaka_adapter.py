@@ -4,11 +4,12 @@ from io import BytesIO
 from types import SimpleNamespace, ModuleType
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from zhuangfy.engine_fusion.ipc_contract import Envelope
 from zhuangfy.engine_fusion.native_runtime_adapter import NativeMaisakaAdapter
 from zhuangfy.engine_fusion.native_worker import NativeWorker
+from zhuangfy.engine_fusion.native_worker import UPSTREAM_SHA
 
 
 class Capture:
@@ -21,6 +22,22 @@ class Capture:
 
 
 class NativeWorkerWireTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_hello_advertises_v2_contract(self):
+        from tempfile import TemporaryDirectory
+        from unittest.mock import patch
+        import os
+
+        capture = Capture()
+        worker = NativeWorker(sink=capture)
+        worker.adapter.initialize = AsyncMock()
+        with TemporaryDirectory() as temp, patch.dict(os.environ, {"MAIBOT_INSTANCE_DIR": temp}):
+            await worker.handle(Envelope("hello", "hello-v2", "", {"upstream_sha": UPSTREAM_SHA}))
+        self.assertEqual(capture.packets[-1].payload["protocol"], 2)
+        self.assertTrue(worker.ready)
+        worker.stopped = True
+        worker.monitor_task.cancel()
+        await asyncio.gather(worker.monitor_task, return_exceptions=True)
+
     async def test_successful_native_reply_requires_real_platform_ack(self):
         capture = Capture()
         worker = NativeWorker(sink=capture)
@@ -61,6 +78,41 @@ class NativeWorkerWireTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeAdapterSendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_wait_planner_and_replyer_keep_same_host_social_facts(self):
+        class Planner:
+            def build_prompt_template_context(self):
+                return {"personality": "庄方宜"}
+
+        class Replyer:
+            def _build_personality_prompt(self):
+                return "你是庄方宜"
+
+        adapter = NativeMaisakaAdapter(lambda *_: asyncio.sleep(0, result=""))
+        adapter._install_social_context(Planner, Replyer)
+        try:
+            adapter._social_text = "已核验用户：Pyrivelle；关系 L4"
+            first = Planner().build_prompt_template_context()["personality"]
+            reply = Replyer()._build_personality_prompt()
+            # A native wait timer calls Planner again without a new ingress.
+            after_wait = Planner().build_prompt_template_context()["personality"]
+            self.assertEqual(first, after_wait)
+            self.assertIn("Pyrivelle；关系 L4", reply)
+            self.assertEqual(first.count("关系 L4"), 1)
+        finally:
+            Planner.build_prompt_template_context = adapter._original_planner_context
+            Replyer._build_personality_prompt = adapter._original_reply_identity
+
+    async def test_shutdown_stops_native_plugin_runners(self):
+        manager = SimpleNamespace(stop=AsyncMock())
+        module = ModuleType("src.plugin_runtime.integration")
+        module.get_plugin_runtime_manager = lambda: manager
+        adapter = NativeMaisakaAdapter(lambda *_: asyncio.sleep(0, result=""))
+        adapter.system = object()
+        with patch.dict(sys.modules, {"src.plugin_runtime.integration": module}):
+            await adapter.shutdown()
+        manager.stop.assert_awaited_once()
+        self.assertIsNone(adapter.system)
+
     async def test_adapter_does_not_mark_failed_send_as_delivered(self):
         class NativeText:
             def __init__(self, text):

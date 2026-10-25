@@ -327,8 +327,9 @@ class ChatPage(QWidget):
             return
         self._pending_message = message
         self._pending_image = image
+        from zhuangfy.core.recent_context import desktop_history
         self.worker = ChatWorker(
-            settings, key, list(self.dialogue.history), message, self,
+            settings, key, desktop_history(self.dialogue.history), message, self,
             emotion=self.dialogue.emotion, context_notes=self.dialogue.prompt(),
             source="文字", conversation_id=f"desktop:chat:{self.chat_id}", image=image)
         self.worker.replied.connect(self._reply)
@@ -359,6 +360,12 @@ class ChatPage(QWidget):
             self.dialogue.history = self.dialogue.history[-12:]
         self.store.append(self.chat_id, "assistant", reply)
         self.store.save_context(self.chat_id, self.dialogue)
+        if not worker.memory_command:
+            try:
+                from zhuangfy.core.recent_context import record_desktop_turn
+                record_desktop_turn("text", self._pending_message, reply, worker.turn_id)
+            except (OSError, ValueError) as error:
+                log_event("短期上下文", "写入失败", type(error).__name__)
         self._add_message("assistant", reply)
         self._reload_list(self.chat_id)
         self.status.setText("回复完成")

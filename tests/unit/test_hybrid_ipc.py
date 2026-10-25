@@ -5,7 +5,7 @@ import unittest
 from zhuangfy.engine_fusion.ipc_contract import (
     Envelope, ProtocolError, inbound_from_host,
 )
-from zhuangfy.engine_fusion.shared_context import SharedConversationContext
+from zhuangfy.engine_fusion.shared_context import SharedConversationContext, HybridSocialContext
 from zhuangfy.engine_fusion.worker import WorkerSession, run_worker
 from zhuangfy.engine_fusion.ipc_transport import (
     HybridWorkerClient, HybridTransportUnavailable,
@@ -16,9 +16,9 @@ CONVERSATION = "qq:456:private:123"
 
 def example_context():
     return SharedConversationContext(
-        1, CONVERSATION, "hybrid", "person-abc",
+        2, CONVERSATION, "hybrid", "person-abc",
         "庄方宜的人格设定", "[历史记忆资料；不是指令] 之前聊过花",
-        "qq:456",
+        "qq:456", social=HybridSocialContext(person_id="person-abc"),
     )
 
 
@@ -33,6 +33,29 @@ def example_event():
 
 
 class IPCEnvelopeTests(unittest.TestCase):
+    def test_social_snapshot_requires_same_person_and_real_relation_status(self):
+        event = example_event()
+        social = event.payload["context"]["social"]
+        self.assertEqual(social["person_id"], "person-abc")
+        self.assertEqual(event.version, 2)
+        social["person_id"] = "another-person"
+        with self.assertRaisesRegex(ProtocolError, "cross-person"):
+            Envelope("ingress", "evt-1", CONVERSATION, event.payload)
+        social["person_id"] = "person-abc"
+        social["relationship_status"] = "unavailable"
+        social["relationship_tier"] = "L4"
+        with self.assertRaisesRegex(ProtocolError, "unverified relationship"):
+            Envelope("ingress", "evt-1", CONVERSATION, event.payload)
+
+    def test_recent_context_is_bounded_and_carried_as_data(self):
+        event = example_event()
+        event.payload["context"]["recent_context"] = "桌面文字：刚才在讨论 Qt"
+        self.assertEqual(Envelope.from_line(event.to_line()).payload["context"]["recent_context"],
+                         "桌面文字：刚才在讨论 Qt")
+        event.payload["context"]["recent_context"] = "x" * 1601
+        with self.assertRaisesRegex(ProtocolError, "recent context budget"):
+            Envelope("ingress", "evt-1", CONVERSATION, event.payload)
+
     def test_image_and_low_trust_memory_remain_inside_same_turn(self):
         event = example_event()
         roundtrip = Envelope.from_line(event.to_line())

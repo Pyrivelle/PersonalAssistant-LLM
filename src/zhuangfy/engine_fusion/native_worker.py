@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+import sqlite3
 import sys
 from uuid import uuid4
 
 from zhuangfy.engine_fusion.ipc_contract import Envelope, ProtocolError, MAX_WIRE_BYTES
 from zhuangfy.engine_fusion.native_runtime_adapter import NativeMaisakaAdapter
+from zhuangfy.engine_fusion.native_monitor import latest_event_id, monitor_rows, planner_details, summary
 
 UPSTREAM_SHA = "062d45cf8bd4272ac57d7ec03fcf405e5a458211"
 
@@ -30,6 +32,37 @@ class NativeWorker:
         self.stopped = False
         self.conversation = ""
         self.tasks: set[asyncio.Task] = set()
+        self.monitor_cursor = 0
+        self.monitor_task: asyncio.Task | None = None
+
+    async def monitor(self) -> None:
+        path = Path(os.environ["MAIBOT_INSTANCE_DIR"]) / "data" / "MaiBot.db"
+        prompt_root = Path(os.environ["MAIBOT_INSTANCE_DIR"]) / "logs" / "maisaka_prompt"
+        while not self.stopped:
+            await asyncio.sleep(0.5)
+            if not self.conversation or self.adapter.runtime is None:
+                continue
+            try:
+                rows = await asyncio.to_thread(
+                    monitor_rows, path, self.monitor_cursor,
+                    self.adapter.runtime.session_id)
+            except (OSError, sqlite3.Error):
+                continue
+            for event_id, kind, payload in rows:
+                self.monitor_cursor = event_id
+                if kind == "planner.finalized":
+                    for detail_phase, detail_text in planner_details(payload, prompt_root):
+                        await self.emit(Envelope("telemetry", uuid4().hex, self.conversation, {
+                            "phase": detail_phase, "summary": detail_text,
+                            "cause_event_id": self.adapter._active_event_id or "native-timer",
+                        }))
+                projected = summary(kind, payload)
+                if projected is not None:
+                    phase, detail = projected
+                    await self.emit(Envelope("telemetry", uuid4().hex, self.conversation, {
+                        "phase": phase, "summary": detail,
+                        "cause_event_id": self.adapter._active_event_id or "native-timer",
+                    }))
 
     async def emit(self, envelope: Envelope) -> None:
         async with self.writer_lock:
@@ -70,10 +103,16 @@ class NativeWorker:
                 return
             await self.emit(Envelope("hello_ack", event.request_id, "", {
                 "upstream_sha": UPSTREAM_SHA,
-                "protocol": 1, "transport_ready": True,
+                "protocol": 2, "transport_ready": True,
                 "native_runtime_ready": True,
                 "capabilities": ["native_maisaka_planner_reply_wait", "text_ingress", "host_delivery_ack"],
             }))
+            try:
+                self.monitor_cursor = latest_event_id(
+                    Path(os.environ["MAIBOT_INSTANCE_DIR"]) / "data" / "MaiBot.db")
+            except (OSError, sqlite3.Error):
+                self.monitor_cursor = 0
+            self.monitor_task = asyncio.create_task(self.monitor())
             return
         if not self.ready:
             await self.emit(Envelope("error", event.request_id, event.conversation_id,
@@ -116,11 +155,15 @@ class NativeWorker:
             p = event.payload
             ctx = p["context"]
             try:
+                options = {"images": images}
+                if ctx["recent_context"]:
+                    options["recent_context"] = ctx["recent_context"]
+                options["social"] = ctx["social"]
                 observations = await self.adapter.receive(
                     event.request_id, p["message_id"], event.conversation_id,
                     "\n".join(part["content"] for part in components
                               if part["type"] == "text"),
-                    ctx["persona"], ctx["memory_context"], images=images,
+                    ctx["persona"], ctx["memory_context"], **options,
                 )
             except Exception as exc:
                 await self.emit(Envelope("error", event.request_id, event.conversation_id, {
@@ -167,6 +210,9 @@ class NativeWorker:
                 await self.handle(event)
             return 0
         finally:
+            if self.monitor_task is not None:
+                self.monitor_task.cancel()
+                await asyncio.gather(self.monitor_task, return_exceptions=True)
             for _reply_id, fut in self.pending_delivery.values():
                 if not fut.done():
                     fut.set_result("")

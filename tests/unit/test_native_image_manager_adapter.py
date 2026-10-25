@@ -41,6 +41,7 @@ class FakeRuntime:
     def __init__(self, session_id):
         self.session_id = session_id
         self.messages = []
+        self._chat_history = []
         self.started = False
         FakeRuntime.last = self
     async def start(self):
@@ -72,7 +73,7 @@ def module_doubles(manager):
     modules = {}
     for pkg in ("src", "src.config", "src.chat", "src.chat.message_receive",
                 "src.chat.image_system", "src.common", "src.common.data_models",
-                "src.core", "src.maisaka"):
+                "src.core", "src.maisaka", "src.maisaka.context"):
         m = types.ModuleType(pkg)
         m.__path__ = []
         modules[pkg] = m
@@ -81,9 +82,11 @@ def module_doubles(manager):
                  "src.common.data_models.mai_message_data_model",
                  "src.common.data_models.message_component_data_model",
                  "src.core.local_operator", "src.maisaka.runtime",
+                 "src.maisaka.context.messages",
                  "src.chat.image_system.image_manager"):
         modules[name] = types.ModuleType(name)
     modules["src.config.config"].global_config = types.SimpleNamespace(
+        bot=types.SimpleNamespace(),
         personality=types.SimpleNamespace(behavior_style=""))
     chat = types.SimpleNamespace(registered=[])
     chat.register_message = chat.registered.append
@@ -101,11 +104,30 @@ def module_doubles(manager):
     comp.ImageComponent = FakeImage
     modules["src.core.local_operator"].LOCAL_PLATFORM_BOT_IDS = {}
     modules["src.maisaka.runtime"].MaisakaHeartFlowChatting = FakeRuntime
+    modules["src.maisaka.context.messages"].ReferenceMessage = FakeMessage
+    modules["src.maisaka.context.messages"].ReferenceMessageType = types.SimpleNamespace(
+        MEMORY="memory", CUSTOM="custom")
     modules["src.chat.image_system.image_manager"].image_manager = manager
     return modules
 
 
 class OriginalImageManagerUsageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shared_context_is_one_use_reference_not_saved_as_user_message(self):
+        manager = FakeImageManager()
+        adapter = NativeMaisakaAdapter(lambda *_: asyncio.sleep(0, result="onebot-42"))
+        adapter.system = object()
+        with patch.dict(sys.modules, module_doubles(manager)):
+            await adapter.receive(
+                "event1", "message1", "qq:456:private:123",
+                "今天聊什么？", "庄方宜的人格", "以前谈过研究计划",
+                recent_context="桌面：刚才在调试 Qt")
+        runtime = FakeRuntime.last
+        self.assertEqual(runtime.messages[0].raw_message.components[0].text, "今天聊什么？")
+        self.assertNotIn("Qt", runtime.messages[0].processed_plain_text)
+        self.assertEqual(len(runtime._chat_history), 2)
+        self.assertTrue(all(item.remaining_uses_value == 1 for item in runtime._chat_history))
+        self.assertIn("Qt", runtime._chat_history[1].content)
+
     async def test_original_manager_save_cache_and_same_turn_image_component(self):
         manager = FakeImageManager()
         modules = module_doubles(manager)

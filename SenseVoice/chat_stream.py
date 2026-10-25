@@ -105,6 +105,43 @@ def project_turns(events: list[dict]) -> list[dict]:
             turn["decision"] = "本轮不回复"
         elif source == channel and phase == "思考":
             turn["thinking"].append(("规划摘要", _message_text(detail, channel)))
+        elif source == channel and phase in {"上下文", "阶段", "规划"}:
+            body = _message_text(detail, channel)
+            label = {"上下文": "上下文选取", "阶段": "Maisaka 阶段",
+                     "规划": "Planner 结论"}[phase]
+            if phase in {"阶段", "规划"}:
+                round_match = re.match(r"^(第\d+轮|当前轮)\s*·\s*", body)
+                if round_match:
+                    label = round_match.group(1) + " · " + label
+                    body = body[round_match.end():]
+            turn["thinking"].append((
+                label, body))
+            if phase == "规划":
+                if "决策：wait" in body and turn["status"] != "已回复":
+                    turn["status"] = "等待补充"
+                    turn["decision"] = "等待补充"
+                elif "决策：stop" in body and turn["status"] != "已回复":
+                    turn["status"] = "本轮不回复"
+                    turn["decision"] = "本轮不回复"
+                elif "决策：reply" in body:
+                    turn["decision"] = "立即回复"
+        elif source == channel and phase in {
+                "身份关系", "长期记忆内容", "跨入口对话内容",
+                "输入历史", "模型推理", "规划正文", "工具执行", "行为结论"}:
+            body = _message_text(detail, channel)
+            if phase in {"输入历史", "模型推理", "规划正文", "工具执行", "行为结论"}:
+                label = {"输入历史": "Planner 输入历史",
+                         "模型推理": "模型推理", "规划正文": "Planner 规划正文",
+                         "工具执行": "工具执行", "行为结论": "行为结论"}[phase]
+                round_match = re.match(r"^(第\d+轮|当前轮)\s*·\s*", body)
+                if round_match:
+                    label = round_match.group(1) + " · " + label
+                    body = body[round_match.end():]
+            else:
+                label = {"身份关系": "已核验身份与关系",
+                         "长期记忆内容": "检索到的长期记忆",
+                         "跨入口对话内容": "跨入口近期对话"}[phase]
+            turn["thinking"].append((label, body))
         elif source == channel and phase == "识图":
             turn["thinking"].append(("图片理解", _message_text(detail, channel)))
         elif source == channel and phase == "搜索结果":
@@ -193,7 +230,7 @@ def thought_sections(thinking: list[tuple[str, str]]) -> list[tuple[str, str, st
     """Coalesce Planner reasoning, decision JSON and host action by round."""
     sections: list[dict] = []
     for label, detail in thinking:
-        match = re.match(r"第(\d+)轮(?:思考|结论)", label)
+        match = re.match(r"第(\d+)轮(?:思考|结论|\s*·)", label)
         key = "planner:" + match.group(1) if match else "stage:" + str(len(sections))
         if not sections or sections[-1]["key"] != key:
             sections.append({"key": key, "title": ("Planner · 第" + match.group(1) + "轮")

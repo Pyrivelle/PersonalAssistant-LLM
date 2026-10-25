@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from activity_log import format_event, log_event, receive_event, session_snapshot
+from activity_log import (format_event, import_external_events, log_event,
+                          receive_event, session_snapshot)
 from branding import APP_NAME, app_icon
 from zhuangfy.paths import Paths
 from zhuangfy.storage import RESULT_FILE, estimated_bytes
@@ -57,6 +58,10 @@ DATA_ROOT = Paths.current().data_root
 SNOWLUMA_WEBUI = QUrl("http://127.0.0.1:5099/")
 SNOWLUMA_DIR = Paths.current().snowluma_root
 PAGE_HOME, PAGE_CHAT, PAGE_STREAM, PAGE_MEMORY, PAGE_PERSONA, PAGE_MODEL, PAGE_PLATFORM, PAGE_PLUGINS, PAGE_MONITOR, PAGE_SYSTEM, PAGE_VOICE = range(11)
+
+
+def _hybrid_preview_active() -> bool:
+    return os.environ.get("ZHUANGFY_HYBRID_PREVIEW_ACTIVE") == "1"
 
 
 def _button(label: str, callback, *, primary: bool = False) -> QPushButton:
@@ -307,6 +312,7 @@ class Dashboard(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_status)
         self.timer.start(3000)
+        import_external_events()
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self.refresh_logs)
         self.log_timer.timeout.connect(self.chat_stream.refresh)
@@ -564,13 +570,17 @@ class Dashboard(QMainWindow):
         row = QHBoxLayout()
         self.snow_button = _button("启动 SnowLuma", self.toggle_snowluma, primary=True)
         self.bridge_button = _button("启动 QQ 桥接", self.toggle_bridge)
+        if _hybrid_preview_active():
+            self.bridge_button.setEnabled(False)
+            self.bridge_button.setToolTip("Hybrid 预览正由独立进程管理 QQ 连接")
         row.addWidget(self.snow_button)
         row.addWidget(_button("打开 SnowLuma 配置页面  ↗", self.open_snowluma_webui))
         row.addWidget(self.bridge_button)
         row.addStretch()
         layout.addLayout(row)
         self.auto_connect = ToggleSwitch("启动 SnowLuma 后自动连接 OneBot 并运行 QQ 桥接")
-        self.auto_connect.setChecked(True)
+        self.auto_connect.setChecked(not _hybrid_preview_active())
+        self.auto_connect.setEnabled(not _hybrid_preview_active())
         layout.addWidget(self.auto_connect)
         column.addWidget(service)
 
@@ -838,7 +848,7 @@ class Dashboard(QMainWindow):
         card, layout = _card("运行控制台", "当前启动的实时事件流；内容留在内存中，退出后清空。")
         controls = QHBoxLayout()
         self.log_filter = QComboBox()
-        self.log_filter.addItems(("全部来源", "控制台", "语音", "文字", "QQ", "模型", "记忆", "SnowLuma"))
+        self.log_filter.addItems(("全部来源", "控制台", "语音", "文字", "QQ", "模型", "记忆", "SnowLuma", "Hybrid", "Maisaka"))
         self.log_filter.currentIndexChanged.connect(lambda _index: self.refresh_logs(force=True))
         controls.addWidget(QLabel("来源"))
         controls.addWidget(self.log_filter)
@@ -1250,6 +1260,7 @@ class Dashboard(QMainWindow):
             self.home_transcript.moveCursor(QTextCursor.MoveOperation.End)
 
     def refresh_logs(self, *, force: bool = False) -> None:
+        import_external_events()
         revision, entries = session_snapshot()
         signature = (revision, self.log_filter.currentText(), self.log_search.text())
         if not force and signature == self._log_signature:
@@ -1416,6 +1427,9 @@ class Dashboard(QMainWindow):
         self.refresh_status()
 
     def toggle_bridge(self) -> None:
+        if _hybrid_preview_active():
+            self.qq_feedback.setText("Hybrid 预览独占 QQ 连接；请先退出 Hybrid 再启动旧桥接。")
+            return
         self._auto_bridge_pending = False
         if self.bridge.state() != QProcess.ProcessState.NotRunning:
             self._stop(self.bridge)
@@ -1425,6 +1439,8 @@ class Dashboard(QMainWindow):
         self._start_bridge()
 
     def _start_bridge(self) -> None:
+        if _hybrid_preview_active():
+            return
         if self._closing or self.bridge.state() != QProcess.ProcessState.NotRunning:
             return
         try:
@@ -1544,7 +1560,8 @@ class Dashboard(QMainWindow):
                 QTimer.singleShot(0, self._start_bridge)
         self.snow_state.setText("SnowLuma WebUI：可连接" if snow_online else "SnowLuma WebUI：未连接")
         self.onebot_state.setText("OneBot 端口：可连接" if onebot_online else "OneBot 端口：未连接")
-        self.bridge_state.setText("QQ 桥接：已连接" if self._bridge_connected else
+        self.bridge_state.setText("QQ 桥接：Hybrid 预览由独立进程管理" if _hybrid_preview_active() else
+                                  "QQ 桥接：已连接" if self._bridge_connected else
                                   ("QQ 桥接：运行中，等待登录/连接" if bridge_managed else "QQ 桥接：未由控制台运行"))
         progress = "   ·   等待 OneBot 后自动连接" if self._auto_bridge_pending else ""
         self.service_state.setText(f"WebUI {'可连接' if snow_online else '未连接'}   ·   OneBot 端口 {'可连接' if onebot_online else '未连接'}{progress}")
