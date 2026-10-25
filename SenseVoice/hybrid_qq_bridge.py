@@ -24,15 +24,21 @@ from zhuangfy.engine_fusion.shared_context import (
 from zhuangfy.engine_fusion.native_transport import NativeMaisakaClient
 
 SOURCE = Path(__file__).resolve().parents[1] / "third_party" / "MaiBot"
-INSTANCE = Path(__file__).resolve().parents[1] / ".maisaka-experiment"
+INSTANCE = Path(__file__).resolve().parents[1] / ".maisaka-hybrid-preview"
 MAI_PYTHON = SOURCE / ".venv" / (
     "Scripts/python.exe" if os.name == "nt" else "bin/python"
 )
 
 
 class HybridQQBridge(QqBridge):
-    def __init__(self, settings: QqSettings):
+    def __init__(self, settings: QqSettings, *, test_user_id: int):
+        if (type(test_user_id) is not int or test_user_id <= 0
+                or settings.allow_all_private
+                or test_user_id not in settings.allowed_private_ids):
+            raise ValueError("Hybrid preview requires one explicitly allowed private QQ user")
         super().__init__(settings)
+        self.test_user_id = test_user_id
+        self._hybrid_erasing = False
         self._native: dict[str, NativeMaisakaClient] = {}
         self._reply_receipts: dict[tuple[str, str], str] = {}
 
@@ -40,7 +46,8 @@ class HybridQQBridge(QqBridge):
         verified = parse_message(event, self.bot_id, self.settings)
         # Stage 1 only supports authenticated private text.
         # No old ZhuangFY group Planner should run silently in Hybrid.
-        if verified is None or verified.kind != "private":
+        if (verified is None or verified.kind != "private"
+                or verified.user_id != self.test_user_id):
             return False
         return super().accept(event)
 
@@ -58,8 +65,8 @@ class HybridQQBridge(QqBridge):
             user_id = int(conversation_id[len(expected):])
         except ValueError:
             return ""
-        if (user_id <= 0 or (not self.settings.allow_all_private
-                             and user_id not in self.settings.allowed_private_ids)
+        if (user_id != self.test_user_id
+                or user_id not in self.settings.allowed_private_ids
                 or not text or not self.ws or not self.bot_id):
             return ""
         key = (conversation_id, reply_id)
@@ -130,7 +137,11 @@ class HybridQQBridge(QqBridge):
                 # to upstream. The regular ZhuangFY erase path must run.
                 state.pending = [text]
                 state.pending_event_ids = events
-                await super().process(state)
+                self._hybrid_erasing = True
+                try:
+                    await super().process(state)
+                finally:
+                    self._hybrid_erasing = False
                 client = self._native.pop(
                     f"qq:{self.bot_id}:private:{incoming.user_id}", None)
                 if client:
@@ -175,6 +186,17 @@ class HybridQQBridge(QqBridge):
             except (RuntimeError, ValueError, PermissionError, OSError) as exc:
                 log_event("Hybrid", "原生会话失败", f"{scope} · {type(exc).__name__}")
 
+    async def send_reply(self, incoming: Incoming, reply: str, *,
+                         voice: bool = False, continuation: bool = False) -> bool:
+        if self._hybrid_erasing:
+            reply += (
+                "\\n注意：原生 Maisaka 的实验数据库不会随此命令删除。"
+                "请退出 Hybrid、清理 .maisaka-hybrid-preview 隔离目录，"
+                "并核实无其他备份，才能确认实验数据也被清理。"
+            )
+        return await super().send_reply(
+            incoming, reply, voice=voice, continuation=continuation)
+
     async def receive(self) -> None:
         try:
             await super().receive()
@@ -191,17 +213,20 @@ class HybridQQBridge(QqBridge):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hybrid QQ private preview: REAL Maisaka + ZhuangFY host")
+    parser.add_argument("--user-id", type=int, required=True,
+                        help="仅接入这个已在 ZhuangFY QQ 白名单内的测试账号")
     parser.add_argument("--confirm-experimental-hybrid", action="store_true",
                         help="允许使用尚未真实 QQ 验收的实验通道")
     args = parser.parse_args()
     if not args.confirm_experimental_hybrid:
         parser.error("必须显式确认实验启动；默认 ZhuangFY 不受影响")
     settings = QqSettings.load()
-    if not settings.allow_all_private and not settings.allowed_private_ids:
-        parser.error("QQ 私聊白名单为空；Hybrid Preview 不能运行")
+    if (settings.allow_all_private or args.user_id <= 0
+            or args.user_id not in settings.allowed_private_ids):
+        parser.error("Hybrid 只允许指定 QQ 白名单内单一测试账号，且必须关闭 allow_all_private")
     with single_instance():
         try:
-            asyncio.run(HybridQQBridge(settings).run_forever())
+            asyncio.run(HybridQQBridge(settings, test_user_id=args.user_id).run_forever())
         except KeyboardInterrupt:
             pass
 
