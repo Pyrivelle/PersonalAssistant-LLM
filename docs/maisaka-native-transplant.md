@@ -135,11 +135,28 @@ python scripts/chat_engine.py run --engine hybrid `
 实验回复会明确提示残余数据。需要关闭预览后按需清理
 `.maisaka-hybrid-preview/`，不能把两份系统的删除状态混为一谈。
 
-**图片尚未接通**：预览入口只投递普通文字，对未能交给原版
-ImageManager 的图片明确拒绝，不使用 ZhuangFY 自己的 Vision 冒充原版。
-后续使用 AssetID、安全图像字节传输和上游
-`src/chat/image_system/image_manager.py` 接收图像，然后检验哈希复用、
-异步 VLM、描述缓存、来源及删除。
+**原版图片链路已接入实验代码、尚待实机验收**：预览支持 QQ
+原图（PNG/JPEG/GIF/WebP，单轮最多 2 张）；由 ZhuangFY 的 QQ
+来源白名单下载原始字节，不再转码 JPEG。宿主在独立
+`.maisaka-hybrid-preview/incoming_images` 临时目录按 SHA-256
+写入有限大小的图片，JSONL 只转发受控 AssetID，不允许任意路径
+或外部链接；原生 Worker 校验哈希后调用
+`image_manager.get_image_description(image_bytes=..., wait_for_build=True)`。
+这是上游 ImageManager 真实的“保存图片 → 查缓存 → 异步调用 VLM
+→ 持久化描述”方法。结果作为原版 `ImageComponent`
+附属于同一用户消息进入 Planner，同时按 QQ 作用域写入
+ZhuangFY 的 EvidenceStore / ImageMeaningStore。
+
+识图回执包括 `asset_id / description / cache_hit / description_ready`。
+`description_ready=false` 表示未配置视觉模型或识图失败，**不能宣称理解了图片**。
+用户明确解释某张图的特殊含义仍单独存储在 ZhuangFY 的私聊记录，
+再次发图时作为历史资料补充；不覆盖 Maisaka VLM 的观察。
+原生 ImageManager 的数据库与保存文件属于 Hybrid 独立实验实例，
+目前仍须手动清理，不能把 ZhuangFY 的 `/forget_me` 当成全部删除。
+
+**真实机器还需验证** QQ 原图下载、原生数据库持久化、
+缓存二次命中、VLM 实际生成、Planner 收到图片组件及
+`reply/wait/stop` 行为；CI 是离线回归，不能代替这项验收。
 
 ## Hybrid IPC v1：已接通独立 Worker 握手（未接通 Maisaka）
 
@@ -224,13 +241,13 @@ PersonID/Memory 与图片语义数据，按测试情况逐步共享能力，
 | 阶段 | 范围 | 状态 |
 | --- | --- | --- |
 | A. 固定完整上游 + 独立原生实例 | 保留完整 GPL 源码、原生图片缓存、Planner/Reply/Wait/Stop | 已提交启动器与离线测试；真实模型/QQ 未验收 |
-| B. 上游进程到 ZhuangFY 事件边界 | QQ MessageComponent / Observation / ToolResult 投影、真实投递 ACK 回传 | 未实现 |
+| B. 上游进程到 ZhuangFY 事件边界 | QQ MessageComponent / Observation、真实投递 ACK 回传 | 实验代码已接通；实机 ACK 待验收，ToolResult 尚未映射 |
 | C. 合并 ZhuangFY Persona / PersonID / Memory | 双向读取映射、撤回/删除、会话隔离、权限一致 | 未实现 |
 | D. 启动前独立双引擎选择 | CLI 选择启动原版 ZhuangFY 或完整 MaiBot；不覆盖任何引擎 | 已提交启动器，真实 QQ 尚未验证 |
 | D2. 同一 ZhuangFY Runtime 内部切换 | 共享 QQ 通道、Persona、PersonID/Memory、超时回退 | 未实现；目前按独立进程切换 |
-| E. 原生图片处理接管 | 完整 hash/cache/async VLM 及跨模型失效；兼容 QQ 图片 | 仅原版实例可试验，ZhuangFY 尚未接管 |
+| E. 原生图片处理接管 | 原始 QQ 字节 → 上游 ImageManager 保存/hash/VLM/缓存 → Observation | 实验代码已接通且离线测试，真实 QQ/VLM 待验收；跨模型缓存失效待验证 |
 
-这里 **不宣称 B–E 已经实现**。即使子模块已经包含全套源码，
+这里 **不宣称 B–E 的实机运行已通过验收**。即使子模块已经包含全套源码，
 不能把本机 MaiBot 独立进程等同于 ZhuangFY 已支持这套循环。
 直接将 `src.maisaka` import 到现有 ZhuangFY 进程还会遇到顶层 `src`
 包名、数据库连接和全局配置冲突，因此应隔离为子进程，通过窄协议桥接。
