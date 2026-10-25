@@ -120,11 +120,27 @@ class Envelope:
                     not 0 < len(p["text"]) <= 3500):
                 raise ProtocolError("invalid native reply text")
         elif self.kind == "accepted":
-            if set(p) != {"message_id", "native_runtime"}:
+            if set(p) not in ({"message_id", "native_runtime"},
+                              {"message_id", "native_runtime", "observations"}):
                 raise ProtocolError("invalid native acceptance")
             _id(p["message_id"], "accepted message id")
             if p["native_runtime"] is not True:
                 raise ProtocolError("cannot claim native acceptance without runtime")
+            if "observations" in p:
+                items = p["observations"]
+                if not isinstance(items, list) or len(items) > 2:
+                    raise ProtocolError("invalid image observation list")
+                for item in items:
+                    if not isinstance(item, dict) or set(item) != {
+                        "asset_id", "description", "cache_hit", "description_ready"
+                    }:
+                        raise ProtocolError("invalid image observation")
+                    _id(item["asset_id"], "observation asset ID")
+                    if (not isinstance(item["description"], str)
+                            or len(item["description"]) > 2500
+                            or type(item["cache_hit"]) is not bool
+                            or type(item["description_ready"]) is not bool):
+                        raise ProtocolError("invalid native image observation fields")
         elif self.kind == "cancel":
             if set(p) != {"target_request_id"}:
                 raise ProtocolError("invalid cancel")
