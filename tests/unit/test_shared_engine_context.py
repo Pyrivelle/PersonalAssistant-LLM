@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from zhuangfy.engine_fusion.shared_context import (
-    SharedContextProvider, VerifiedPrivateQQ, _format_memory_hits,
+    SharedContextProvider, VerifiedPrivateQQ, VerifiedQQMemoryIdentity, _format_memory_hits,
 )
 
 
@@ -92,6 +92,26 @@ class SharedContextTests(unittest.TestCase):
             VerifiedPrivateQQ(0, 1)
         with self.assertRaises(ValueError):
             VerifiedPrivateQQ(123, 123)
+
+
+    def test_verified_qq_memory_service_identity_and_revocation(self):
+        class VerifiedLoopback:
+            def __init__(self): self.timeline = True
+            def onboard_qq(self, claim, display_name):
+                self.last_claim = claim
+                return {"person_id": "existing-person",
+                        "timeline_consent": self.timeline}
+        svc = VerifiedLoopback()
+        identity = VerifiedQQMemoryIdentity(svc, "主人")
+        from zhuangfy.memory.identity import ChannelIdentity
+        key = ChannelIdentity("qq", "456", "123")
+        self.assertEqual(identity.resolve(key), "existing-person")
+        self.assertTrue(identity.has_consent("existing-person", "timeline"))
+        self.assertEqual(svc.last_claim.external_user_id, "123")
+        svc.timeline = False
+        identity.resolve(key)
+        self.assertFalse(identity.has_consent("existing-person", "timeline"))
+        self.assertFalse(identity.has_consent("existing-person", "curation"))
 
 
 if __name__ == "__main__":
