@@ -113,7 +113,7 @@ python scripts/maisaka_native_experiment.py init --instance .maisaka-hybrid-prev
 ```
 
 编辑 `.maisaka-hybrid-preview/config/{bot_config.toml,model_config.toml}`，
-**必须关闭 MaiBot 的 `maim_message.enabled`**，使用原版 Planner/Replyer 模型配置。
+**必须关闭 MaiBot 的 `maim_message.enabled` 且将 `experimental.passive_replyer` 设为 `false`**，使用原版 Planner/Replyer 模型配置。
 ZhuangFY 的 `SenseVoice/qq_settings.json` 需要针对预览用户启用私聊白名单、
 关闭 `allow_all_private`。停止原来的 QQ Bridge，确保同一账号没有其他连接后运行：
 
@@ -126,6 +126,9 @@ python scripts/chat_engine.py run --engine hybrid `
 不能把 `hybrid` 设为默认。独立 MaiBot 原生对照实例使用另一份
 `.maisaka-experiment/`，Hybrid 使用专属 `.maisaka-hybrid-preview/`，
 原始 ZhuangFY 记忆不直接被 Maisaka 写入。
+
+
+为了不绕开 ZhuangFY 已有 Skill/工具授权，原生 Planner 在这轮私聊预览中**仅能调用原版 `reply`、`wait`、`stop`**。上游插件、网络搜索、MCP、Agent 工具暂时全部拒绝执行；`wait` 必须在 10–1800 秒内且每次输入最多连续登记 12 次。守护行为在[原生适配器](../src/zhuangfy/engine_fusion/native_runtime_adapter.py) 内，而不是仅凭模型提示词。
 
 **隐私限制**：原版 Maisaka 会存储自己的本地聊天/记忆记录。
 `/forget_me` 可处理 ZhuangFY 自身记录，但不会自动清除上游实验目录；
