@@ -91,6 +91,31 @@ revision，防止实验结果受上游更新影响。
 event ID、ACK 结果、超时/取消及幂等控制的 IPC 连接，然后接通
 共享 Context 与删除联动；在此之前 Hybrid 严禁冒充已启用。
 
+## Hybrid IPC v1：已接通独立 Worker 握手（未接通 Maisaka）
+
+此阶段已提交一条**实际启动子进程并通过 JSONL/stdio 通信**的链路：
+
+- `src/zhuangfy/engine_fusion/ipc_contract.py`：版本号、请求 ID、已验证的 QQ 私聊作用域、原始消息组件（文字/图片 AssetID）、ZhuangFY 人格及获准的低信任长期记忆，以及 cancel / delivery ACK 协议。
+- `src/zhuangfy/engine_fusion/ipc_transport.py`：ZhuangFY 侧子进程生命周期、固定版本握手、请求超时、答复身份匹配、失败关闭和退出清理。
+- `src/zhuangfy/engine_fusion/worker.py`：隔离进程的协议解析、握手与拒绝不支持动作；**明确返回 `native_runtime_ready=false`**，禁止把这一步冒充成原版 Maisaka 推理已接入。
+- `tests/unit/test_hybrid_ipc.py`：真实 Worker 子进程握手及退出、跨 QQ 作用域拒绝、图片/记忆数据边界、ACK 来源、超限数据和未接入原生 Runtime 时的安全拒绝。
+
+在实验分支本地检验：
+
+```powershell
+python scripts/hybrid_probe.py
+```
+
+预期输出包括 `Hybrid IPC transport: OK` 和
+`Maisaka native runtime: NOT CONNECTED`。这代表**通信链路正常**，
+不代表第三引擎现已可以聊天或 QQ 通道切换成功。
+
+只有 Native Maisaka 事件适配器真正调用上游
+`MaisakaHeartFlowChatting` / `MaisakaReasoningEngine`，
+并让 ZhuangFY QQ Host 收到确认的发送结果、计时器唤醒、停止和取消回执后，
+才允许 Worker 报告 `native_runtime_ready=true` 并解锁
+`scripts/chat_engine.py --engine hybrid`。此前 Hybrid 保持 fail-closed。
+
 ## 双引擎版本选择（本 PR 新增）
 
 我们**保留 ZhuangFY 原有引擎**，MaiBot 作为另外一套实验引擎。
