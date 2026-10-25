@@ -60,10 +60,10 @@ revision，防止实验结果受上游更新影响。
 | --- | --- | --- | --- | --- |
 | zhuangfy | ZhuangFY OneBot | ZhuangFY | 原有 ZhuangFY 服务 | 原有方式 |
 | maibot | MaiBot 原生通道 | MaiBot 原生 | MaiBot 独立存储 | 原生独立实例（需配置） |
-| hybrid | **计划由 ZhuangFY QQ Bridge 持有** | **计划经适配器调用 Maisaka** | **计划统一用 ZhuangFY 已核验的身份、授权和记忆服务** | **未接通；启动器明确拒绝，以免误认为已经融合** |
+| hybrid | ZhuangFY OneBot 单人私聊预览 | Maisaka 原版 Planner–Reply–Wait + ImageManager | ZhuangFY 认证 QQ、Persona、PersonID、授权记忆；上游图片与聊天库隔离 | **实验代码已接入，需显式确认；真实 QQ/VLM 待验收** |
 
-`scripts/chat_engine.py status --engine hybrid` 可显示第三模式候选，
-但不允许设为默认或运行；等待真正的桥接实现后才解锁。
+`scripts/chat_engine.py status --engine hybrid` 可显示第三模式候选；
+该模式仅能凭单人白名单及两个实验确认参数运行，**不能设为默认**。
 **保持原 ZhuangFY 引擎、原版 MaiBot 引擎的启动路径不变。**
 
 ### 已建立的共享契约
