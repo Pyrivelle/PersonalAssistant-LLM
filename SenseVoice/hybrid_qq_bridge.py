@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import time
 import uuid
+from dataclasses import replace
 
 from activity_log import log_event
 from llm import load_settings
@@ -204,6 +205,27 @@ class HybridQQBridge(QqBridge):
                     persona=load_settings().system_prompt,
                     query=text[:300], engine="hybrid",
                 )
+                if image_bytes:
+                    # Per-conversation, user-taught image meaning is separate
+                    # from Maisaka's objective VLM description. Do not assume
+                    # the same image always means the same thing this turn.
+                    image_store = ImageMeaningStore(
+                        Paths.current().project_data_root / "evidence"
+                        / "image_meanings.sqlite3")
+                    prior_meanings = []
+                    for raw in image_bytes:
+                        digest = hashlib.sha256(raw).hexdigest()
+                        meaning = image_store.lookup(scope, digest)
+                        if meaning:
+                            prior_meanings.append(
+                                f"[历史用户解释，非本轮必然意图，图片SHA256={digest}："
+                                f"{meaning[:240]}]")
+                    if prior_meanings:
+                        available = max(0, 2000 - len(context.memory_context) - 1)
+                        suffix = "\\n".join(prior_meanings)[:available]
+                        context = replace(
+                            context, memory_context=(
+                                context.memory_context + "\\n" + suffix).strip()[:2000])
                 client = await self._client(scope)
                 # The native worker now owns reply->wait->timer->Planner cycles.
                 # Ingress acceptance is NOT counted as delivery.
