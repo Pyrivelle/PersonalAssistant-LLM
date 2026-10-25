@@ -90,6 +90,10 @@ class NativeMaisakaAdapter:
         if len(self._seen) > 5000:
             raise RuntimeError("native session replay cache full; restart session")
         _, bot, _, user = conversation_id.split(":")
+        # Upstream needs to recognize its own replies under the synthetic host
+        # platform. No second platform driver or QQ connection is started.
+        from src.core.local_operator import LOCAL_PLATFORM_BOT_IDS
+        LOCAL_PLATFORM_BOT_IDS["zhuangfy_hybrid"] = bot
         # A per-conversation process is required because upstream Persona is global.
         global_config.personality.behavior_style = persona[:8000]
         # Historical memories are only low-trust quoted data, not instructions.
