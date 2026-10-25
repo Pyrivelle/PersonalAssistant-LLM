@@ -62,7 +62,8 @@ class IPCEnvelopeTests(unittest.TestCase):
             **example_event().payload,
             "context": {**example_context().as_projection(), "persona": "好" * 8000},
         })
-        self.assertLessEqual(len(big.to_line()), 20_000)
+        with self.assertRaisesRegex(ProtocolError, "too large"):
+            big.to_line()
         with self.assertRaises(ProtocolError):
             Envelope.from_line(b"{" + b"x" * 20_000 + b"}")
         with self.assertRaises(ProtocolError):
