@@ -83,6 +83,26 @@ def _encode_jpeg(raw: bytes) -> bytes:
     return result
 
 
+def original_image_bytes(url: str) -> bytes:
+    """Fetch bounded ORIGINAL QQ bytes for native Maisaka ImageManager.
+
+    Unlike the legacy VLM path, do not transcode PNG/GIF/WebP to JPEG:
+    preservation of binary identity is required for upstream SHA256 cache.
+    """
+    raw = _download(url)
+    source = QBuffer()
+    source.setData(raw)
+    source.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(source)
+    dimension = reader.size()
+    if (not reader.canRead() or not dimension.isValid()
+            or dimension.width() * dimension.height() > MAX_IMAGE_PIXELS):
+        raise ValueError("原图不是可识别图片或尺寸超过 2500 万像素")
+    from zhuangfy.engine_fusion.image_assets import validate_image
+    validate_image(raw)
+    return raw
+
+
 def image_data_url(url: str) -> str:
     jpeg = _encode_jpeg(_download(url))
     return "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
