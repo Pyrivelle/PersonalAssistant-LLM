@@ -47,6 +47,17 @@ class ChatEngineSwitchTests(unittest.TestCase):
                                          python=Path(sys.executable))
             self.assertEqual(cmd, [sys.executable, str(root / "SenseVoice" / "qq_bridge.py")])
 
+    def test_hybrid_is_reserved_but_cannot_silently_run_legacy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(RuntimeError, "未实现真正的"):
+                launcher.build_command("hybrid", root=Path(folder))
+            config = Path(folder) / "engine.json"
+            with patch.object(launcher, "CONFIG", config):
+                with self.assertRaises(SystemExit) as raised:
+                    launcher.main(["set-default", "--engine", "hybrid"])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertFalse(config.exists())
+
     def test_maibot_launch_requires_separate_python(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
