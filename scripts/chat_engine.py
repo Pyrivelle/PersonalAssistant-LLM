@@ -55,20 +55,22 @@ def maibot_interpreter(setting: str, root: Path = ROOT) -> Path:
 
 
 def build_command(engine: str, *, root: Path = ROOT, python: Path | None = None,
-                  maibot_python: str = "", confirmed: bool = False) -> list[str]:
+                  maibot_python: str = "", confirmed: bool = False,
+                  hybrid_preview: bool = False) -> list[str]:
     python = python or Path(sys.executable)
     if engine == "zhuangfy":
         if not (root / "SenseVoice" / "qq_bridge.py").is_file():
             raise FileNotFoundError("ZhuangFY QQ Bridge 未找到")
         return [str(python), str(root / "SenseVoice" / "qq_bridge.py")]
     if engine == "hybrid":
-        # The third engine must not silently fall back to ZhuangFY and pretend
-        # that native Maisaka was invoked. Enable only after the QQ→IPC bridge
-        # and native Maisaka ACK semantics have been implemented and tested.
-        raise RuntimeError(
-            "ZhuangFY Hybrid 尚处于契约与适配开发阶段，未实现真正的 "
-            "Maisaka Planner/Replyer/Wait 通道接管；禁止以 ZhuangFY 冒充融合引擎"
-        )
+        if not hybrid_preview or not confirmed:
+            raise RuntimeError(
+                "Hybrid 尚未通过真实 QQ 验收；必须显式启用实验预览并确认通道独占"
+            )
+        script = root / "SenseVoice" / "hybrid_qq_bridge.py"
+        if not script.is_file():
+            raise FileNotFoundError("Hybrid 原生 QQ 预览入口尚未安装")
+        return [str(python), str(script), "--confirm-experimental-hybrid"]
     if engine == "maibot":
         exe = maibot_interpreter(maibot_python, root)
         if not exe.is_file():
@@ -119,7 +121,7 @@ def exclusive_launcher(path: Path = LOCK) -> Iterator[None]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="QQ 双引擎启动切换（独立进程，配置和记忆不共享）")
+        description="QQ 三引擎启动切换（Hybrid 仅显式实验预览）")
     parser.add_argument("action", nargs="?", choices=("run", "status", "set-default"),
                         default="run")
     parser.add_argument("--engine", choices=ENGINES,
@@ -128,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="MaiBot 独立 Python 环境路径")
     parser.add_argument("--confirm-exclusive-channel", action="store_true",
                         help="确认已停止以其他方式运行的同 QQ 账号实例")
+    parser.add_argument("--confirm-unstable-hybrid", action="store_true",
+                        help="明确启用尚未完成实机验收的原生 Maisaka 私聊实验")
     args = parser.parse_args(argv)
     try:
         current = read_config()
@@ -150,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
         if engine == "maibot" and not args.confirm_exclusive_channel:
             parser.error("使用 MaiBot 必须加 --confirm-exclusive-channel 并确保原 QQ Bridge 已停止")
         cmd = build_command(engine, maibot_python=mai_python,
-                            confirmed=args.confirm_exclusive_channel)
+                            confirmed=args.confirm_exclusive_channel,
+                            hybrid_preview=args.confirm_unstable_hybrid)
         with exclusive_launcher():
             print(f"已选择 {engine}。按 Ctrl+C 停止后才能切换。", flush=True)
             print("注意：直接手工启动的进程不受此互斥锁管理。", flush=True)
