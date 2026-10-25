@@ -59,3 +59,6 @@ storage_migration_result.json
 # Local engine selection and cross-engine launcher lock
 chat_engine_settings.json
 .chat_engine_switch.lock
+
+# Hybrid Maisaka pilot: independent persona, chats, images, logs, credentials
+.maisaka-hybrid-preview/
