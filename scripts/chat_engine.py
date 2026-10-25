@@ -19,7 +19,7 @@ CONFIG = ROOT / "chat_engine_settings.json"
 LOCK = ROOT / ".chat_engine_switch.lock"
 MAIBOT_LAUNCHER = ROOT / "scripts" / "maisaka_native_experiment.py"
 QQ_BRIDGE = ROOT / "SenseVoice" / "qq_bridge.py"
-ENGINES = ("zhuangfy", "maibot")
+ENGINES = ("zhuangfy", "maibot", "hybrid")
 
 
 def read_config(path: Path | None = None) -> dict[str, str]:
@@ -61,6 +61,14 @@ def build_command(engine: str, *, root: Path = ROOT, python: Path | None = None,
         if not (root / "SenseVoice" / "qq_bridge.py").is_file():
             raise FileNotFoundError("ZhuangFY QQ Bridge 未找到")
         return [str(python), str(root / "SenseVoice" / "qq_bridge.py")]
+    if engine == "hybrid":
+        # The third engine must not silently fall back to ZhuangFY and pretend
+        # that native Maisaka was invoked. Enable only after the QQ→IPC bridge
+        # and native Maisaka ACK semantics have been implemented and tested.
+        raise RuntimeError(
+            "ZhuangFY Hybrid 尚处于契约与适配开发阶段，未实现真正的 "
+            "Maisaka Planner/Replyer/Wait 通道接管；禁止以 ZhuangFY 冒充融合引擎"
+        )
     if engine == "maibot":
         exe = maibot_interpreter(maibot_python, root)
         if not exe.is_file():
@@ -134,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "set-default":
             if args.engine is None:
                 parser.error("set-default 需要 --engine")
+            if args.engine == "hybrid":
+                parser.error("Hybrid 仍未完成运行时桥接，暂不能设为默认启动引擎")
             save_config(engine, maibot_python=mai_python)
             print(f"默认 QQ 引擎已设为 {engine}；不会修改历史数据或正在运行的进程。")
             return 0
