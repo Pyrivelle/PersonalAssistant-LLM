@@ -22,7 +22,8 @@ QQ_BRIDGE = ROOT / "SenseVoice" / "qq_bridge.py"
 ENGINES = ("zhuangfy", "maibot")
 
 
-def read_config(path: Path = CONFIG) -> dict[str, str]:
+def read_config(path: Path | None = None) -> dict[str, str]:
+    path = path or CONFIG
     if not path.is_file():
         return {"engine": "zhuangfy", "maibot_python": ""}
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -33,7 +34,8 @@ def read_config(path: Path = CONFIG) -> dict[str, str]:
     return {"engine": raw["engine"], "maibot_python": raw.get("maibot_python", "")}
 
 
-def save_config(engine: str, *, maibot_python: str = "", path: Path = CONFIG) -> None:
+def save_config(engine: str, *, maibot_python: str = "", path: Path | None = None) -> None:
+    path = path or CONFIG
     if engine not in ENGINES:
         raise ValueError("unknown engine")
     path.parent.mkdir(parents=True, exist_ok=True)
