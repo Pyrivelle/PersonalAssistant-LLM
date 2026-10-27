@@ -8,6 +8,7 @@ import io
 import json
 import re
 import time
+from uuid import uuid4
 import wave
 from bisect import bisect_right
 from pathlib import Path
@@ -56,6 +57,12 @@ from model_routes import can_attempt_stage
 from recognize import ROOT, create_recognizer, decode_segment, read_wav, recognize
 from wake import ConversationGate, DEFAULT_ALIASES, DEFAULT_NAME, TRAILING, parse_aliases
 from zhuangfy.agent_v2.voice_turn import VoiceTurnManager, VoiceTurnConfig, VoiceTurn
+from zhuangfy.agent_v2.scheduled_tasks import (ScheduledTaskStore, bounded_context,
+                                                parse_scheduled_intent)
+from zhuangfy.agent_v2.desktop_identity import channel_user_id
+from zhuangfy.paths import Paths
+from desktop_scheduled import DesktopPersonLinkWorker
+from zhuangfy.turn_evidence import commit_delivered_evidence
 
 
 MAX_SECONDS = 60
@@ -225,6 +232,7 @@ class MainWindow(QMainWindow):
         self.chat_history = self.dialogue.history
         self.emotion = self.dialogue.emotion
         self.chat_worker: ChatWorker | None = None
+        self.person_link_workers: set[DesktopPersonLinkWorker] = set()
         self.chat_workers: dict[int, ChatWorker] = {}
         self.memory_workers: set[MemoryWriteWorker] = set()
         self.owner_memory_workers: set[OwnerMemoryWriteWorker] = set()
@@ -1006,6 +1014,12 @@ class MainWindow(QMainWindow):
     def begin_chat_turn(self, message: str) -> None:
         if self.continuous_worker is None or self.interaction_state != InteractionState.LISTENING:
             return
+        try:
+            config = PlannerSettings.load(ROOT / "cognition_settings.json")
+            intent = (parse_scheduled_intent(message)
+                      if config.scheduled_tasks_enabled else None)
+        except (OSError, ValueError):
+            intent = None
         settings = load_settings()
         key = load_key(settings.provider)
         try:
@@ -1014,6 +1028,9 @@ class MainWindow(QMainWindow):
                 return
         except (OSError, ValueError, TypeError) as error:
             self.status_label.setText(f"模型路由配置有误：{error}")
+            return
+        if intent is not None:
+            self._schedule_voice_timer(message, intent)
             return
         self.turn_serial += 1
         turn = self.turn_serial
@@ -1033,6 +1050,60 @@ class MainWindow(QMainWindow):
         worker.finished.connect(lambda turn=turn: self.chat_finished(turn))
         self.status_label.setText("已将识别文字发送给模型 · 等待回复")
         worker.start()
+
+    def _schedule_voice_timer(self, message, intent) -> None:
+        task = None
+        try:
+            store = ScheduledTaskStore(
+                Paths.current().project_data_root / "scheduled_tasks.sqlite3")
+            source_id = uuid4().hex
+            task = store.schedule_for_channel(
+                channel="desktop", channel_account_id="local",
+                external_user_id=channel_user_id(),
+                conversation_ref="desktop:voice", source_message_id=source_id,
+                source_turn_id=source_id[:12], intent=intent,
+                context=bounded_context(self.chat_history +
+                                        [{"role": "user", "content": message}]))
+            ack = (f"好，{intent.delay_seconds} 秒后提醒你：{task.content}"
+                   if intent.kind == "reminder" else
+                   f"好，{intent.delay_seconds} 秒后再回复你。")
+            self.dialogue.commit(message, ack, None)
+            self.chat_history = self.dialogue.history
+            if self.context_store is not None:
+                self.context_store.save("desktop:voice", self.dialogue)
+            self.deliver_scheduled_message(ack)
+            log_event("语音", "定时已创建", f"{task.id} · {intent.delay_seconds} 秒后到期")
+            linker = DesktopPersonLinkWorker(task, store, self)
+            self.person_link_workers.add(linker)
+            linker.finished.connect(lambda w=linker: self._person_link_finished(w))
+            linker.start()
+        except Exception as error:
+            if task is not None:
+                try:
+                    store.cancel_task(task.id)
+                except Exception:
+                    pass
+            self.result_edit.appendPlainText(f"系统：定时任务创建失败：{type(error).__name__}\n")
+
+    def _person_link_finished(self, worker: DesktopPersonLinkWorker) -> None:
+        self.person_link_workers.discard(worker)
+        worker.deleteLater()
+
+    def deliver_scheduled_message(self, reply: str) -> None:
+        """Desktop voice adapter; visible transcript is delivery evidence."""
+        self.result_edit.appendPlainText(f"庄方宜：{reply}\n")
+        log_event("语音", "定时显示", reply)
+        try:
+            settings = load_speech_settings()
+            self.custom_tts_active = settings.engine == "gpt_sovits"
+            if self.speak_reply.isChecked() and (self.tts is not None or self.custom_tts_active):
+                self.tts_chunks = speech_chunks(reply, limit=90)
+                if self.tts_chunks:
+                    self.tts_pending = True
+                    self.set_interaction_state(InteractionState.SPEAKING)
+                    self.speak_next_chunk()
+        except Exception as error:
+            self.result_edit.appendPlainText(f"系统：定时消息已显示，播报失败：{type(error).__name__}\n")
 
     def chat_replied(self, turn: int, reply: str) -> None:
         if turn != self.active_turn or self.interaction_state != InteractionState.THINKING:
@@ -1070,6 +1141,16 @@ class MainWindow(QMainWindow):
         self.result_edit.appendPlainText(f"庄方宜：{reply}\n")
         log_event("语音", "回复", reply,
                   turn_id=getattr(worker, "turn_id", ""), channel="语音")
+        if (worker is not None and getattr(worker, "turn_id", "")
+                and not getattr(worker, "memory_command", False)):
+            try:
+                commit_delivered_evidence(
+                    Paths.current().project_data_root / "evidence",
+                    conversation_id="desktop:voice", sender_id=channel_user_id(),
+                    turn_id=worker.turn_id,
+                    tool_summary=getattr(worker, "tool_feedback", ""))
+            except Exception as error:
+                log_event("语音", "证据保存跳过", type(error).__name__)
         # UI acceptance/display is the delivery evidence for desktop text.
         # A discarded/stale LLM reply never reaches this write path.
         if (worker is not None and not getattr(worker, "memory_command", False)
@@ -1618,6 +1699,9 @@ class MainWindow(QMainWindow):
             if worker.isRunning():
                 worker.wait()
         for worker in tuple(self.owner_memory_workers):
+            if worker.isRunning():
+                worker.wait()
+        for worker in tuple(self.person_link_workers):
             if worker.isRunning():
                 worker.wait()
         super().closeEvent(event)

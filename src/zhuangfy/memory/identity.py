@@ -151,6 +151,63 @@ class IdentityRepository:
                     (person.person_id, "timeline", int(time.time())))
         return person, True
 
+    def ensure_qq_group_member(self, identity: ChannelIdentity,
+                               display_name: str) -> tuple[Person, bool]:
+        """Create a group-scoped PersonID from an authenticated group event.
+
+        The same QQ number in a private chat or another group is a different
+        identity until an administrator verifies a link. Local Timeline is
+        granted for this explicit group policy; Curator is never granted here.
+        """
+        if identity.platform != "qq_group":
+            raise ValueError("Group onboarding requires qq_group platform")
+        account = _nonempty(identity.channel_account_id, "channel_account_id")
+        member = _nonempty(identity.external_user_id, "external_user_id")
+        parts = account.split(":")
+        if (len(parts) != 2 or any(not part.isascii() or not part.isdecimal()
+                                   or int(part) <= 0 or str(int(part)) != part
+                                   for part in (*parts, member))
+                or member == parts[0]):
+            raise ValueError("Invalid QQ group member identity")
+        if not isinstance(display_name, str):
+            raise ValueError("display_name must be a string")
+        nickname = "".join(ch for ch in display_name if ch.isprintable()).strip()[:80]
+        name = f"群{parts[1]} · {nickname or f'QQ用户{member}'}"
+        with self.database.write() as db:
+            existing = db.execute("""
+                SELECT p.person_id,p.display_name,p.created_at
+                FROM identities i JOIN persons p ON p.person_id=i.person_id
+                WHERE i.platform='qq_group' AND i.channel_account_id=?
+                  AND i.external_user_id=?
+            """, (account, member)).fetchone()
+            if existing is not None:
+                # A revoked Timeline is an administrator decision, never
+                # silently undone by later group messages.
+                consent = db.execute("SELECT 1 FROM memory_consents WHERE "
+                                     "person_id=? AND purpose='timeline'",
+                                     (existing["person_id"],)).fetchone()
+                if consent is None:
+                    db.execute("""INSERT INTO memory_consents
+                        (person_id,purpose,granted_at,revoked_at)
+                        VALUES(?,'timeline',?,NULL)""",
+                        (existing["person_id"], int(time.time())))
+                return Person(**dict(existing)), False
+            person = Person(str(uuid4()), name, int(time.time()))
+            db.execute("INSERT INTO persons(person_id,display_name,created_at) "
+                       "VALUES(?,?,?)",
+                       (person.person_id, person.display_name, person.created_at))
+            db.execute("""INSERT INTO identities
+                (platform,channel_account_id,external_user_id,person_id,
+                 proof_method,proof_reference,verified_at)
+                VALUES('qq_group',?,?,?,'authenticated_channel',?,?)""",
+                (account, member, person.person_id,
+                 "trusted_qq_group_message", int(time.time())))
+            db.execute("""INSERT INTO memory_consents
+                (person_id,purpose,granted_at,revoked_at)
+                VALUES(?,'timeline',?,NULL)""",
+                (person.person_id, int(time.time())))
+        return person, True
+
     def get_person(self, person_id: str) -> Person | None:
         with self.database.connection() as db:
             row = db.execute("SELECT * FROM persons WHERE person_id=?", (person_id,)).fetchone()

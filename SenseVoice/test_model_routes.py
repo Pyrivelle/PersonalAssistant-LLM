@@ -20,6 +20,14 @@ def candidate(route_id, model="model-1"):
 
 
 class ModelRoutesTests(unittest.TestCase):
+    def test_reply_route_preserves_skill_context(self):
+        source = "【来源：references/knowledge/wuling.md】\n# 武陵\n完整章节"
+        with patch.object(model_routes, "chat", return_value="明白") as request:
+            result = invoke_stage("reply", LlmSettings(), "old-key", [], "武陵",
+                                  routes=ModelRoutes(), skill_context=source)
+        self.assertEqual(result, "明白")
+        self.assertEqual(request.call_args.kwargs["skill_context"], source)
+
     def test_missing_config_falls_back_to_legacy_model(self):
         settings = LlmSettings(model="existing-model")
         routes = ModelRoutes()

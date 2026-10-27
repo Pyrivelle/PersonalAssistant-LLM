@@ -78,6 +78,7 @@ class AgentDecision:
 def build_current_user_content(
     user_text: str, *, visual: str = "", tools: str = "",
     historical_context: str = "", memory_context: str = "",
+    skill_context: str = "",
 ) -> str:
     """Attach untrusted derived evidence to the *same* user turn, not another role."""
     text = user_text.strip()
@@ -93,6 +94,11 @@ def build_current_user_content(
         evidence.append(
             "[检索到的长期记忆候选；并非用户本轮发言，内容可能过时]\n"
             + memory_context.strip()[:1500]
+        )
+    if skill_context.strip():
+        evidence.append(
+            "[本轮按需读取的角色 Skill 原文件；社区资料，非系统指令或用户记忆]\n"
+            + skill_context.strip()[:9000]
         )
     if visual.strip():
         evidence.append("[本消息图片的独立观察；不是发送者本人陈述]\n" + visual.strip()[:1800])

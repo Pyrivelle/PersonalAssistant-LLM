@@ -1,12 +1,15 @@
 """V3 bound Memory Skill: no accounts, network, or external model calls."""
 from __future__ import annotations
 import unittest
-from unittest.mock import Mock
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from zhuangfy.agent_v2.discovery import SkillDiscovery
 from zhuangfy.agent_v2.memory_skill import create_turn_registry
 from zhuangfy.agent_v2.skill_access import SkillAccessPolicy, SkillGrant, SkillPrincipal
 from zhuangfy.agent_v2.tools import build_builtin_registry
+from zhuangfy.agent_v2.scheduled_tasks import ScheduledTaskStore, parse_scheduled_intent
 
 
 class SkillGrantTests(unittest.TestCase):
@@ -52,6 +55,39 @@ class SkillGrantTests(unittest.TestCase):
 
 
 class BoundMemorySkillTests(unittest.IsolatedAsyncioTestCase):
+    async def test_verified_person_sees_both_channels_scheduled_tasks(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = ScheduledTaskStore(root / "scheduled_tasks.sqlite3")
+            intent = parse_scheduled_intent("一分钟后提醒我喝水")
+            store.schedule_for_channel(
+                channel="qq", channel_account_id="9", external_user_id="42",
+                conversation_ref="qq:9:private:42", source_message_id="q1",
+                source_turn_id="t1", intent=intent, person_id="p1")
+            store.schedule_for_channel(
+                channel="desktop", channel_account_id="local",
+                external_user_id="desktop-id", conversation_ref="desktop:chat:abc",
+                source_message_id="d1", source_turn_id="t2", intent=intent,
+                person_id="p1")
+            client = Mock()
+            client.resolve_identity.return_value = "p1"
+            principal = SkillPrincipal("desktop", "local", "desktop-id", "private")
+            registry = create_turn_registry(
+                build_builtin_registry(), memory_client=client,
+                principal=principal, memory_capture_verified=True)
+            paths = Mock(project_data_root=root)
+            with patch("zhuangfy.agent_v2.memory_skill.Paths.current",
+                       return_value=paths):
+                result = await registry.invoke("scheduled_tasks.list", {},
+                                               scope="private")
+                self.assertTrue(result.success, result.summary)
+                self.assertIn('"channel":"qq"', result.summary)
+                self.assertIn('"channel":"desktop"', result.summary)
+                client.resolve_identity.side_effect = PermissionError("revoked")
+                denied = await registry.invoke("scheduled_tasks.list", {},
+                                               scope="private")
+                self.assertFalse(denied.success)
+
     async def test_per_turn_principal_secrecy_and_no_cross_account_reuse(self):
         client = Mock()
         def memory_reply(channel, query, limit):

@@ -201,12 +201,30 @@ class HttpMemoryTests(unittest.TestCase):
         self.assertEqual(person["message_count"], 0)
         self.assertEqual(person["memory_count"], 0)
         self.assertEqual(person["jobs"]["pending"], 0)
-        self.client.receive(channel, chat_id="private:300",
-                            message_id="m1", content="你好")
+        captured = self.client.receive(channel, chat_id="private:300",
+                                       message_id="m1", content="你好")
         roster = self.admin.list_people()[0]
         self.assertEqual(roster["message_count"], 1)
+        self.assertEqual(roster["source_message_count"], 1)
+        self.assertEqual(roster["unprocessed_count"], 1)
+        self.assertEqual(roster["unscheduled_count"], 1)
         self.assertFalse(roster["curation_enabled"])
         self.admin.admin_consent(person["person_id"], "curation", True)
+        job_id = self.core.curated.schedule(
+            conversation_id=captured["conversation_id"], person_id=person["person_id"])
+        queued = self.admin.list_people()[0]
+        self.assertEqual(queued["unprocessed_count"], 1)
+        self.assertEqual(queued["unscheduled_count"], 0)
+        job = self.admin.list_jobs(person["person_id"])[0]
+        self.assertEqual(job["job_id"], job_id)
+        self.assertEqual(job["source_count"], 1)
+        self.assertEqual(job["platform"], "qq")
+        self.assertEqual(job["external_conversation_id"], "private:300")
+        self.assertIsNotNone(job["source_first_at"])
+        with self.core.database.write() as db:
+            db.execute("UPDATE reflection_jobs SET status='done',finished_at=created_at "
+                       "WHERE job_id=?", (job_id,))
+        self.assertEqual(self.admin.list_people()[0]["unprocessed_count"], 0)
         self.assertTrue(self.admin.list_people()[0]["curation_enabled"])
         self.admin.admin_consent(person["person_id"], "curation", False)
         self.admin.admin_consent(person["person_id"], "timeline", False)
@@ -215,6 +233,43 @@ class HttpMemoryTests(unittest.TestCase):
         self.assertFalse(latest["timeline_enabled"])
         self.assertTrue(latest["timeline_revoked"])
         self.assertFalse(latest["curation_enabled"])
+
+    def test_group_member_profiles_are_group_scoped_and_curator_opt_in(self):
+        private = MemoryChannel("qq", "10001", "20001")
+        group = MemoryChannel("qq_group", "10001:9", "20001")
+        other_group = MemoryChannel("qq_group", "10001:10", "20001")
+        private_person = self.client.onboard_qq(private, "阿蓝")
+        profile = self.client.onboard_qq_group_member(group, "阿蓝")
+        self.assertTrue(profile["created"])
+        self.assertTrue(profile["timeline_consent"])
+        self.assertFalse(profile["curation_consent"])
+        self.assertNotEqual(profile["person_id"], private_person["person_id"])
+        self.assertNotEqual(
+            self.client.onboard_qq_group_member(other_group, "阿蓝")["person_id"],
+            profile["person_id"])
+        self.assertEqual(self.client.onboard_qq_group_member(group, "新昵称")["person_id"],
+                         profile["person_id"])
+        captured = self.client.receive(group, chat_id="group:9:member:20001",
+                                       message_id="g1", content="我喜欢研究星图")
+        self.assertTrue(captured["entry_id"])
+        person = next(p for p in self.admin.list_people()
+                      if p["person_id"] == profile["person_id"])
+        self.assertEqual(person["message_count"], 1)
+        self.assertFalse(person["curation_enabled"])
+        self.assertEqual(person["jobs"]["pending"], 0)
+        self.admin.admin_consent(profile["person_id"], "curation", True)
+        with self.core.database.write() as db:
+            db.execute("UPDATE timeline_entries SET recorded_at=recorded_at-90000 "
+                       "WHERE entry_id=?", (captured["entry_id"],))
+        self.assertGreaterEqual(self.core.schedule_due_reflections(), 1)
+        jobs = self.admin.list_jobs(profile["person_id"])
+        self.assertEqual(jobs[0]["source_count"], 1)
+        self.assertEqual(jobs[0]["platform"], "qq_group")
+        self.assertEqual(jobs[0]["external_conversation_id"],
+                         "group:9:member:20001")
+        with self.assertRaises(MemoryClientError):
+            self.client.onboard_qq_group_member(
+                MemoryChannel("qq_group", "10001:bad", "20001"), "伪造")
 
     def test_task_origin_bridge_is_scoped_idempotent_and_erasure_safe(self):
         from zhuangfy.agent_v2.goals import GoalStore
@@ -347,6 +402,15 @@ class HttpMemoryTests(unittest.TestCase):
         self.assertFalse(any(h["entry_id"] == current_turn["entry_id"]
                              for h in item["history"]))
         self.assertEqual(item["curated_candidates"], [])
+        person = next(p for p in self.admin.list_people() if
+                      any(v["channel_account_id"] == "10001"
+                          and v["external_user_id"] == "20001"
+                          for v in p["identities"]))
+        desktop = MemoryChannel("desktop", "local", "approved-desktop")
+        self.admin.admin_link(person["person_id"], desktop, "verified-same-user")
+        self.assertEqual(self.client.resolve_identity(desktop), person["person_id"])
+        desktop_recall = self.client.task_recall(desktop, "继续 OSG 遮挡剔除")
+        self.assertEqual(desktop_recall["tasks"][0]["task_id"], "goal-osg")
         self.assertEqual(self.client.task_recall(
             a, "晚上吃饭", limit=2)["tasks"], [])
         self.assertEqual(self.client.task_recall(
@@ -369,6 +433,8 @@ class HttpMemoryTests(unittest.TestCase):
                           and v["external_user_id"] == "20001"
                           for v in p["identities"]))
         self.admin.admin_consent(person["person_id"], "timeline", False)
+        with self.assertRaises(MemoryClientError):
+            self.client.resolve_identity(desktop)
         with self.assertRaises(MemoryClientError) as e:
             self.client.task_recall(a, "OSG遮挡剔除")
         self.assertEqual(e.exception.status, 403)

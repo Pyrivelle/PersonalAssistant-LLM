@@ -285,6 +285,8 @@ def invoke_stage(
     memories: list[dict] | None = None,
     emotion_context: str = "",
     context_notes: str = "",
+    group_context: str = "",
+    skill_context: str = "",
     tool_context: str = "",
     visual_context: str = "",
     trace_id: str = "",
@@ -343,6 +345,7 @@ def invoke_stage(
                 result = chat(
                     selected_settings, key, history, user_text, memories=memories,
                     emotion_context=emotion_context, context_notes=context_notes,
+                    group_context=group_context, skill_context=skill_context,
                     tool_context=tool_context,
                     timeout=timeout, stage=label,
                     **({"thinking": item.thinking} if item.thinking != "auto" else {}),

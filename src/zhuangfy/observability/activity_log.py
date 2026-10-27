@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import socket
+import sys
 import threading
 from collections import deque
 from contextvars import ContextVar
@@ -21,10 +22,15 @@ from .chat_journal import ChatJournal, is_chat_event
 
 
 _LOCK = threading.Lock()
+_TEST_PROCESS = (os.environ.get("ZHUANGFY_TEST_ISOLATION") == "1"
+                 or "unittest.__main__" in sys.modules
+                 or "pytest" in sys.modules
+                 or os.path.basename(sys.argv[0]).startswith("test_"))
 _EVENTS: deque[dict] = deque(maxlen=2000)
 _REVISION = 0
 try:
-    _CHAT_JOURNAL = ChatJournal() if not os.environ.get("ZHUANGFY_EVENT_PORT") else None
+    _CHAT_JOURNAL = (ChatJournal() if not _TEST_PROCESS and
+                     not os.environ.get("ZHUANGFY_EVENT_PORT") else None)
     _CHAT_EVENTS: deque[dict] = deque(
         _CHAT_JOURNAL.recent() if _CHAT_JOURNAL is not None else [], maxlen=5000)
 except (OSError, sqlite3.Error):
@@ -84,7 +90,7 @@ def log_event(source: str, phase: str, detail: object = "", *,
     _append(entry)
     port = os.environ.get("ZHUANGFY_EVENT_PORT", "")
     token = os.environ.get("ZHUANGFY_EVENT_TOKEN", "")
-    if port.isdecimal() and token:
+    if not _TEST_PROCESS and port.isdecimal() and token:
         try:
             packet = json.dumps({"token": token, "event": entry}, ensure_ascii=False).encode("utf-8")
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:

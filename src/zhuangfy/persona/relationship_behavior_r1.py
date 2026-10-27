@@ -121,7 +121,7 @@ def behavior_r1(system_prompt: str, user_text: str, *,
 _LEADING_THINK_END = re.compile(r"^\s*</think>\s*", re.I)
 _LEADING_STAGE = re.compile(
     r"^\s*[（(](?:看着|看向|望向|轻声|低声|柔声|微笑|轻笑|叹息|"
-    r"靠在|坐在|起身|抬头|低头|她(?:看|想|沉默|遵守|点头)|"
+    r"靠在|坐在|起身|抬头|低头|愣|怔|一愣|无奈地笑|她(?:看|想|沉默|遵守|点头)|"
     r"他(?:看|想|沉默|点头))[^（）()\n]{0,110}[）)]\s*"
 )
 

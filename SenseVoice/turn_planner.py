@@ -41,7 +41,7 @@ class PlannerSettings:
     relationship_behavior_r1_enabled: bool = False  # opt-in, no user tier inferred
     relationship_evolution_r1_enabled: bool = False  # separate opt-in for LLM event proposals
     agent_v3_enabled: bool = False  # opt-in structured decisions and deferred discovery
-    scheduled_tasks_enabled: bool = False  # explicit QQ private timers, separate from wait
+    scheduled_tasks_enabled: bool = False  # private one-shot timers, separate from wait
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":

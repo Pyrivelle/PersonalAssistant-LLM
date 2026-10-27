@@ -1,4 +1,8 @@
-"""Host-owned, durable one-shot QQ timers. A timer is never a Planner wait."""
+"""Host-owned, durable one-shot timers shared by channel adapters.
+
+A scheduled task is distinct from a Planner wait. Version 3 keeps the original
+QQ rows and statuses in place while adding channel provenance and identity.
+"""
 from __future__ import annotations
 
 import json
@@ -40,6 +44,12 @@ class ScheduledTask:
     status: str
     context_json: str = "[]"
     generation_failures: int = 0
+    channel: str = "qq"
+    channel_account_id: str = ""
+    external_user_id: str = ""
+    conversation_ref: str = ""
+    person_id: str = ""
+    prepared_reply: str = ""
 
     def creation_context(self) -> list[dict[str, str]]:
         try:
@@ -90,14 +100,14 @@ def parse_scheduled_intent(text: str) -> ScheduledIntent | None:
 
 
 class ScheduledTaskStore:
-    """Claim-before-send avoids duplicate QQ messages after ambiguous ACKs."""
+    """Claim-before-delivery avoids duplicate messages after ambiguous ACKs."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as db, db:
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3, 4):
                 raise ValueError("Unsupported scheduled-task database version")
             db.execute("""CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id TEXT PRIMARY KEY, bot_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
@@ -111,19 +121,83 @@ class ScheduledTaskStore:
                 db.execute("ALTER TABLE scheduled_tasks ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'")
                 db.execute("ALTER TABLE scheduled_tasks ADD COLUMN generation_failures INTEGER NOT NULL DEFAULT 0")
                 db.execute("ALTER TABLE scheduled_tasks ADD COLUMN retry_at REAL NOT NULL DEFAULT 0")
-            db.execute("PRAGMA user_version=2")
+            if version < 3:
+                for name in ("channel", "channel_account_id", "external_user_id",
+                             "conversation_ref", "person_id"):
+                    db.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+                db.execute("UPDATE scheduled_tasks SET channel='qq', "
+                           "channel_account_id=CAST(bot_id AS TEXT), "
+                           "external_user_id=CAST(user_id AS TEXT), "
+                           "conversation_ref='qq:' || bot_id || ':private:' || user_id "
+                           "WHERE channel=''")
+            if version < 4:
+                db.execute("ALTER TABLE scheduled_tasks ADD COLUMN prepared_reply TEXT NOT NULL DEFAULT ''")
+            db.execute("CREATE INDEX IF NOT EXISTS scheduled_channel_due "
+                       "ON scheduled_tasks(channel,status,due_at)")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS scheduled_channel_source "
+                       "ON scheduled_tasks(channel,channel_account_id,external_user_id,"
+                       "source_message_id,kind)")
+            db.execute("PRAGMA user_version=4")
             # A previous process may have sent before its ACK was recorded.
             db.execute("UPDATE scheduled_tasks SET status='uncertain', error_kind='interrupted' "
-                       "WHERE status='sending'")
+                       "WHERE status='sending' AND (completed_at IS NULL OR completed_at<?)",
+                       (time.time() - 120,))
 
     @staticmethod
     def _task(row: tuple) -> ScheduledTask:
         return ScheduledTask(*row)
 
+    _FIELDS = ("id,bot_id,user_id,source_message_id,source_turn_id,kind,content,"
+               "due_at,status,context_json,generation_failures,channel,"
+               "channel_account_id,external_user_id,conversation_ref,person_id,prepared_reply")
+
+    def schedule_for_channel(self, *, channel: str, channel_account_id: str,
+                             external_user_id: str, conversation_ref: str,
+                             source_message_id: str, source_turn_id: str,
+                             intent: ScheduledIntent, person_id: str = "",
+                             received_at: float | None = None,
+                             context: list[dict[str, str]] | None = None) -> ScheduledTask:
+        if (channel not in {"qq", "desktop"} or not channel_account_id or
+                not external_user_id or not conversation_ref or not source_message_id or
+                not source_turn_id or len(person_id) > 100 or
+                intent.kind not in {"reminder", "deferred_reply"} or
+                not 1 <= intent.delay_seconds <= MAX_DELAY_SECONDS or
+                not 1 <= len(intent.content) <= 500):
+            raise ValueError("Invalid scheduled task")
+        if channel == "qq":
+            return self.schedule(bot_id=int(channel_account_id),
+                                 user_id=int(external_user_id),
+                                 source_message_id=source_message_id,
+                                 source_turn_id=source_turn_id, intent=intent,
+                                 received_at=received_at, context=context,
+                                 conversation_ref=conversation_ref, person_id=person_id)
+        if channel_account_id != "local" or not conversation_ref.startswith("desktop:"):
+            raise ValueError("Invalid desktop task target")
+        created = time.time() if received_at is None else received_at
+        context_json = json.dumps(bounded_context(context or []), ensure_ascii=False)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("INSERT OR IGNORE INTO scheduled_tasks "
+                       "(id,bot_id,user_id,source_message_id,source_turn_id,kind,content,"
+                       "due_at,status,created_at,context_json,channel,channel_account_id,"
+                       "external_user_id,conversation_ref,person_id) "
+                       "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (uuid.uuid4().hex[:12], 0, 0, source_message_id,
+                        source_turn_id, intent.kind, intent.content,
+                        created + intent.delay_seconds, "pending", created, context_json,
+                        channel, channel_account_id, external_user_id,
+                        conversation_ref, person_id))
+            row = db.execute(f"SELECT {self._FIELDS} FROM scheduled_tasks WHERE "
+                             "channel=? AND channel_account_id=? AND external_user_id=? "
+                             "AND source_message_id=? AND kind=?",
+                             (channel, channel_account_id, external_user_id,
+                              source_message_id, intent.kind)).fetchone()
+        return self._task(row)
+
     def schedule(self, *, bot_id: int, user_id: int, source_message_id: str,
                  source_turn_id: str, intent: ScheduledIntent,
                  received_at: float | None = None,
-                 context: list[dict[str, str]] | None = None) -> ScheduledTask:
+                 context: list[dict[str, str]] | None = None,
+                 conversation_ref: str = "", person_id: str = "") -> ScheduledTask:
         if (bot_id <= 0 or user_id <= 0 or not source_message_id or not source_turn_id
                 or intent.kind not in {"reminder", "deferred_reply"}
                 or not 1 <= intent.delay_seconds <= MAX_DELAY_SECONDS
@@ -134,12 +208,13 @@ class ScheduledTaskStore:
         context_json = json.dumps(bounded_context(context or []), ensure_ascii=False)
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("INSERT OR IGNORE INTO scheduled_tasks "
-                       "(id,bot_id,user_id,source_message_id,source_turn_id,kind,content,due_at,status,created_at,context_json) "
-                       "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                       "(id,bot_id,user_id,source_message_id,source_turn_id,kind,content,due_at,status,created_at,context_json,channel,channel_account_id,external_user_id,conversation_ref,person_id) "
+                       "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (uuid.uuid4().hex[:12], bot_id, user_id, source_message_id,
-                        source_turn_id, intent.kind, intent.content, due, "pending", created, context_json))
-            row = db.execute("SELECT id,bot_id,user_id,source_message_id,source_turn_id,"
-                             "kind,content,due_at,status,context_json,generation_failures "
+                        source_turn_id, intent.kind, intent.content, due, "pending", created, context_json,
+                        "qq", str(bot_id), str(user_id),
+                        conversation_ref or f"qq:{bot_id}:private:{user_id}", person_id))
+            row = db.execute(f"SELECT {self._FIELDS} "
                              "FROM scheduled_tasks WHERE "
                              "bot_id=? AND user_id=? AND source_message_id=? AND kind=?",
                              (bot_id, user_id, source_message_id, intent.kind)).fetchone()
@@ -147,17 +222,141 @@ class ScheduledTaskStore:
 
     def due(self, bot_id: int, now: float, limit: int = 8) -> list[ScheduledTask]:
         with closing(sqlite3.connect(self.path)) as db:
-            rows = db.execute("SELECT id,bot_id,user_id,source_message_id,source_turn_id,"
-                              "kind,content,due_at,status,context_json,generation_failures "
+            rows = db.execute(f"SELECT {self._FIELDS} "
                               "FROM scheduled_tasks WHERE bot_id=? AND status='pending' "
                               "AND due_at<=? AND retry_at<=? "
                               "ORDER BY due_at LIMIT ?", (bot_id, now, now, limit)).fetchall()
         return [self._task(row) for row in rows]
 
+    def due_for_channel(self, channel: str, now: float,
+                        limit: int = 8, external_user_id: str = "") -> list[ScheduledTask]:
+        if channel not in {"qq", "desktop"}:
+            raise ValueError("Unknown channel")
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute(f"SELECT {self._FIELDS} FROM scheduled_tasks "
+                              "WHERE channel=? AND status='pending' AND due_at<=? "
+                              "AND retry_at<=? AND (?='' OR external_user_id=?) "
+                              "ORDER BY due_at LIMIT ?",
+                              (channel, now, now, external_user_id,
+                               external_user_id, limit)).fetchall()
+        return [self._task(row) for row in rows]
+
+    def prepare(self, task_id: str, reply: str) -> bool:
+        """Durably queue a generated message; no delivery is implied."""
+        if not isinstance(reply, str) or not reply.strip() or len(reply) > 5000:
+            raise ValueError("Invalid prepared reply")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            result = db.execute("UPDATE scheduled_tasks SET status='ready', prepared_reply=? "
+                                "WHERE id=? AND status='pending'",
+                                (reply.strip(), task_id))
+            return result.rowcount == 1
+
+    def ready(self, bot_id: int, limit: int = 8) -> list[ScheduledTask]:
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute(f"SELECT {self._FIELDS} FROM scheduled_tasks "
+                              "WHERE channel='qq' AND bot_id=? AND status='ready' "
+                              "ORDER BY due_at LIMIT ?", (bot_id, limit)).fetchall()
+        return [self._task(row) for row in rows]
+
+    def set_verified_person(self, task_id: str, *, channel: str,
+                            channel_account_id: str, external_user_id: str,
+                            person_id: str) -> bool:
+        """Adapter may attach only a Memory Core verified same-person link."""
+        if (channel not in {"qq", "desktop"} or not channel_account_id or
+                not external_user_id or not person_id or len(person_id) > 100):
+            raise ValueError("Invalid verified identity")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            result = db.execute("UPDATE scheduled_tasks SET person_id=? WHERE id=? "
+                                "AND channel=? AND channel_account_id=? "
+                                "AND external_user_id=? AND person_id=''",
+                                (person_id, task_id, channel,
+                                 channel_account_id, external_user_id))
+            return result.rowcount == 1
+
+    def link_verified_identity(self, *, channel: str, channel_account_id: str,
+                               external_user_id: str, person_id: str) -> int:
+        """Backfill all historical rows for an independently verified link."""
+        if channel not in {"qq", "desktop"} or not all(
+                (channel_account_id, external_user_id, person_id)) or len(person_id) > 100:
+            raise ValueError("Invalid verified identity")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            result = db.execute("UPDATE scheduled_tasks SET person_id=? "
+                                "WHERE channel=? AND channel_account_id=? "
+                                "AND external_user_id=? AND person_id=''",
+                                (person_id, channel, channel_account_id,
+                                 external_user_id))
+            return result.rowcount
+
+    def unlinked_qq_users(self, bot_id: int, limit: int = 30) -> list[int]:
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute("SELECT DISTINCT user_id FROM scheduled_tasks "
+                              "WHERE channel='qq' AND bot_id=? AND person_id='' "
+                              "ORDER BY user_id LIMIT ?", (bot_id, limit)).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def get(self, task_id: str) -> ScheduledTask | None:
+        with closing(sqlite3.connect(self.path)) as db:
+            row = db.execute(f"SELECT {self._FIELDS} FROM scheduled_tasks WHERE id=?",
+                             (task_id,)).fetchone()
+        return self._task(row) if row else None
+
+    def tasks_for_person(self, person_id: str, limit: int = 30) -> list[ScheduledTask]:
+        if not person_id or not 1 <= limit <= 100:
+            raise ValueError("Verified PersonID required")
+        with closing(sqlite3.connect(self.path)) as db:
+            rows = db.execute(f"SELECT {self._FIELDS} FROM scheduled_tasks "
+                              "WHERE person_id=? ORDER BY due_at DESC LIMIT ?",
+                              (person_id, limit)).fetchall()
+        return [self._task(row) for row in rows]
+
+    def cancel_conversation(self, *, channel: str, conversation_ref: str) -> int:
+        if channel not in {"qq", "desktop"} or not conversation_ref:
+            raise ValueError("Invalid conversation")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            result = db.execute("UPDATE scheduled_tasks SET status='cancelled', "
+                                "completed_at=?, error_kind='conversation_deleted' "
+                                "WHERE channel=? AND conversation_ref=? "
+                                "AND status IN ('pending','ready')",
+                                (time.time(), channel, conversation_ref))
+            return result.rowcount
+
+    def cancel_task(self, task_id: str) -> bool:
+        with closing(sqlite3.connect(self.path)) as db, db:
+            result = db.execute("UPDATE scheduled_tasks SET status='cancelled', "
+                                "completed_at=?, error_kind='creation_failed' "
+                                "WHERE id=? AND status='pending'", (time.time(), task_id))
+            return result.rowcount == 1
+
+    def erase_person(self, person_id: str) -> int:
+        """Purge linked timer content after explicit whole-person erasure."""
+        if not person_id:
+            raise ValueError("PersonID required")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            result = db.execute("DELETE FROM scheduled_tasks WHERE person_id=?",
+                                (person_id,))
+            return result.rowcount
+
+    def erase_identity(self, *, channel: str, channel_account_id: str,
+                       external_user_id: str) -> int:
+        if channel not in {"qq", "desktop"} or not channel_account_id or not external_user_id:
+            raise ValueError("Invalid channel identity")
+        with closing(sqlite3.connect(self.path)) as db, db:
+            result = db.execute("DELETE FROM scheduled_tasks WHERE channel=? "
+                                "AND channel_account_id=? AND external_user_id=?",
+                                (channel, channel_account_id, external_user_id))
+            return result.rowcount
+
+    def claim_ready(self, task_id: str) -> bool:
+        with closing(sqlite3.connect(self.path)) as db, db:
+            result = db.execute("UPDATE scheduled_tasks SET status='sending', completed_at=? "
+                                "WHERE id=? AND status='ready' AND prepared_reply<>''",
+                                (time.time(), task_id))
+            return result.rowcount == 1
+
     def claim(self, task_id: str) -> bool:
         with closing(sqlite3.connect(self.path)) as db, db:
-            result = db.execute("UPDATE scheduled_tasks SET status='sending' "
-                                "WHERE id=? AND status='pending'", (task_id,))
+            result = db.execute("UPDATE scheduled_tasks SET status='sending', completed_at=? "
+                                "WHERE id=? AND status='pending'", (time.time(), task_id))
             return result.rowcount == 1
 
     def finish(self, task_id: str, *, delivered: bool, error_kind: str = "") -> None:
@@ -169,7 +368,7 @@ class ScheduledTaskStore:
 
     def generation_failed(self, task_id: str, *, error_kind: str,
                           now: float | None = None) -> str:
-        """A model failure occurs before any QQ send, so bounded retry is safe."""
+        """A model failure occurs before delivery, so bounded retry is safe."""
         current = time.time() if now is None else now
         with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE scheduled_tasks SET generation_failures=generation_failures+1, "
@@ -182,16 +381,15 @@ class ScheduledTaskStore:
     def get_by_source(self, bot_id: int, user_id: int,
                       source_message_id: str, kind: str) -> ScheduledTask | None:
         with closing(sqlite3.connect(self.path)) as db:
-            row = db.execute("SELECT id,bot_id,user_id,source_message_id,source_turn_id,"
-                             "kind,content,due_at,status,context_json,generation_failures "
+            row = db.execute(f"SELECT {self._FIELDS} "
                              "FROM scheduled_tasks WHERE "
                              "bot_id=? AND user_id=? AND source_message_id=? AND kind=?",
                              (bot_id, user_id, source_message_id, kind)).fetchone()
         return self._task(row) if row else None
 
     def cancel_user(self, bot_id: int, user_id: int) -> int:
-        """Erase unexecuted personal tasks on an explicit privacy request."""
+        """Erase this QQ identity's timer content on an explicit privacy request."""
         with closing(sqlite3.connect(self.path)) as db, db:
-            result = db.execute("DELETE FROM scheduled_tasks WHERE bot_id=? AND user_id=? "
-                                "AND status='pending'", (bot_id, user_id))
+            result = db.execute("DELETE FROM scheduled_tasks WHERE channel='qq' "
+                                "AND bot_id=? AND user_id=?", (bot_id, user_id))
             return result.rowcount

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QIODevice, Qt, Signal
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, Signal
 from PySide6.QtGui import QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox,
@@ -13,10 +13,20 @@ from PySide6.QtWidgets import (
 
 from activity_log import log_event
 from chat_sessions import ChatSessions
+from dialogue_context import DialogueStore
 from chat_worker import ChatWorker, MemoryWriteWorker, RemoteMemoryWriteWorker
+from desktop_scheduled import DesktopScheduledWorker, DesktopPersonLinkWorker
 from zhuangfy.memory.routing import legacy_memory_allowed
 from llm import load_key, load_settings
 from model_routes import can_attempt_stage
+from turn_planner import PlannerSettings
+from zhuangfy.agent_v2.desktop_identity import channel_user_id
+from zhuangfy.agent_v2.scheduled_tasks import (ScheduledTaskStore, bounded_context,
+                                                parse_scheduled_intent)
+from zhuangfy.paths import Paths
+from zhuangfy.turn_evidence import commit_delivered_evidence
+from uuid import uuid4
+import time
 
 
 class ChatComposer(QPlainTextEdit):
@@ -45,6 +55,18 @@ class ChatPage(QWidget):
         self._pending_message = ""
         self._pending_image: bytes | None = None
         self._attachment: bytes | None = None
+        self.scheduled_store = ScheduledTaskStore(
+            Paths.current().project_data_root / "scheduled_tasks.sqlite3")
+        self.scheduled_worker: DesktopScheduledWorker | None = None
+        self.person_link_workers: set[DesktopPersonLinkWorker] = set()
+        self.scheduled_timer = QTimer(self)
+        self.scheduled_timer.timeout.connect(self._check_scheduled)
+        try:
+            if PlannerSettings.load(Paths.current().project_root /
+                                    "cognition_settings.json").scheduled_tasks_enabled:
+                self.scheduled_timer.start(1000)
+        except (OSError, ValueError):
+            pass
         self.setObjectName("chatPage")
 
         outer = QHBoxLayout(self)
@@ -182,10 +204,12 @@ class ChatPage(QWidget):
         if self.worker is not None or self.chat_id is None:
             return
         answer = QMessageBox.question(
-            self, "删除本机对话", "删除当前聊天记录？新记忆服务中的时间线和长期记忆需在记忆中心单独管理。",
+            self, "删除本机对话", "删除当前聊天记录并取消本会话尚未送达的定时任务？新记忆服务中的时间线和长期记忆需在记忆中心单独管理。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if answer != QMessageBox.StandardButton.Yes:
             return
+        self.scheduled_store.cancel_conversation(
+            channel="desktop", conversation_ref=f"desktop:chat:{self.chat_id}")
         self.store.delete(self.chat_id)
         self._reload_list()
         if self.chat_list.count():
@@ -315,6 +339,10 @@ class ChatPage(QWidget):
         if not message:
             self.status.setText("请先输入消息")
             return
+        planner_settings = PlannerSettings.load(Paths.current().project_root /
+                                                "cognition_settings.json")
+        intent = (parse_scheduled_intent(message) if image is None and
+                  planner_settings.scheduled_tasks_enabled else None)
         settings = load_settings()
         key = load_key(settings.provider)
         try:
@@ -324,6 +352,9 @@ class ChatPage(QWidget):
                 raise ValueError("识图阶段没有可用模型；请先到模型管理配置识图 API")
         except (OSError, ValueError, TypeError) as error:
             self.status.setText(str(error))
+            return
+        if intent is not None:
+            self._schedule(message, intent)
             return
         self._pending_message = message
         self._pending_image = image
@@ -346,6 +377,165 @@ class ChatPage(QWidget):
         self.status.setText("庄方宜正在思考……")
         self.worker.start()
 
+    def _schedule(self, message, intent) -> None:
+        if self.chat_id is None:
+            return
+        source_id = uuid4().hex
+        task = None
+        try:
+            task = self.scheduled_store.schedule_for_channel(
+                channel="desktop", channel_account_id="local",
+                external_user_id=channel_user_id(),
+                conversation_ref=f"desktop:chat:{self.chat_id}",
+                source_message_id=source_id, source_turn_id=source_id[:12],
+                intent=intent, received_at=time.time(),
+                context=bounded_context(list(self.dialogue.history) +
+                                        [{"role": "user", "content": message}]))
+            reply = (f"好，{intent.delay_seconds} 秒后提醒你：{task.content}"
+                     if intent.kind == "reminder" else
+                     f"好，{intent.delay_seconds} 秒后再回复你。")
+            self.store.append(self.chat_id, "user", message)
+            self.store.append(self.chat_id, "assistant", reply)
+            self.dialogue.commit(message, reply, None)
+            self.store.save_context(self.chat_id, self.dialogue)
+            self._add_message("user", message)
+            self._add_message("assistant", reply)
+            self._reload_list(self.chat_id)
+            self.input.clear()
+            self.status.setText("定时任务已创建")
+            log_event("文字", "定时已创建", f"{task.id} · {intent.delay_seconds} 秒后到期")
+            linker = DesktopPersonLinkWorker(task, self.scheduled_store, self)
+            self.person_link_workers.add(linker)
+            linker.finished.connect(lambda w=linker: self._person_link_finished(w))
+            linker.start()
+        except Exception as error:
+            if task is not None:
+                self.scheduled_store.cancel_task(task.id)
+            self.status.setText(f"定时任务创建失败：{type(error).__name__}")
+
+    def _check_scheduled(self) -> None:
+        if self.scheduled_worker is not None or self.worker is not None:
+            return
+        try:
+            due = self.scheduled_store.due_for_channel(
+                "desktop", time.time(), 1, external_user_id=channel_user_id())
+            if not due:
+                due = self.scheduled_store.due_for_channel("qq", time.time(), 1)
+            if not due:
+                return
+            task = due[0]
+            if task.channel == "desktop":
+                if task.conversation_ref == "desktop:voice":
+                    chat_id = "voice"
+                    parent = self.parent()
+                    voice = getattr(parent, "voice_window", None)
+                    if voice is not None:
+                        recent = bounded_context(voice.chat_history[-8:])
+                    else:
+                        store = DialogueStore(Paths.current().data_root /
+                                              "conversation_data" / "desktop_context.sqlite3")
+                        recent = bounded_context(store.load("desktop:voice").history[-8:])
+                else:
+                    chat_id = task.conversation_ref.removeprefix("desktop:chat:")
+                    _, _, messages = self.store.load(chat_id)
+                    recent = bounded_context(messages[-8:])
+            else:
+                chat_id = ""
+                planner = PlannerSettings.load(Paths.current().project_root /
+                                               "cognition_settings.json")
+                recent = []
+                if task.user_id in planner.persist_private_ids:
+                    scope = f"bot:{task.bot_id}:private:0:{task.user_id}"
+                    store = DialogueStore(Paths.current().data_root /
+                                          "conversation_data" / "qq_context.sqlite3")
+                    recent = bounded_context(store.load(scope).history[-8:])
+            worker = DesktopScheduledWorker(task, recent, self)
+            self.scheduled_worker = worker
+            if task.channel == "desktop":
+                worker.generated.connect(lambda task_id, reply, target=chat_id:
+                                         self._scheduled_reply(task_id, target, reply))
+            else:
+                worker.generated.connect(self._scheduled_qq_prepared)
+            worker.failed.connect(self._scheduled_failed)
+            worker.finished.connect(self._scheduled_finished)
+            worker.start()
+        except KeyError:
+            # A deleted chat cannot receive a popup; preserve the task for
+            # explicit recovery rather than silently claiming delivery.
+            return
+        except Exception as error:
+            log_event("文字", "定时检查失败", type(error).__name__)
+
+    def _scheduled_qq_prepared(self, task_id: str, reply: str) -> None:
+        if self.scheduled_store.prepare(task_id, reply):
+            log_event("QQ", "定时已生成", f"{task_id} · 等待原 QQ 通道投递")
+
+    def _scheduled_reply(self, task_id: str, chat_id: str, reply: str) -> None:
+        if self.worker is not None:
+            QTimer.singleShot(500, lambda: self._scheduled_reply(task_id, chat_id, reply))
+            return
+        if chat_id == "voice":
+            parent = self.parent()
+            voice = getattr(parent, "voice_window", None)
+            if voice is not None and voice.active_turn is not None:
+                QTimer.singleShot(500, lambda: self._scheduled_reply(task_id, chat_id, reply))
+                return
+        elif self.parent() is None and not self.isVisible():
+            return
+        if not self.scheduled_store.claim(task_id):
+            return
+        try:
+            # The tray keeps the app alive while the console is hidden. Open
+            # the exact source conversation before acknowledging delivery.
+            parent = self.parent()
+            if chat_id == "voice":
+                if parent is None or not hasattr(parent, "open_voice"):
+                    raise RuntimeError("Voice window unavailable")
+                parent.open_voice()
+                voice = parent.voice_window
+                if not voice.isVisible():
+                    raise RuntimeError("Voice window did not open")
+                voice.deliver_scheduled_message(reply)
+                voice.dialogue.history.append({"role": "assistant", "content": reply})
+                voice.dialogue.history = voice.dialogue.history[-12:]
+                voice.chat_history = voice.dialogue.history
+                if voice.context_store is not None:
+                    voice.context_store.save("desktop:voice", voice.dialogue)
+            else:
+                if parent is not None and hasattr(parent, "show_console"):
+                    parent.show_console(1)
+                if not self.isVisible():
+                    raise RuntimeError("Desktop chat did not open")
+                if self.chat_id != chat_id:
+                    self._load_chat(chat_id)
+                    self._reload_list(chat_id)
+                self.store.append(chat_id, "assistant", reply)
+                self.dialogue.history.append({"role": "assistant", "content": reply})
+                self.dialogue.history = self.dialogue.history[-12:]
+                self.store.save_context(chat_id, self.dialogue)
+                self._add_message("assistant", reply)
+                self.status.setText("定时消息已送达")
+            self.scheduled_store.finish(task_id, delivered=True)
+            log_event("文字", "提醒已送达", reply)
+        except Exception as error:
+            self.scheduled_store.finish(task_id, delivered=False,
+                                        error_kind=type(error).__name__)
+            log_event("文字", "定时投递状态不明", type(error).__name__)
+
+    def _scheduled_failed(self, task_id: str, error_kind: str) -> None:
+        self.scheduled_store.generation_failed(task_id, error_kind=error_kind)
+        log_event("文字", "定时生成失败", error_kind)
+
+    def _scheduled_finished(self) -> None:
+        worker = self.scheduled_worker
+        self.scheduled_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _person_link_finished(self, worker: DesktopPersonLinkWorker) -> None:
+        self.person_link_workers.discard(worker)
+        worker.deleteLater()
+
     def _reply(self, reply: str) -> None:
         worker = self.worker
         if worker is None or self.chat_id is None:
@@ -360,6 +550,21 @@ class ChatPage(QWidget):
         self.store.append(self.chat_id, "assistant", reply)
         self.store.save_context(self.chat_id, self.dialogue)
         self._add_message("assistant", reply)
+        if not worker.memory_command:
+            try:
+                commit_delivered_evidence(
+                    Paths.current().project_data_root / "evidence",
+                    conversation_id=f"desktop:chat:{self.chat_id}",
+                    sender_id=channel_user_id(), turn_id=worker.turn_id,
+                    image_message_id=worker.turn_id if worker.image_hash else "",
+                    image_hash=worker.image_hash,
+                    visual_summary=worker.visual_summary,
+                    tool_summary=worker.tool_feedback,
+                    meaning_hash=worker.meaning_hash,
+                    meaning_text=worker.meaning_text,
+                    meaning_source_message_id=worker.turn_id if worker.meaning_hash else "")
+            except Exception as error:
+                log_event("文字", "证据保存跳过", type(error).__name__)
         self._reload_list(self.chat_id)
         self.status.setText("回复完成")
         log_event("文字", "回复", reply, turn_id=worker.turn_id, channel="文字")
@@ -416,6 +621,12 @@ class ChatPage(QWidget):
         self.delete_button.setEnabled(not busy)
 
     def shutdown(self) -> None:
+        self.scheduled_timer.stop()
+        if self.scheduled_worker is not None and self.scheduled_worker.isRunning():
+            self.scheduled_worker.wait()
+        for worker in list(self.person_link_workers):
+            if worker.isRunning():
+                worker.wait()
         if self.worker is not None and self.worker.isRunning():
             self.worker.wait()
         for worker in tuple(self.memory_workers):

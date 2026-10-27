@@ -162,10 +162,38 @@ class MemoryAdminStore:
         if self.identity.get_person(person_id) is None:
             raise ValueError("Unknown person")
         with self.db.connection() as db:
-            return [dict(r) for r in db.execute("""SELECT job_id,status,attempts,
-                last_error_type,created_at,finished_at FROM reflection_jobs
-                WHERE person_id=? ORDER BY created_at DESC LIMIT 200""",
-                (person_id,)).fetchall()]
+            return [dict(r) for r in db.execute("""
+                SELECT j.job_id,j.status,j.attempts,j.last_error_type,
+                       j.created_at,j.finished_at,j.conversation_id,
+                       c.platform,c.channel_account_id,c.external_conversation_id,
+                       j.after_sequence,j.through_sequence,
+                       (SELECT COUNT(*) FROM timeline_entries e
+                        WHERE e.conversation_id=j.conversation_id
+                          AND e.sequence>j.after_sequence
+                          AND e.sequence<=j.through_sequence
+                          AND ((e.speaker_role='user' AND e.state='received')
+                            OR (e.speaker_role='assistant' AND e.state='delivered'))
+                       ) AS source_count,
+                       (SELECT MIN(e.recorded_at) FROM timeline_entries e
+                        WHERE e.conversation_id=j.conversation_id
+                          AND e.sequence>j.after_sequence
+                          AND e.sequence<=j.through_sequence
+                          AND ((e.speaker_role='user' AND e.state='received')
+                            OR (e.speaker_role='assistant' AND e.state='delivered'))
+                       ) AS source_first_at,
+                       (SELECT MAX(e.recorded_at) FROM timeline_entries e
+                        WHERE e.conversation_id=j.conversation_id
+                          AND e.sequence>j.after_sequence
+                          AND e.sequence<=j.through_sequence
+                          AND ((e.speaker_role='user' AND e.state='received')
+                            OR (e.speaker_role='assistant' AND e.state='delivered'))
+                       ) AS source_last_at,
+                       (SELECT COUNT(*) FROM curated_memories m
+                        WHERE m.source_job_id=j.job_id) AS memory_count
+                FROM reflection_jobs j
+                JOIN private_conversations c ON c.conversation_id=j.conversation_id
+                WHERE j.person_id=? ORDER BY j.created_at DESC LIMIT 200
+            """, (person_id,)).fetchall()]
 
     def retry_job(self, *, person_id: str, job_id: str) -> dict:
         with self.db.connection() as db:

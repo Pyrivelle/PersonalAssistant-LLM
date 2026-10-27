@@ -2,6 +2,7 @@ import os
 import json
 import threading
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -19,8 +20,11 @@ from PySide6.QtWidgets import QApplication
 import gui
 from gpt_sovits import SpeechSettings
 from llm import LlmSettings
+from turn_planner import PlannerSettings
 from interaction import InteractionState, likely_playback_echo, speech_chunks
 from wake import ConversationGate
+from zhuangfy.agent_v2.scheduled_tasks import ScheduledTaskStore, parse_scheduled_intent
+from unittest.mock import MagicMock
 
 
 class FakeCapture:
@@ -158,11 +162,32 @@ class VoiceLoopTests(unittest.TestCase):
         self.owner_patch.start()
         self.speech_patch = patch.object(gui, "load_speech_settings", return_value=SpeechSettings())
         self.speech_patch.start()
+        self.planner_patch = patch.object(gui.PlannerSettings, "load",
+                                          return_value=PlannerSettings())
+        self.planner_patch.start()
 
     def tearDown(self):
+        self.planner_patch.stop()
         self.speech_patch.stop()
         self.owner_patch.stop()
         self.settings_patch.stop()
+
+    def test_voice_timer_creates_shared_task_and_displays_ack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            window = gui.MainWindow()
+            window.speak_reply.setChecked(False)
+            paths = MagicMock(project_data_root=Path(directory))
+            with patch.object(gui.Paths, "current", return_value=paths), \
+                 patch.object(gui, "channel_user_id", return_value="desktop-test"):
+                window._schedule_voice_timer(
+                    "一分钟后提醒我喝水", parse_scheduled_intent("一分钟后提醒我喝水"))
+            tasks = ScheduledTaskStore(Path(directory) / "scheduled_tasks.sqlite3")
+            due = tasks.due_for_channel("desktop", time.time() + 61)
+            self.assertEqual(len(due), 1)
+            self.assertEqual(due[0].conversation_ref, "desktop:voice")
+            self.assertIn("60 秒后提醒你", window.result_edit.toPlainText())
+            window.hide_on_close = False
+            window.close()
 
     def test_one_shot_voice_skips_model_and_disarms_after_trigger(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(gui, "SETTINGS", Path(directory) / "settings.json"):

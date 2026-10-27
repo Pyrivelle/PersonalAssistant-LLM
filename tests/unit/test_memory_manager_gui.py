@@ -34,6 +34,8 @@ class MemoryManagerGuiTests(unittest.TestCase):
                                 "external_user_id": "200"}],
                 "timeline_enabled": True, "timeline_revoked": False,
                 "curation_enabled": False, "message_count": 6,
+                "source_message_count": 8, "unprocessed_count": 5,
+                "unscheduled_count": 2,
                 "memory_count": 0, "jobs": {"pending": 0, "running": 0,
                                             "done": 0, "failed": 0},
             }]
@@ -44,6 +46,19 @@ class MemoryManagerGuiTests(unittest.TestCase):
             self.assertEqual(win.account_table.rowCount(), 1)
             self.assertIn("qq:100:200", win.account_table.item(0, 1).text())
             self.assertIn("6", win.person_summary.text())
+            self.assertIn("待提炼 5 条", win.person_summary.text())
+            self.assertEqual(win.account_table.item(0, 5).text(), "5")
+            self.assertEqual(win.account_table.item(0, 6).text(), "2")
+            win._done("list_jobs", [{
+                "job_id": "job-001", "status": "done", "attempts": 1,
+                "created_at": 1760000000, "finished_at": 1760000060,
+                "source_first_at": 1759990000, "source_last_at": 1759990030,
+                "platform": "qq", "external_conversation_id": "private:200",
+                "source_count": 3, "after_sequence": 4, "through_sequence": 7,
+                "memory_count": 2, "conversation_id": "conv-001",
+            }])
+            self.assertIn("来源 3 条", win.job_list.item(0).text())
+            self.assertIn("产出 2 条", win.job_list.item(0).text())
             self.assertTrue(win.approve_curator_button.isEnabled())
             self.assertFalse(win.revoke_curator_button.isEnabled())
             with patch.object(win, "_confirm", return_value=True), \

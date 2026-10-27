@@ -73,7 +73,10 @@ class TaskContinuity:
             raise ValueError("Invalid excluded entry ID")
         if type(limit) is not int or not 1 <= limit <= 3:
             raise ValueError("Task recall limit must be 1..3")
-        scope = self.links.owner_scope(identity)
+        # QQ keeps its exact bot:user boundary. Desktop may read all private
+        # task origins of the same explicitly linked PersonID after consent.
+        desktop = identity.platform == "desktop"
+        scope = "" if desktop else self.links.owner_scope(identity)
         features = _features(query)
         with self.db.connection() as db:
             owner = db.execute("""
@@ -86,16 +89,18 @@ class TaskContinuity:
             person_id = owner["person_id"]
             self.timeline._require_timeline_consent(db, person_id)
             rows = db.execute("""
-                SELECT t.task_id,t.origin_entry_id,e.content,e.recorded_at
+                SELECT t.task_id,t.origin_entry_id,e.content,e.recorded_at,
+                       c.platform,c.channel_account_id,c.external_conversation_id
                 FROM task_memory_tasks AS t
                 JOIN timeline_entries AS e ON e.entry_id=t.origin_entry_id
                 JOIN private_conversations AS c ON c.conversation_id=e.conversation_id
-                WHERE t.person_id=? AND t.agent_id=? AND t.owner_scope=?
+                WHERE t.person_id=? AND t.agent_id=? AND (?=1 OR t.owner_scope=?)
                   AND e.speaker_role='user' AND e.state='received'
                   AND c.person_id=? AND c.platform='qq'
-                  AND c.channel_account_id=? AND c.external_conversation_id=?
+                  AND (?=1 OR (c.channel_account_id=? AND c.external_conversation_id=?))
                 ORDER BY t.created_at DESC,t.task_id DESC LIMIT ?
-            """, (person_id, agent_id, scope, person_id,
+            """, (person_id, agent_id, int(desktop), scope, person_id,
+                  int(desktop),
                   identity.channel_account_id,
                   "private:" + identity.external_user_id, MAX_REVIEW)).fetchall()
             candidates = []
@@ -112,12 +117,12 @@ class TaskContinuity:
                 FROM timeline_entries AS e
                 JOIN private_conversations AS c ON c.conversation_id=e.conversation_id
                 WHERE c.person_id=? AND c.agent_id=?
-                  AND c.platform='qq' AND c.channel_account_id=?
-                  AND c.external_conversation_id=?
+                  AND (?=1 OR (c.platform='qq' AND c.channel_account_id=?
+                  AND c.external_conversation_id=?))
                   AND e.speaker_role='user' AND e.state='received'
                   AND e.entry_id<>?
                 ORDER BY e.sequence DESC LIMIT 200
-            """, (person_id, agent_id, identity.channel_account_id,
+            """, (person_id, agent_id, int(desktop), identity.channel_account_id,
                   "private:" + identity.external_user_id,
                   exclude_entry_id)).fetchall() if selected else []
 
@@ -156,8 +161,13 @@ class TaskContinuity:
                  "relation": "possible_related"}
                 for _, item in historical[:3]
             ]
+            origin_identity = identity
+            if desktop:
+                origin_identity = ChannelIdentity(
+                    "qq", origin["channel_account_id"],
+                    origin["external_conversation_id"].removeprefix("private:"))
             progress = (self.events.snapshot(
-                agent_id=agent_id, identity=identity,
+                agent_id=agent_id, identity=origin_identity,
                 task_id=origin["task_id"], limit=5)
                 if getattr(self, "events", None) is not None else None)
             result.append({

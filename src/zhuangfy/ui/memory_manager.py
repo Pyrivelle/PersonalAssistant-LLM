@@ -8,6 +8,7 @@ file directly or silently merges QQ/desktop identities.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
@@ -44,6 +45,11 @@ class AdminTask(QThread):
 
     def run(self):
         try:
+            linked_identities = []
+            if self.action == "forget_person":
+                linked_identities = next((p.get("identities", [])
+                    for p in self.client.list_people()
+                    if p.get("person_id") == self.args[0]), [])
             if self.action == "relationship_enroll":
                 result = self.client.relationship_enroll(
                     self.args[0], initial_tier=self.args[1], allow_affection=self.args[2])
@@ -52,6 +58,19 @@ class AdminTask(QThread):
                     self.args[0], expected_version=self.args[1], changes=self.args[2])
             else:
                 result = getattr(self.client, self.action)(*self.args)
+            if self.action == "forget_person":
+                from zhuangfy.agent_v2.scheduled_tasks import ScheduledTaskStore
+                from zhuangfy.paths import Paths
+                timer_store = ScheduledTaskStore(
+                    Paths.current().project_data_root / "scheduled_tasks.sqlite3"
+                )
+                timer_store.erase_person(self.args[0])
+                for identity in linked_identities:
+                    if identity.get("platform") in {"qq", "desktop"}:
+                        timer_store.erase_identity(
+                            channel=identity["platform"],
+                            channel_account_id=identity["channel_account_id"],
+                            external_user_id=identity["external_user_id"])
             self.completed.emit(self.action, result)
         except Exception as exc:
             # No raw request, tokens or private content in the error UI.
@@ -104,14 +123,15 @@ class CuratedMemoryDialog(QDialog):
         accounts_page = QWidget()
         accounts_layout = QVBoxLayout(accounts_page)
         self.account_hint = QLabel(
-            "人物由首次 QQ 私聊自动建档；QQ 昵称仅供展示，同名不合并。"
+            "人物由首次 QQ 私聊或白名单群成员消息自动建档；群成员按机器人/群/QQ 号独立，"
+            "不与私聊自动合并。QQ 昵称仅供展示，同名不合并。"
             "本地聊天存储与付费长期记忆提炼分别管理。")
         self.account_hint.setWordWrap(True)
         accounts_layout.addWidget(self.account_hint)
-        self.account_table = QTableWidget(0, 6)
+        self.account_table = QTableWidget(0, 8)
         self.account_table.setHorizontalHeaderLabels(
             ["人物 / Person ID", "已关联的渠道账号", "本地记录",
-             "Curator", "私聊条数", "长期记忆"])
+             "Curator", "用户消息", "待提炼消息", "未入队消息", "长期记忆"])
         self.account_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.account_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.account_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -188,7 +208,7 @@ class CuratedMemoryDialog(QDialog):
         curator_page = QWidget()
         curator_layout = QVBoxLayout(curator_page)
         intro = QLabel(
-            "Curator 会使用已存储的聊天文本提炼长期记忆，可能调用外部模型并产生费用。"
+            "Curator 会使用已存储的私聊或对应群成员消息提炼长期记忆，可能调用外部模型并产生费用。"
             "每个人默认不批准；批准/撤销只影响该人物，不改变本地 Timeline 留存。")
         intro.setWordWrap(True)
         curator_layout.addWidget(intro)
@@ -205,6 +225,7 @@ class CuratedMemoryDialog(QDialog):
         curator_layout.addLayout(approvals)
         curator_layout.addWidget(QLabel("该人物的提炼作业（待处理 / 执行中 / 完成 / 失败）"))
         self.job_list = QListWidget()
+        self.job_list.setWordWrap(True)
         curator_layout.addWidget(self.job_list, 1)
         self.reflection_status = QLabel("未手动触发整理")
         self.reflection_status.setWordWrap(True)
@@ -319,14 +340,30 @@ class CuratedMemoryDialog(QDialog):
             self.jobs = result
             self.job_list.clear()
             for job in result:
-                self._new_list_item(
+                created = self._time_text(job.get("created_at"))
+                finished = self._time_text(job.get("finished_at"))
+                source_start = self._time_text(job.get("source_first_at"))
+                source_end = self._time_text(job.get("source_last_at"))
+                row = self._new_list_item(
                     self.job_list,
-                    f'{job["status"]} · 重试/尝试 {job["attempts"]} 次 · {job["job_id"][:8]}',
+                    f'{job["status"]} · 作业 {job["job_id"][:8]} · '
+                    f'{created} 创建 · {finished} 完成\n'
+                    f'{job.get("platform", "?")}:{job.get("external_conversation_id", "?")} · '
+                    f'来源 {job.get("source_count", 0)} 条（{source_start} 至 {source_end}；'
+                    f'序号 {job.get("after_sequence", 0)}–{job.get("through_sequence", 0)}） · '
+                    f'产出 {job.get("memory_count", 0)} 条 · 尝试 {job["attempts"]} 次',
                     job["job_id"])
+                row.setToolTip(f'作业 ID：{job["job_id"]}\n'
+                               f'会话 ID：{job.get("conversation_id", "?")}\n'
+                               f'最近错误：{job.get("last_error_type") or "无"}')
         elif action in {"correct_memory", "forget_memory", "forget_person",
                         "admin_create_person", "admin_rename_person", "admin_link", "admin_consent",
                         "link_episodes", "sync_index", "retry_job", "reflect_one"}:
             self.refresh_people()
+
+    @staticmethod
+    def _time_text(timestamp) -> str:
+        return datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M") if timestamp else "—"
 
     @staticmethod
     def _new_list_item(widget: QListWidget, text: str, identifier: str):
@@ -443,6 +480,8 @@ class CuratedMemoryDialog(QDialog):
                 transcript,
                 curator,
                 str(person.get("message_count", 0)),
+                str(person.get("unprocessed_count", 0)),
+                str(person.get("unscheduled_count", 0)),
                 str(person.get("memory_count", 0)),
             ]
             for index, value in enumerate(cols):
@@ -471,10 +510,15 @@ class CuratedMemoryDialog(QDialog):
             f'姓名：{info["display_name"]} | ID：{info["person_id"]}\n'
             f'渠道账号：{channels}\n'
             f'本地 Timeline：{timeline}，已收录私聊 {info.get("message_count", 0)} 条；'
+            f'可提炼消息 {info.get("source_message_count", 0)} 条，'
+            f'待提炼 {info.get("unprocessed_count", 0)} 条，'
+            f'其中尚未入队 {info.get("unscheduled_count", 0)} 条；'
             f'长期记忆 {info.get("memory_count", 0)} 条。')
         self.curator_status.setText(
             f'当前人物：{info["display_name"]} | Curator：{curation}\n'
             f'本地记录：{timeline} | '
+            f'待提炼消息 {info.get("unprocessed_count", 0)} 条（未入队 '
+            f'{info.get("unscheduled_count", 0)} 条） | '
             f'待处理 {jobs.get("pending", 0)}，执行中 {jobs.get("running", 0)}，'
             f'失败 {jobs.get("failed", 0)}，完成 {jobs.get("done", 0)}。')
         self.approve_curator_button.setEnabled(
@@ -634,7 +678,7 @@ class CuratedMemoryDialog(QDialog):
             self._start("retry_job", self._person_id(), item.data(Qt.ItemDataRole.UserRole))
 
     def reflect_one(self):
-        if self._confirm("开始整理", "将向已配置的 Curator 模型发送已获授权、经过凭据过滤的私聊资料。继续？"):
+        if self._confirm("开始整理", "将向已配置的 Curator 模型发送已获授权、经过凭据过滤的聊天资料。继续？"):
             self._start("reflect_one")
 
     def closeEvent(self, event):

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -49,6 +50,12 @@ class MemoryClient:
 
     @classmethod
     def from_environment(cls, *, enabled_var: str, admin: bool = False) -> "MemoryClient | None":
+        # Offline unittest/pytest workers may inherit the owner's real tokens.
+        # Tests needing HTTP use an explicit loopback MemoryClient instead.
+        if (os.environ.get("ZHUANGFY_TEST_ISOLATION") == "1" or
+                "unittest.__main__" in sys.modules or "pytest" in sys.modules or
+                os.path.basename(sys.argv[0]).startswith("test_")):
+            return None
         if os.environ.get(enabled_var, "").strip() != "1":
             return None
         token_name = "ZHUANGFY_MEMORY_ADMIN_TOKEN" if admin else "ZHUANGFY_MEMORY_TOKEN"
@@ -90,6 +97,13 @@ class MemoryClient:
         This endpoint never grants consent to save conversation content.
         """
         return self.request("/v1/onboard-qq", {
+            "identity": identity.as_payload(), "display_name": display_name,
+        })
+
+    def onboard_qq_group_member(self, identity: MemoryChannel,
+                               display_name: str) -> dict:
+        """Register a member scoped to one authenticated QQ group."""
+        return self.request("/v1/onboard-qq-group-member", {
             "identity": identity.as_payload(), "display_name": display_name,
         })
 
@@ -140,6 +154,14 @@ class MemoryClient:
             "identity": identity.as_payload(), "chat_id": chat_id,
             "message_id": message_id, "content": content,
         })
+
+    def resolve_identity(self, identity: MemoryChannel) -> str:
+        result = self.request("/v1/identity/resolve",
+                              {"identity": identity.as_payload()})
+        person_id = result.get("person_id", "")
+        if not isinstance(person_id, str) or not person_id:
+            raise ValueError("Memory service returned no verified PersonID")
+        return person_id
 
     def recall(self, identity: MemoryChannel, query: str, limit: int = 5) -> dict:
         return self.request("/v1/recall", {

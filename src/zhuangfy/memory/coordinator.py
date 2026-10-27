@@ -76,6 +76,12 @@ class MemoryCore:
             raise PermissionError("Unknown or unverified identity")
         return person_id
 
+    def resolve_identity(self, *, identity: dict) -> dict:
+        """Expose only an already verified, Timeline-authorized PersonID."""
+        person_id = self._person(identity)
+        self.identities.require_consent(person_id, "timeline")
+        return {"person_id": person_id}
+
     def onboard_qq(self, *, identity: dict, display_name: str) -> dict:
         """Trust-boundary call: only a QQ adapter with the client token may invoke.
 
@@ -85,6 +91,19 @@ class MemoryCore:
         person, created = self.identities.ensure_qq_person(
             self._identity(identity), display_name,
             initial_timeline=self.auto_qq_timeline)
+        return {
+            "created": created,
+            "person_id": person.person_id,
+            "display_name": person.display_name,
+            "timeline_consent": self.identities.has_consent(person.person_id, "timeline"),
+            "curation_consent": self.identities.has_consent(person.person_id, "curation"),
+        }
+
+    def onboard_qq_group_member(self, *, identity: dict,
+                               display_name: str) -> dict:
+        """Provision a group-scoped member after an admitted OneBot event."""
+        person, created = self.identities.ensure_qq_group_member(
+            self._identity(identity), display_name)
         return {
             "created": created,
             "person_id": person.person_id,
@@ -154,6 +173,15 @@ class MemoryCore:
                 logging.getLogger(__name__).warning(
                     "Task progress extraction skipped (Timeline persisted)",
                     exc_info=True)
+        elif ident.platform == "qq_group":
+            # Group members have no assistant reply of their own. A newly
+            # approved Curator must still see burst/size thresholds promptly;
+            # the service's daily scheduler handles quiet conversations.
+            try:
+                self.curated.schedule_if_ready(conversation_id=conv.conversation_id,
+                                               person_id=self._person(identity))
+            except PermissionError:
+                pass
         return {"conversation_id": conv.conversation_id, "entry_id": entry.entry_id}
 
     def relationship_snapshot(self, *, identity: dict) -> dict:
@@ -376,6 +404,32 @@ class MemoryCore:
                 WHERE e.speaker_role='user' AND e.state='received'
                 GROUP BY c.person_id
             """).fetchall()
+            backlog = db.execute("""
+                WITH completed AS (
+                    SELECT conversation_id, MAX(through_sequence) AS through_sequence
+                    FROM reflection_jobs WHERE agent_id=? AND status='done'
+                    GROUP BY conversation_id
+                )
+                SELECT c.person_id,
+                       COUNT(*) AS source_message_count,
+                       SUM(CASE WHEN e.sequence>COALESCE(d.through_sequence,0)
+                                THEN 1 ELSE 0 END) AS unprocessed_count,
+                       SUM(CASE WHEN e.sequence>COALESCE(d.through_sequence,0)
+                                 AND NOT EXISTS (
+                                   SELECT 1 FROM reflection_jobs j
+                                   WHERE j.conversation_id=c.conversation_id
+                                     AND j.agent_id=?
+                                     AND j.status IN ('pending','running','failed')
+                                     AND e.sequence>j.after_sequence
+                                     AND e.sequence<=j.through_sequence)
+                                THEN 1 ELSE 0 END) AS unscheduled_count
+                FROM timeline_entries e
+                JOIN private_conversations c ON c.conversation_id=e.conversation_id
+                LEFT JOIN completed d ON d.conversation_id=c.conversation_id
+                WHERE c.agent_id=? AND ((e.speaker_role='user' AND e.state='received')
+                    OR (e.speaker_role='assistant' AND e.state='delivered'))
+                GROUP BY c.person_id
+            """, (self.agent_id, self.agent_id, self.agent_id)).fetchall()
             memories = db.execute("""
                 SELECT person_id, COUNT(*) AS memory_count FROM curated_memories
                 WHERE agent_id=? AND status='active' GROUP BY person_id
@@ -391,6 +445,9 @@ class MemoryCore:
             person["curation_enabled"] = False
             person["timeline_revoked"] = False
             person["message_count"] = 0
+            person["source_message_count"] = 0
+            person["unprocessed_count"] = 0
+            person["unscheduled_count"] = 0
             person["memory_count"] = 0
             person["jobs"] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
         for item in identities:
@@ -411,6 +468,10 @@ class MemoryCore:
         for row in transcripts:
             if row["person_id"] in by_person:
                 by_person[row["person_id"]]["message_count"] = row["message_count"]
+        for row in backlog:
+            if row["person_id"] in by_person:
+                for field in ("source_message_count", "unprocessed_count", "unscheduled_count"):
+                    by_person[row["person_id"]][field] = int(row[field] or 0)
         for row in memories:
             if row["person_id"] in by_person:
                 by_person[row["person_id"]]["memory_count"] = row["memory_count"]

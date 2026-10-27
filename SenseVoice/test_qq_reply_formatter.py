@@ -10,6 +10,12 @@ class QqReplyFormatterTests(unittest.TestCase):
         self.assertEqual(clean_reply(raw),
                          "你自己在写哪些方向的东西？如果知道类型，或许能帮你想几条找人的路。")
 
+    def test_group_stage_direction_regression(self):
+        raw = "（愣了一下，随即无奈地笑了笑）这是哪一出啊，秋。群里的玩笑可不许乱开。"
+        expected = "这是哪一出啊，秋。群里的玩笑可不许乱开。"
+        self.assertEqual(format_qq_reply(raw, private=False)[0], expected)
+        self.assertEqual(format_qq_reply(raw, private=True)[0], expected)
+
     def test_removes_several_leading_meta_cues_without_rewriting_reply(self):
         self.assertEqual(clean_reply(
             "庄方宜： *（轻笑）* （语气温和）\n嗯，终于解决了。"),

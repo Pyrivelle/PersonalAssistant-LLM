@@ -26,9 +26,11 @@ from zhuangfy.paths import Paths
 
 MAX_REQUEST_BYTES = 18_000
 PUBLIC_ENDPOINTS = frozenset({
-    "/v1/onboard-qq", "/v1/receive", "/v1/recall", "/v1/complete-reply", "/v1/erase-self",
+    "/v1/onboard-qq", "/v1/onboard-qq-group-member", "/v1/receive", "/v1/recall",
+    "/v1/complete-reply", "/v1/erase-self",
     "/v1/relationship/snapshot", "/v1/relationship/apply", "/v1/self-profile/snapshot",
     "/v1/task-origin", "/v1/task-recall", "/v1/task-state",
+    "/v1/identity/resolve",
 })
 ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/create-person", "/v1/admin/rename-person", "/v1/admin/link", "/v1/admin/consent",
@@ -99,10 +101,14 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     raise ValueError("JSON object required")
                 if path == "/v1/onboard-qq":
                     result = core.onboard_qq(**payload)
+                elif path == "/v1/onboard-qq-group-member":
+                    result = core.onboard_qq_group_member(**payload)
                 elif path == "/v1/receive":
                     result = core.receive(**payload)
                 elif path == "/v1/task-state":
                     result = core.task_state(**payload)
+                elif path == "/v1/identity/resolve":
+                    result = core.resolve_identity(**payload)
                 elif path == "/v1/task-recall":
                     result = core.task_recall(**payload)
                 elif path == "/v1/task-origin":

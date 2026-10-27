@@ -96,6 +96,9 @@ class R1BehaviorTests(unittest.TestCase):
     def test_display_cleanup_is_contextual_and_preserves_technical_parentheticals(self):
         raw = "（看着窗外出了一会儿神，才慢慢敲键盘）\n雨天的安静难得。"
         self.assertEqual(tidy_r1_reply(PERSONA, "下雨了", raw), "雨天的安静难得。")
+        self.assertEqual(tidy_r1_reply(
+            PERSONA, "群里的玩笑", "（愣了一下，随即无奈地笑了笑）这是哪一出啊。",
+            channel="qq_group"), "这是哪一出啊。")
         self.assertEqual(tidy_r1_reply(PERSONA, "请演绎一段雨天的剧本", raw), raw)
         self.assertEqual(tidy_r1_reply(PERSONA, "下雨了", raw, enabled=False), raw)
         self.assertEqual(tidy_r1_reply("你是小明", "下雨了", raw), raw)

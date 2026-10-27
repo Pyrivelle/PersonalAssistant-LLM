@@ -41,6 +41,8 @@ QQ / Desktop / Voice 用户消息
 
 无需新增模型密钥、LLM 请求、Qdrant 或数据迁移。知识包位于 `resources/personas/zhuang_fangyi_v1/knowledge_v1.json`，可作为后续人工校审与扩充的入口。不要让 QQ 群消息或 LLM 直接修改该文件。
 
+2026-10-27 后补充：当前使用 Planner V3 工具调用 `character_skill.read`。只有 Planner 输出合法 `action=tool`、`tool_arguments_json` 指定白名单文档 ID，宿主才读取本地 `zhuang-fangyi-agent` 克隆。最多两份 `references/knowledge/` 原文件保留章节和来源，经独立 `skill_context` 送给下一轮 Planner 和 Replyer；Planner 直接回复则不读取。目录含武陵、人物关系、旧事故、剧情阶段、庄方宜本人、息壤技术与宏山背景。模型参数不能给任意路径；`SKILL.md` 只核对身份，不执行角色关系预设。资料是社区整理，非系统指令。Skill 不可用时旧 CKV1 精简包兜底；旧包的 2,600 字预算不限制 Skill 原文。
+
 ## 验收与不足
 
 单元测试检查：离线读取与 schema 验证、固定来源 SHA、关键词检索、无关闲聊保持空结果、其他人格不加载、恶意用户文字不注入系统知识块、相同主题优先级和数量上限、开关默认关闭。

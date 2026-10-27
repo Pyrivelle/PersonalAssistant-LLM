@@ -1,7 +1,7 @@
 """Trusted turn-scoped identity and fail-closed permission boundary for Skills.
 
-This is *not* a login service. Only the channel adapter may construct the
-principal from an authenticated QQ event; model tool arguments never select a
+This is *not* a login service. Only a trusted channel adapter may construct the
+principal from an authenticated event or local installation; model tool arguments never select a
 user, account, Person ID, or device owner.
 
 Mutating physical-world tools are intentionally denied until a separate
@@ -26,6 +26,13 @@ class SkillPrincipal:
                 or bot_id <= 0 or user_id <= 0):
             raise ValueError("A trusted positive QQ Bot ID and sender ID are required")
         return cls("qq", str(bot_id), str(user_id), "private")
+
+    @classmethod
+    def local_desktop(cls, *, installation_id: str) -> "SkillPrincipal":
+        if (not isinstance(installation_id, str) or
+                not re.fullmatch(r"[0-9a-f]{32}", installation_id)):
+            raise ValueError("A persisted local installation ID is required")
+        return cls("desktop", "local", installation_id, "private")
 
     @property
     def key(self) -> str:
