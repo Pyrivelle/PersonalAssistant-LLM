@@ -245,7 +245,7 @@ class InitiativeTests(unittest.TestCase):
     def test_legacy_sqlite_schema_migrates_without_data_loss(self):
         with tempfile.TemporaryDirectory() as d:
             path=Path(d)/"old.db"
-            with sqlite3.connect(path) as db:
+            with contextlib.closing(sqlite3.connect(path)) as db, db:
                 db.execute("""CREATE TABLE goals (
                     goal_id TEXT PRIMARY KEY, owner_scope TEXT NOT NULL,
                     source_event_id TEXT NOT NULL, consent INTEGER NOT NULL,

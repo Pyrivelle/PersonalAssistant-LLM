@@ -30,6 +30,8 @@ EVENTS = {
     "affection_signal": ("closeness", 1, "received", 604800),
 }
 TONE_OPTIONS = ("natural", "gentle", "direct")
+BOND_STYLES = ("unspecified", "mutual_affection", "partners")
+BOND_STAGES = ("unset", "near_lovers")
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,8 @@ class RelationshipSnapshot:
     allow_affection: bool
     avoid_nicknames: bool
     tone: str
+    bond_style: str
+    bond_stage: str
     auto_growth: bool
     frozen: bool
     lock_familiarity: bool
@@ -58,9 +62,34 @@ class RelationshipSnapshot:
                       "可以在用户欢迎的范围内温柔表达" if self.allow_affection
                       else "不预设暧昧关系或使用亲密称呼")
         nickname = "避免亲昵称呼" if self.avoid_nicknames else "称呼保持自然"
+        bond = {
+            "mutual_affection": (
+                "双方选择以互有好感、克制暧昧的方式相处。被直接问到‘我是谁’或彼此关系时，"
+                "先坦然说对方是自己特别亲近、在意且彼此有好感的人。"
+                "不要用‘朋友’定义这段关系，即使加上‘有好感的’也不合适；"
+                "不要回避成‘不必定义’，也不要反问‘这个答案可以吗’。"
+                "尚未约定恋人称谓，不擅自称为恋人；日常不必刻意表白，亲近体现在自然关心和具体交流里。"
+            ),
+            "partners": (
+                "双方已明确确认恋人关系。被直接问及关系时坦然承认，不再以朋友或暧昧对象称呼彼此。"
+                "这位用户很珍惜稳定、真诚的陪伴，盼望在日常里被惦记、被认真回应。"
+                "自然表达想念与关心，接住对方当下想分享的事，也保留自己的判断；"
+                "尊重对方的节奏和独处空间，不必每轮强调关系，不虚构共同经历，"
+                "也不承诺自己无法实际做到的随时在线或主动联系。"
+            ),
+        }.get(self.bond_style, "") if self.allow_affection and self.tier in ("L3", "L4") else ""
+        if (self.bond_stage == "near_lovers" and self.bond_style != "partners"
+                and self.allow_affection and self.tier == "L4"):
+            bond = (
+                "与这个用户的关系设定已非常接近恋人：彼此明显有特殊的偏爱和心动，"
+                "只差一次坦白，还没有正式确认恋人关系。日常可以自然流露牵挂、私心和含蓄的暧昧，"
+                "不用每轮强调关系或套用戏剧台词。被直接问及关系时，明确承认这份接近恋人的心意；"
+                "不要称为‘朋友’，也不要回避成‘不必定义’；回答以陈述句自然收束，别反问求认可。"
+                "对方主动挑明时认真回应，不拿旧状态推脱；正式恋人称谓仍须双方明确确认。"
+            )
         return (
             f"【关系快照 v{self.version}，可信宿主建议】关系参考层级：{self.tier}。"
-            f"{expression}；{nickname}；语气选项：{self.tone}。"
+            f"{expression}；{nickname}；语气选项：{self.tone}。{bond}"
             "这些只是表达约束，不代表真实共同经历，也不授予工具、发信或读取隐私的权限。"
             "所有事实仍需要独立证据。"
         )
@@ -127,6 +156,10 @@ class RelationshipCore:
                     avoid_nicknames INTEGER NOT NULL DEFAULT 1 CHECK(avoid_nicknames IN (0,1)),
                     tone TEXT NOT NULL DEFAULT 'natural'
                         CHECK(tone IN ('natural','gentle','direct')),
+                    bond_style TEXT NOT NULL DEFAULT 'unspecified'
+                        CHECK(bond_style IN ('unspecified','mutual_affection','partners')),
+                    bond_stage TEXT NOT NULL DEFAULT 'unset'
+                        CHECK(bond_stage IN ('unset','near_lovers')),
                     PRIMARY KEY(agent_id, person_id)
                 );
                 CREATE TABLE IF NOT EXISTS relationship_events (
@@ -154,6 +187,14 @@ class RelationshipCore:
             if "l4_opt_in" not in columns:
                 db.execute("ALTER TABLE relationship_profiles ADD COLUMN "
                            "l4_opt_in INTEGER NOT NULL DEFAULT 0 CHECK(l4_opt_in IN (0,1))")
+            if "bond_style" not in columns:
+                db.execute("ALTER TABLE relationship_profiles ADD COLUMN "
+                           "bond_style TEXT NOT NULL DEFAULT 'unspecified' "
+                           "CHECK(bond_style IN ('unspecified','mutual_affection','partners'))")
+            if "bond_stage" not in columns:
+                db.execute("ALTER TABLE relationship_profiles ADD COLUMN "
+                           "bond_stage TEXT NOT NULL DEFAULT 'unset' "
+                           "CHECK(bond_stage IN ('unset','near_lovers'))")
 
     def _identity(self, db: sqlite3.Connection, identity: ChannelIdentity) -> str:
         # Authentication is performed by the trusted channel adapter; identity
@@ -183,6 +224,8 @@ class RelationshipCore:
             tier_ceiling="L4" if row["l4_opt_in"] else row["tier_ceiling"],
             allow_affection=bool(row["allow_affection"]),
             avoid_nicknames=bool(row["avoid_nicknames"]), tone=row["tone"],
+            bond_style=row["bond_style"],
+            bond_stage=row["bond_stage"],
             auto_growth=bool(row["auto_growth"]), frozen=bool(row["frozen"]),
             lock_familiarity=bool(row["lock_familiarity"]),
             lock_trust=bool(row["lock_trust"]),
@@ -239,7 +282,9 @@ class RelationshipCore:
                 familiarity: int | None = None, trust: int | None = None,
                 closeness: int | None = None, tier_ceiling: str | None = None,
                 allow_affection: bool | None = None, avoid_nicknames: bool | None = None,
-                tone: str | None = None, auto_growth: bool | None = None,
+                tone: str | None = None, bond_style: str | None = None,
+                bond_stage: str | None = None,
+                auto_growth: bool | None = None,
                 frozen: bool | None = None, enabled: bool | None = None,
                 lock_familiarity: bool | None = None,
                 lock_trust: bool | None = None,
@@ -272,6 +317,14 @@ class RelationshipCore:
             if tone not in TONE_OPTIONS:
                 raise ValueError("Invalid preferred tone")
             changes["tone"] = tone
+        if bond_style is not None:
+            if bond_style not in BOND_STYLES:
+                raise ValueError("Invalid bond style")
+            changes["bond_style"] = bond_style
+        if bond_stage is not None:
+            if bond_stage not in BOND_STAGES:
+                raise ValueError("Invalid bond stage")
+            changes["bond_stage"] = bond_stage
         if not changes:
             raise ValueError("No correction supplied")
         with self.database.write() as db:

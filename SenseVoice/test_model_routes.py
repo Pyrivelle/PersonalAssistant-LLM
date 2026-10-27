@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -181,13 +182,16 @@ class ModelRoutesTests(unittest.TestCase):
         routes = ModelRoutes(planner=StagePolicy(
             (candidate("planner_1"), candidate("planner_2")),
             retries=0, timeout=5, total_timeout=20))
+        selected = []
         with patch.object(model_routes, "chat", side_effect=[
             "not-json", "still prose", '{"action":"wait","confidence":0.9}'
         ]) as request, patch.object(model_routes, "load_route_key", return_value="key"):
             result = invoke_stage("planner", LlmSettings(), "", [], "等一下",
-                                  routes=routes, response_validator=lambda text: text.startswith('{'))
+                                  routes=routes, response_validator=lambda text: text.startswith('{'),
+                                  on_success=lambda route_id, model: selected.append((route_id, model)))
         self.assertTrue(result.startswith('{'))
         self.assertEqual(request.call_count, 3)
+        self.assertEqual(selected, [("planner_2", routes.planner.candidates[1].model)])
 
     def test_planner_no_route_success_raises_for_caller_to_downgrade(self):
         config = ModelRoutes(planner=StagePolicy((candidate("planner_1"),), retries=0))
@@ -207,6 +211,15 @@ class ModelRoutesTests(unittest.TestCase):
             self.assertEqual(load_routes(path), routes)
             self.assertNotIn("API_KEY", path.read_text(encoding="utf-8"))
             self.assertNotIn("token", path.read_text(encoding="utf-8"))
+
+    def test_shared_model_id_allows_stage_specific_thinking(self):
+        shared = candidate("shared")
+        routes = ModelRoutes(
+            planner=StagePolicy((replace(shared, thinking="enabled"),)),
+            reply=StagePolicy((shared,)))
+        routes.validated()
+        with self.assertRaises(ValueError):
+            replace(routes, reply=StagePolicy((replace(shared, model="other-model"),))).validated()
 
     def test_malformed_and_remote_http_configuration_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "HTTPS"):

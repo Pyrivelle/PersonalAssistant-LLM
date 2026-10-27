@@ -14,13 +14,13 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl, QUrlQuery
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl, QUrlQuery, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QFont, QFontDatabase, QTextCursor
 from PySide6.QtNetwork import QHostAddress, QNetworkAccessManager, QNetworkReply, QNetworkRequest, QUdpSocket
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout,
+    QApplication, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
-    QScrollArea, QSpinBox, QDoubleSpinBox, QStackedWidget, QSystemTrayIcon,
+    QScrollArea, QSizePolicy, QSpinBox, QDoubleSpinBox, QStackedWidget, QSystemTrayIcon,
     QVBoxLayout, QWidget,
 )
 
@@ -82,6 +82,23 @@ def _card(title: str, description: str = "") -> tuple[QFrame, QVBoxLayout]:
         caption.setWordWrap(True)
         layout.addWidget(caption)
     return frame, layout
+
+
+class PluginLink(QFrame):
+    clicked = Signal()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 def _line(label: str, value: str) -> QLineEdit:
@@ -203,6 +220,7 @@ class Dashboard(QMainWindow):
         self._tts_switch_step = 0
         self._auto_bridge_pending = False
         self._bridge_connected = False
+        self._tts_ready_logged = False
         self._closing = False
         self._really_quit = False
         self._tray_hint_shown = False
@@ -611,6 +629,10 @@ class Dashboard(QMainWindow):
         self.group_ids = _line("群聊白名单", ", ".join(map(str, sorted(saved.allowed_group_ids))))
         self.group_ids.setPlaceholderText("不填则关闭群聊")
         rule_form.addRow("群号", self.group_ids)
+        self.voice_group_ids = _line("允许明确请求语音的群号",
+                                    ", ".join(map(str, sorted(saved.voice_group_ids))))
+        self.voice_group_ids.setPlaceholderText("须在群聊白名单中；仅被 @ 且明确要求语音时使用")
+        rule_form.addRow("群语音群号", self.voice_group_ids)
         self.private_cooldown = self._number(saved.private_cooldown_seconds, 0, 120, decimal=True)
         rule_form.addRow("私聊间隔 / 秒", self.private_cooldown)
         self.private_reply_parts = self._number(saved.private_max_reply_parts, 1, 3)
@@ -661,22 +683,75 @@ class Dashboard(QMainWindow):
         return page
 
     def _plugins_page(self) -> QScrollArea:
-        page, column = self._page("插件管理", "查看本机接入组件的可用状态，并进入各自的控制页面。")
+        page, column = self._page("插件管理", "查看本机接入组件的运行状态；开关功能尚未开放。")
         self.plugin_states = {}
-        for key, title, detail, label, callback in (
-            ("snowluma", "SnowLuma", "QQ 登录、OneBot 消息通道", "打开平台连接", lambda: self.switch_page(PAGE_PLATFORM)),
-            ("qq_bridge", "QQ 桥接", "私聊与群聊消息收发、频率控制", "打开平台连接", lambda: self.switch_page(PAGE_PLATFORM)),
-            ("sensevoice", "SenseVoice", "本地语音识别与持续监听", "打开语音交互", lambda: self.switch_page(PAGE_VOICE)),
-            ("gpt_sovits", "GPT-SoVITS", "本地角色语音生成服务", "打开语音设置", lambda: self.switch_page(PAGE_VOICE)),
-            ("memory", "新记忆服务", "人物身份、时间线、整理与检索", "打开记忆中心", lambda: self.switch_page(PAGE_MEMORY)),
-        ):
-            card, layout = _card(title, detail)
+        self.plugin_indicators = {}
+        self.plugin_switches = {}
+        self.plugin_links = {}
+        self.plugin_cards = {}
+        self.plugin_grid = QGridLayout()
+        self.plugin_grid.setHorizontalSpacing(14)
+        self.plugin_grid.setVerticalSpacing(14)
+        for index in range(3):
+            self.plugin_grid.setColumnStretch(index, 1)
+        for index, (key, title, detail, target) in enumerate((
+            ("snowluma", "SnowLuma", "QQ 登录、OneBot 消息通道", PAGE_PLATFORM),
+            ("qq_bridge", "QQ 桥接", "私聊与群聊消息收发、频率控制", PAGE_PLATFORM),
+            ("sensevoice", "SenseVoice", "本地语音识别与持续监听", PAGE_VOICE),
+            ("gpt_sovits", "GPT-SoVITS", "本地角色语音生成服务", PAGE_VOICE),
+            ("memory", "新记忆服务", "人物身份、时间线、整理与检索", PAGE_MEMORY),
+        )):
+            card = QFrame()
+            card.setObjectName("pluginCard")
+            card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            row = QHBoxLayout(card)
+            row.setContentsMargins(14, 14, 14, 14)
+            row.setSpacing(8)
+            link = PluginLink()
+            link.setObjectName("pluginLink")
+            link.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            link.setCursor(Qt.CursorShape.PointingHandCursor)
+            link.setAccessibleName(f"打开{title}设置")
+            link.clicked.connect(lambda page=target: self.switch_page(page))
+            details = QVBoxLayout(link)
+            details.setContentsMargins(0, 0, 0, 0)
+            details.setSpacing(6)
+            name = QLabel(title)
+            name.setObjectName("pluginName")
+            name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            details.addWidget(name)
+            description = QLabel(detail)
+            description.setObjectName("muted")
+            description.setWordWrap(True)
+            description.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            details.addWidget(description)
+            status_row = QHBoxLayout()
+            status_row.setSpacing(7)
+            indicator = QLabel("●")
+            indicator.setObjectName("pluginIndicator")
+            indicator.setProperty("online", False)
+            indicator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            status_row.addWidget(indicator)
             status = QLabel("正在检查连接…")
             status.setObjectName("pluginStatus")
-            layout.addWidget(status)
-            layout.addWidget(_button(label + "  →", callback))
+            status.setWordWrap(True)
+            status.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            status_row.addWidget(status)
+            status_row.addStretch()
+            details.addLayout(status_row)
+            row.addWidget(link, 1)
+            toggle = ToggleSwitch()
+            toggle.setAccessibleName(f"{title} 开关（暂未开放）")
+            toggle.setToolTip("开关功能尚未开放；当前仅显示运行状态。")
+            toggle.setEnabled(False)
+            row.addWidget(toggle)
             self.plugin_states[key] = status
-            column.addWidget(card)
+            self.plugin_indicators[key] = indicator
+            self.plugin_switches[key] = toggle
+            self.plugin_links[key] = link
+            self.plugin_cards[key] = card
+            self.plugin_grid.addWidget(card, index // 3, index % 3)
+        column.addLayout(self.plugin_grid)
         column.addStretch()
         return page
 
@@ -1305,6 +1380,7 @@ class Dashboard(QMainWindow):
                 initial_l0_private_ids=frozenset(_ids(self.initial_l0_private_ids.text())),
                 allowed_group_ids=frozenset(_ids(self.group_ids.text())),
                 voice_private_ids=frozenset(_ids(self.voice_private_ids.text())),
+                voice_group_ids=frozenset(_ids(self.voice_group_ids.text())),
                 private_cooldown_seconds=self.private_cooldown.value(),
                 private_max_reply_parts=self.private_reply_parts.value(),
                 group_cooldown_seconds=self.group_cooldown.value(),
@@ -1505,6 +1581,18 @@ class Dashboard(QMainWindow):
             self._auto_bridge_pending = False
         self.refresh_status()
 
+    def _update_tts_readiness(self, online: bool) -> None:
+        if not online:
+            self._tts_ready_logged = False
+            return
+        if self._tts_ready_logged:
+            return
+        self._tts_ready_logged = True
+        if self.tts_server.state() != QProcess.ProcessState.NotRunning:
+            self._log("GPT-SoVITS v2Pro 已启动；本地语音服务可连接（127.0.0.1:9880）")
+        else:
+            self._log("检测到已运行的 GPT-SoVITS 本地语音服务（127.0.0.1:9880）")
+
     def refresh_status(self) -> None:
         self.refresh_home_voice_status()
         voice = self.voice_window
@@ -1532,6 +1620,7 @@ class Dashboard(QMainWindow):
             "旧版长期记忆：已开启" if settings.memory_enabled else "旧版长期记忆：已关闭")
         memory_online = _port_open("http://127.0.0.1:8769")
         tts_online = _port_open("http://127.0.0.1:9880")
+        self._update_tts_readiness(tts_online)
         self.memory_core_state.setText("新记忆服务：可连接" if memory_online else "新记忆服务：未连接")
         self.memory_service_state.setText("服务状态：可连接" if memory_online else "服务状态：未连接")
         self.tts_home_state.setText("GPT-SoVITS：可连接" if tts_online else "GPT-SoVITS：未连接")
@@ -1551,16 +1640,25 @@ class Dashboard(QMainWindow):
         self.snow_button.setText("停止 SnowLuma" if self.snowluma.state() != QProcess.ProcessState.NotRunning else "启动 SnowLuma")
         self.bridge_button.setText("停止 QQ 桥接" if bridge_managed else "启动 QQ 桥接")
         plugin_status = {
-            "snowluma": "已连接 · OneBot 可用" if snow_online and onebot_online else
-                         ("WebUI 可连接 · OneBot 未就绪" if snow_online else "未连接"),
-            "qq_bridge": "已连接" if self._bridge_connected else
-                         ("运行中 · 等待连接" if bridge_managed else "未运行"),
-            "sensevoice": "模型目录已就绪 · 随语音窗口运行" if Paths.current().models_root.is_dir() else "模型目录未找到",
-            "gpt_sovits": "本地服务运行中" if tts_online else "本地服务未连接",
-            "memory": "本机服务运行中" if memory_online else "本机服务未连接",
+            "snowluma": ("已连接 · OneBot 可用", True) if snow_online and onebot_online else
+                         (("WebUI 可连接 · OneBot 未就绪", False) if snow_online else ("未连接", False)),
+            "qq_bridge": ("已连接", True) if self._bridge_connected else
+                         (("运行中 · 等待连接", False) if bridge_managed else ("未运行", False)),
+            "sensevoice": ("语音交互运行中", True) if voice_active else
+                          (("模型目录已就绪 · 尚未运行", False) if Paths.current().models_root.is_dir()
+                           else ("模型目录未找到", False)),
+            "gpt_sovits": ("本地服务运行中", True) if tts_online else ("本地服务未连接", False),
+            "memory": ("本机服务运行中", True) if memory_online else ("本机服务未连接", False),
         }
         for name, label in self.plugin_states.items():
-            label.setText(plugin_status[name])
+            message, online = plugin_status[name]
+            label.setText(message)
+            indicator = self.plugin_indicators[name]
+            if indicator.property("online") != online:
+                indicator.setProperty("online", online)
+                indicator.style().unpolish(indicator)
+                indicator.style().polish(indicator)
+            self.plugin_switches[name].setChecked(online)
         running = any((snow_online, onebot_online, bridge_managed, tts_online, memory_online))
         self.sidebar_service.setText("服务运行中" if running else "服务未连接")
         if self.service_dot.property("online") != running:
@@ -1633,6 +1731,7 @@ QFrame#streamUserBubble { background: #e8eef9; border: 1px solid #d8e3f4; border
 QFrame#streamAssistantBubble { background: white; border: 1px solid #e1e7f0; border-radius: 10px; }
 QLabel#streamIncoming, QLabel#streamReply { color: #263247; font-size: 13px; }
 QLabel#streamSection { color: #32788a; font-size: 12px; font-weight: 700; }
+QLabel#streamModel { color: #58737a; font-size: 11px; }
 QLabel#streamDecision { color: #7b8d9f; font-size: 11px; }
 QLabel#streamPending, QLabel#streamEmpty { color: #8491a5; }
 QFrame#streamThinking { background: #f1f7f6; border: 1px solid #d7e9e6; border-radius: 9px; }
@@ -1644,6 +1743,13 @@ QPlainTextEdit#consoleView:focus { border-color: #3c6871; }
 QFrame#heroCard { background: #e9eefb; border: 1px solid #d5dff4; border-radius: 16px; }
 QFrame#heroCard QLabel { background: transparent; }
 QLabel#pluginStatus { color: #4c617b; font-weight: 600; }
+QFrame#pluginCard { background: white; border: 1px solid #dce4ef; border-radius: 13px; }
+QFrame#pluginCard QLabel { background: transparent; border: 0; }
+QFrame#pluginLink { background: transparent; border: 0; }
+QFrame#pluginLink:hover QLabel#pluginName { color: #4260b6; }
+QLabel#pluginName { color: #253653; font-size: 15px; font-weight: 700; }
+QLabel#pluginIndicator { color: #a5afbf; font-size: 15px; }
+QLabel#pluginIndicator[online="true"] { color: #35aa70; }
 QWidget#chatPage, QWidget#chatContent { background: #f8fafd; }
 QFrame#chatRail { background: #eef2f8; border-right: 1px solid #dce4ef; }
 QLabel#chatRailTitle { font-size: 21px; font-weight: 700; color: #213149; }

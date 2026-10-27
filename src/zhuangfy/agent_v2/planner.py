@@ -218,15 +218,23 @@ def plan_turn_v2(settings, api_key: str, history: list[dict[str, str]],
     else:
         DECISION_SCHEMA = None
         validator = _valid_plan_v2
+    selected_model = "未记录模型"
+    def record_model(_route_id: str, model_name: str) -> None:
+        nonlocal selected_model
+        selected_model = model_name
     raw = invoke_stage(
         "planner", settings, api_key, history[-10:], user_text[:1500],
         routes=routes, system_prompt=prompt, visual_context=visual_context[:1500],
         context_notes=feedback, trace_id=trace_id,
         response_validator=validator,
+        on_success=record_model,
         **({"planner_schema": DECISION_SCHEMA} if protocol_v3 else {}),
     )
     decision = (parse_plan_v3(raw, allow_voice=allow_voice, allowed_tools=tuple(names))
                 if protocol_v3 else parse_plan_v2(raw, allow_voice=allow_voice))
+    from zhuangfy.observability.activity_log import log_event
+    log_event("模型", "规划确认", json.dumps({"model": selected_model, "answer": raw[:3000]},
+                                       ensure_ascii=False))
     if relationship_behavior_r1 and decision.action == "reply":
         from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
         context = behavior_r1(settings.system_prompt, user_text,

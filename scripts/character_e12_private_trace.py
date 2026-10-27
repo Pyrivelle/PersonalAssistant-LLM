@@ -68,11 +68,13 @@ def run(args):
                  "L2": (65, 65, 35), "L3": (85, 80, 80), "L4": (95, 90, 95)}
         f, t, closeness = seeds[args.relationship_tier]
         relation = RelationshipSnapshot(
-            "synthetic-agent", "synthetic-person", 1, f, t, closeness,
-            args.relationship_tier, "L4",
-            args.relationship_tier in ("L3", "L4"), args.relationship_tier != "L4",
-            "natural", True, False,
-            False, False, False)
+            agent_id="synthetic-agent", person_id="synthetic-person", version=1,
+            familiarity=f, trust=t, closeness=closeness,
+            tier=args.relationship_tier, tier_ceiling="L4",
+            allow_affection=args.relationship_tier in ("L3", "L4"),
+            avoid_nicknames=args.relationship_tier != "L4", tone="natural",
+            bond_style="", bond_stage="", auto_growth=True, frozen=False,
+            lock_familiarity=False, lock_trust=False, lock_closeness=False)
     rel_tier = relation.tier if relation else "unassigned"
     rel_hint = relation.prompt_hint() if relation else ""
     for case in cases:

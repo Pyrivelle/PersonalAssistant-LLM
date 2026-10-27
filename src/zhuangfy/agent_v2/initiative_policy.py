@@ -142,16 +142,19 @@ def plan_initiative(settings, api_key: str, *, topic: str,
 
 
 CHECKIN_PROMPT = """你负责决定是否给已同意接收每日问候的用户发送一条简短私聊。
+可参考提供的该用户私聊历史寻找有根据的话题；历史可能已过时，不代表用户今天的状态。
 若无具体、有根据的话题，可以自然地问一句近况，也可以选择 silence。
 不要声称知道用户此刻的情绪、位置、日程或正在做的事；不要套用固定客服话术。
 只输出 JSON：{"action":"ask|share|defer|silence","confidence":0.0,"draft":"不超过一句或两句的问候","rationale":"简要原因"}。
 低于 0.72 的把握不要主动联系。"""
 
 
-def plan_checkin(settings, api_key: str, *, trace_id: str = "") -> InitiativeDecision:
+def plan_checkin(settings, api_key: str, *,
+                 history: list[dict[str, str]] | None = None,
+                 trace_id: str = "") -> InitiativeDecision:
     from model_routes import invoke_stage
     raw = invoke_stage(
-        "planner", settings, api_key, [], "今天是否值得发一次自然的日常问候？",
+        "planner", settings, api_key, history or [], "今天是否值得发一次自然的日常问候？",
         system_prompt=CHECKIN_PROMPT, trace_id=trace_id,
         response_validator=lambda r: parse_initiative_decision(r).confidence > 0,
     )

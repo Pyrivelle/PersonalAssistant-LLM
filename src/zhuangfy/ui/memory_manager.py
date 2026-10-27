@@ -19,6 +19,17 @@ from PySide6.QtWidgets import (
 
 from zhuangfy.memory.client import MemoryChannel, MemoryClient
 from zhuangfy.observability.activity_log import log_event
+from zhuangfy.relationship.core import SEEDS, TIERS
+
+
+def tier_correction(tier: str) -> dict:
+    """Choose a real R1 tier without changing the separate relationship definition."""
+    if tier not in TIERS:
+        raise ValueError("Invalid relationship tier")
+    familiarity, trust, closeness = SEEDS[tier]
+    return {"familiarity": familiarity, "trust": trust, "closeness": closeness,
+            "tier_ceiling": "L4" if tier == "L4" else "L3",
+            "allow_affection": tier in {"L3", "L4"}}
 
 
 class AdminTask(QThread):
@@ -33,7 +44,14 @@ class AdminTask(QThread):
 
     def run(self):
         try:
-            result = getattr(self.client, self.action)(*self.args)
+            if self.action == "relationship_enroll":
+                result = self.client.relationship_enroll(
+                    self.args[0], initial_tier=self.args[1], allow_affection=self.args[2])
+            elif self.action == "relationship_correct":
+                result = self.client.relationship_correct(
+                    self.args[0], expected_version=self.args[1], changes=self.args[2])
+            else:
+                result = getattr(self.client, self.action)(*self.args)
             self.completed.emit(self.action, result)
         except Exception as exc:
             # No raw request, tokens or private content in the error UI.
@@ -50,10 +68,11 @@ class CuratedMemoryDialog(QDialog):
         self.client = MemoryClient.from_environment(
             enabled_var="ZHUANGFY_MEMORY_ADMIN_UI", admin=True)
         self.task = None
-        self.pending = None
+        self.pending = []
         self.people = []
         self.current = []
         self.jobs = []
+        self.relationship_state = None
 
         layout = QVBoxLayout(self)
         self.notice = QLabel("新 Memory Service · 管理员模式；与旧 Mem0 分离。")
@@ -104,6 +123,25 @@ class CuratedMemoryDialog(QDialog):
         self.person_summary = QLabel("请选择人物以查看账号与授权状态。")
         self.person_summary.setWordWrap(True)
         accounts_layout.addWidget(self.person_summary)
+        relationship_row = QHBoxLayout()
+        self.relationship_status = QLabel("关系层级：请选择人物")
+        self.relationship_status.setWordWrap(True)
+        relationship_row.addWidget(self.relationship_status, 1)
+        relationship_row.addWidget(QLabel("设为"))
+        self.relationship_tier = QComboBox()
+        for tier in TIERS:
+            self.relationship_tier.addItem(tier)
+        relationship_row.addWidget(self.relationship_tier)
+        self.save_relationship_button = QPushButton("保存关系层级")
+        self.save_relationship_button.clicked.connect(self.save_relationship_tier)
+        self.save_relationship_button.setEnabled(False)
+        relationship_row.addWidget(self.save_relationship_button)
+        accounts_layout.addLayout(relationship_row)
+        relationship_hint = QLabel(
+            "层级是当前表达参考，不等于恋人等关系定义。人工设定会更新三个关系数值和层级上限；"
+            "自动成长开关保持原状，之后层级可能变化。L3/L4 会允许亲近表达。")
+        relationship_hint.setWordWrap(True)
+        accounts_layout.addWidget(relationship_hint)
         account_actions = QHBoxLayout()
         for text, callback in [
             ("管理本地记录授权", self.manage_timeline),
@@ -195,7 +233,7 @@ class CuratedMemoryDialog(QDialog):
         if self.client is None:
             return
         if self.task is not None:
-            self.pending = (action, args)
+            self.pending.append((action, args))
             return
         self.notice.setText(f"处理中：{action}")
         if action == "reflect_one":
@@ -214,12 +252,16 @@ class CuratedMemoryDialog(QDialog):
         if worker:
             worker.deleteLater()
         if self.pending:
-            action, args = self.pending
-            self.pending = None
+            action, args = self.pending.pop(0)
             self._start(action, *args)
 
     def _failed(self, message):
         self.notice.setText(message)
+        if self.task is not None and self.task.action == "relationship_get":
+            self.relationship_status.setText("关系层级：读取失败，请刷新人物后重试")
+        elif self.task is not None and self.task.action in {
+                "relationship_enroll", "relationship_correct"}:
+            self._render_relationship()
         if self.task is not None and self.task.action == "reflect_one":
             self.reflection_status.setText("记忆服务请求失败；无法确认模型是否收到资料。")
             log_event("记忆整理", "请求失败", message)
@@ -256,6 +298,14 @@ class CuratedMemoryDialog(QDialog):
             self.person.blockSignals(False)
             self._render_people()
             self.refresh_memories()
+            self.refresh_relationship()
+        elif action == "relationship_get":
+            identity = self.task.args[0]
+            if identity == self._relationship_identity():
+                self.relationship_state = result
+                self._render_relationship()
+        elif action in {"relationship_enroll", "relationship_correct"}:
+            self.refresh_relationship()
         elif action == "list_memories":
             self.current = result
             self.memories.clear()
@@ -296,6 +346,72 @@ class CuratedMemoryDialog(QDialog):
     def _person_changed(self, *_):
         self._update_person_status()
         self.refresh_memories()
+        self.refresh_relationship()
+
+    def _relationship_identity(self) -> MemoryChannel | None:
+        info = self._selected_person_info()
+        if not info:
+            return None
+        identities = info.get("identities", [])
+        if not identities:
+            return None
+        chosen = next((item for item in identities if item.get("platform") == "qq"),
+                      identities[0])
+        return MemoryChannel(chosen["platform"], chosen["channel_account_id"],
+                             chosen["external_user_id"])
+
+    def refresh_relationship(self):
+        self.relationship_state = None
+        self._render_relationship()
+        identity = self._relationship_identity()
+        if identity is not None:
+            self._start("relationship_get", identity)
+
+    def _render_relationship(self):
+        identity = self._relationship_identity()
+        state = self.relationship_state
+        if identity is None:
+            self.relationship_status.setText("关系层级：没有已核验的关联账号")
+        elif state is None:
+            self.relationship_status.setText("关系层级：正在读取…")
+        elif not state.get("enrolled"):
+            self.relationship_status.setText("关系层级：未登记（聊天时可能使用保守的 L0 表达）")
+        else:
+            profile = state["profile"]
+            tier = profile["tier"] if state.get("enabled") else "已停用"
+            timeline_active = bool((self._selected_person_info() or {}).get("timeline_enabled"))
+            self.relationship_status.setText(
+                f'关系层级：{tier} · v{profile["version"]} · '
+                f'自动成长：{"开" if profile["auto_growth"] else "关"} · '
+                f'上限：{profile["tier_ceiling"]}'
+                + (" · 本地记录未启用，聊天侧暂不能读取" if not timeline_active else ""))
+            if profile.get("tier") in TIERS:
+                self.relationship_tier.setCurrentText(profile["tier"])
+        self.save_relationship_button.setEnabled(
+            self.client is not None and identity is not None and state is not None)
+
+    def save_relationship_tier(self):
+        identity = self._relationship_identity()
+        state = self.relationship_state
+        person = self._selected_person_info()
+        if identity is None or state is None or person is None:
+            return
+        tier = self.relationship_tier.currentText()
+        current = (state.get("profile") or {}).get("tier", "未登记")
+        if state.get("enrolled") and current == tier and state.get("enabled"):
+            return
+        if not self._confirm("设置关系层级",
+                             f'将 {person["display_name"]} 的关系参考层级从 {current} 设为 {tier}？\n'
+                             "将更新关系数值与上限；不会修改双方确认的关系定义或自动成长开关。"):
+            return
+        self.save_relationship_button.setEnabled(False)
+        if not state.get("enrolled"):
+            self._start("relationship_enroll", identity, tier, tier in {"L3", "L4"})
+        else:
+            changes = tier_correction(tier)
+            if not state.get("enabled"):
+                changes["enabled"] = True
+            self._start("relationship_correct", identity, state["profile"]["version"], changes)
 
     def _selected_person_info(self) -> dict | None:
         selected = self._person_id()

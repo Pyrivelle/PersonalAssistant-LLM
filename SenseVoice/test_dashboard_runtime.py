@@ -10,10 +10,11 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QProcess
+from PySide6.QtCore import QProcess, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from dashboard import Dashboard, PAGE_CHAT, PAGE_STREAM, PAGE_MONITOR, PAGE_MODEL, _tts_process_environment, _tts_python
+from dashboard import Dashboard, PAGE_CHAT, PAGE_STREAM, PAGE_MONITOR, PAGE_MODEL, PAGE_PLATFORM, PAGE_PLUGINS, _tts_process_environment, _tts_python
 from model_management_page import ModelManagementPage
 
 
@@ -78,6 +79,47 @@ class DashboardRuntimeTests(unittest.TestCase):
             self.assertIsInstance(window.pages.currentWidget(), ModelManagementPage)
             self.assertEqual(window.pages.currentWidget().tabs.tabText(0), "模型设置")
             self.assertEqual(window.pages.currentWidget().tabs.tabText(1), "功能分配")
+        finally:
+            window.quit_app()
+
+    def test_tts_ready_is_logged_once_per_online_transition(self):
+        window = Dashboard()
+        try:
+            window._tts_ready_logged = False
+            with patch.object(window.tts_server, "state", return_value=QProcess.ProcessState.Running), \
+                    patch.object(window, "_log") as log:
+                window._update_tts_readiness(False)
+                window._update_tts_readiness(True)
+                window._update_tts_readiness(True)
+                self.assertEqual(log.call_count, 1)
+                self.assertIn("已启动", log.call_args.args[0])
+                window._update_tts_readiness(False)
+                window._update_tts_readiness(True)
+                self.assertEqual(log.call_count, 2)
+        finally:
+            window.quit_app()
+
+    def test_plugin_cards_have_read_only_switches_and_status_lights(self):
+        window = Dashboard()
+        try:
+            window.show()
+            window.switch_page(PAGE_PLUGINS)
+            self.app.processEvents()
+            window.resize(940, 780)
+            self.app.processEvents()
+            self.assertEqual(window.pages.currentWidget().horizontalScrollBar().maximum(), 0)
+            self.assertEqual(len(window.plugin_states), 5)
+            self.assertIs(window.plugin_grid.itemAtPosition(0, 2).widget(),
+                          window.plugin_cards["sensevoice"])
+            self.assertIs(window.plugin_grid.itemAtPosition(1, 0).widget(),
+                          window.plugin_cards["gpt_sovits"])
+            for name, toggle in window.plugin_switches.items():
+                self.assertFalse(toggle.isEnabled(), name)
+                self.assertIsNotNone(window.plugin_indicators[name])
+            QTest.mouseClick(window.plugin_switches["snowluma"], Qt.MouseButton.LeftButton)
+            self.assertEqual(window.pages.currentIndex(), PAGE_PLUGINS)
+            QTest.mouseClick(window.plugin_links["snowluma"], Qt.MouseButton.LeftButton)
+            self.assertEqual(window.pages.currentIndex(), PAGE_PLATFORM)
         finally:
             window.quit_app()
 

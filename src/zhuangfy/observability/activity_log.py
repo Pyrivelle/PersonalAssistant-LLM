@@ -63,6 +63,11 @@ def set_current_turn(turn_id: str, channel: str) -> None:
     _CURRENT_TURN.set((turn_id, channel))
 
 
+def current_turn_context() -> tuple[str, str]:
+    """Return the conversation turn attached to this model call, if any."""
+    return _CURRENT_TURN.get()
+
+
 def log_event(source: str, phase: str, detail: object = "", *,
               turn_id: str = "", channel: str = "") -> None:
     """Record a visible event without interrupting a conversation on failure."""

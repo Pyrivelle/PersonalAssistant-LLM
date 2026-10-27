@@ -136,8 +136,23 @@ class QqParsingTests(unittest.TestCase):
                              {"type": "text", "data": {"text": " 帮我看看"}}]}
         self.assertEqual(parse_message(group, 88, self.settings).text, "帮我看看")
         self.assertIsNone(parse_message({**group, "group_id": 10}, 88, self.settings))
-        self.assertIsNone(parse_message({**group, "message": "没有艾特"}, 88, self.settings))
+        self.assertFalse(parse_message({**group, "message": "没有艾特"}, 88,
+                                       self.settings).directed)
         self.assertEqual(parse_message({**group, "message": "[CQ:at,qq=88] 你好"}, 88, self.settings).text, "你好")
+
+    def test_group_card_precedes_nickname_and_qq_id_remains_visible(self):
+        group = {"post_type": "message", "message_type": "group",
+                 "group_id": 9, "user_id": 42, "message_id": 12,
+                 "sender": {"card": "阿蓝", "nickname": "旧昵称"},
+                 "message": "晚上看电影"}
+        incoming = parse_message(group, 88, self.settings)
+        self.assertEqual(incoming.nickname, "阿蓝")
+        self.assertEqual(qq_bridge.group_speaker(incoming), "群友[阿蓝（QQ 42）]")
+        self.assertEqual(qq_bridge.group_message_line(
+            qq_bridge.Incoming("group", 42, 9, "12", "第一句\n第二句", nickname="阿蓝")),
+            "群友[阿蓝（QQ 42）]：第一句 ↵ 第二句")
+        self.assertEqual(parse_message({**group, "sender": {"card": "",
+                          "nickname": "旧昵称"}}, 88, self.settings).nickname, "旧昵称")
 
     def test_focus_groups_must_be_explicitly_allowlisted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -191,7 +206,7 @@ class QqParsingTests(unittest.TestCase):
         parsed = parse_message(group, 88, settings)
         self.assertIsNotNone(parsed)
         self.assertFalse(parsed.directed)
-        self.assertIsNone(parse_message(group, 88, self.settings))
+        self.assertFalse(parse_message(group, 88, self.settings).directed)
         self.assertIsNone(parse_message({**group, "group_id": 10}, 88, settings))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "qq_settings.json"
@@ -259,6 +274,15 @@ class QqParsingTests(unittest.TestCase):
         self.assertEqual(legacy.settings.message_debounce_mode, "off")
         self.assertEqual(enabled.settings.message_debounce_mode, "natural")
 
+    def test_planner_continuation_wait_limit_accepts_thirty_seconds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cognition_settings.json"
+            path.write_text('{"agent_v2_wait_max_seconds":30}', encoding="utf-8")
+            self.assertEqual(PlannerSettings.load(path).agent_v2_wait_max_seconds, 30)
+            path.write_text('{"agent_v2_wait_max_seconds":31}', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "1–30 秒"):
+                PlannerSettings.load(path)
+
     def test_rate_limit_is_per_private_chat_and_per_group(self):
         settings = QqSettings(private_cooldown_seconds=5, group_cooldown_seconds=12,
                               private_max_replies_per_hour=2, group_max_replies_per_hour=1)
@@ -287,7 +311,8 @@ class QqParsingTests(unittest.TestCase):
         group = {**event, "message_type": "group", "group_id": 9,
                  "message": [{"type": "at", "data": {"qq": "88"}}, picture]}
         self.assertIsNotNone(parse_message(group, 88, self.settings))
-        self.assertIsNone(parse_message({**group, "message": [picture]}, 88, self.settings))
+        self.assertFalse(parse_message({**group, "message": [picture]}, 88,
+                                       self.settings).directed)
         self.assertIsNone(parse_message({**event, "user_id": 43}, 88, self.settings))
         cq = {**event, "message": "看看这个[CQ:image,file=cache-key,url=https://gchat.qpic.cn/picture]"}
         self.assertEqual(parse_message(cq, 88, self.settings).image.file, "cache-key")
@@ -326,6 +351,9 @@ class QqParsingTests(unittest.TestCase):
             path.write_text(json.dumps({"allowed_private_ids": [42], "voice_private_ids": [43]}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "私聊白名单"):
                 QqSettings.load(path)
+            path.write_text(json.dumps({"allowed_group_ids": [9], "voice_group_ids": [10]}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "群聊白名单"):
+                QqSettings.load(path)
             path.write_text(json.dumps({"private_max_reply_parts": 4}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "private_max_reply_parts"):
                 QqSettings.load(path)
@@ -353,6 +381,25 @@ class QqParsingTests(unittest.TestCase):
                                  "编程或调试")
                 self.assertFalse(other.context_store.load("private:0:43").events)
                 self.assertFalse(other.context_store.load("group:9:42").events)
+
+    def test_daily_checkin_uses_only_opted_in_recipient_history(self):
+        from dialogue_context import DialogueContext
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "cognition_settings.json").write_text(
+                json.dumps({"persist_private_ids": [42, 43]}), encoding="utf-8")
+            with patch.object(qq_bridge, "ROOT", root):
+                bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42, 43})))
+                bridge.bot_id = 88
+                owner = DialogueContext()
+                owner.commit("我的话题", "收到")
+                other = DialogueContext()
+                other.commit("其他人的秘密", "收到")
+                bridge.context_store.save("bot:88:private:0:42", owner)
+                bridge.context_store.save("bot:88:private:0:43", other)
+                self.assertEqual(bridge._checkin_history(42), owner.history)
+                self.assertNotIn("其他人的秘密", str(bridge._checkin_history(42)))
+                self.assertEqual(bridge._checkin_history(44), [])
 
     def test_unapproved_private_persistence_id_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -456,8 +503,8 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
              patch.object(qq_bridge, "can_attempt_stage", return_value=True), \
              patch.object(qq_bridge, "invoke_stage", side_effect=fake_stage):
             await bridge.process(state)
-        self.assertEqual(calls[0][1], "给你看看这张图。")
-        self.assertIn("第三人称观察资料", calls[0][2]["system_prompt"])
+        self.assertEqual(calls[0][1], qq_bridge.IMAGE_ONLY_PROMPT)
+        self.assertIn("第三人称资料", calls[0][2]["system_prompt"])
         self.assertIn("不要假定图片人物就是用户",
                       calls[0][2]["system_prompt"])
         self.assertIn("像回应朋友分享", calls[1][2]["emotion_context"])
@@ -940,7 +987,207 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.pending)
         self.assertEqual(state.planner_waits, 0)
 
-    async def test_agent_v2_stop_requires_explicit_permission(self):
+    async def test_explicit_delayed_reply_keeps_original_and_later_context(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(qq_bridge, "PROJECT_DATA", Path(directory)), \
+             patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       scheduled_tasks_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+            bridge.bot_id = 88
+            bridge.send_reply = AsyncMock(return_value=True)
+            event = {"post_type": "message", "message_type": "private",
+                     "user_id": 42, "message_id": 1,
+                     "message": [{"type": "text", "data": {
+                         "text": "1秒后再回复之前的OSG问题"}}]}
+            self.assertTrue(bridge.accept(event))
+            state = bridge.conversations["bot:88:private:0:42"]
+            await asyncio.wait_for(state.task, timeout=2)
+            task = bridge.scheduled_store.get_by_source(88, 42, "1", "deferred_reply")
+            self.assertIsNotNone(task)
+            self.assertEqual(state.planner_waits, 0)
+            bridge.send_reply.assert_awaited_once()
+            self.assertIn("1 秒后再回复", bridge.send_reply.call_args.args[1])
+
+    async def test_one_minute_request_schedules_sixty_seconds_not_short_wait_cap(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(qq_bridge, "PROJECT_DATA", Path(directory)), \
+             patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       scheduled_tasks_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+            bridge.bot_id = 88
+            bridge.send_reply = AsyncMock(return_value=True)
+            prior = Conversation(Incoming("private", 42, None, "older", ""))
+            prior.context.history = [{"role": "user", "content": "今天有点忙"}]
+            bridge.conversations["bot:88:private:0:42"] = prior
+            event = {"post_type": "message", "message_type": "private",
+                     "user_id": 42, "message_id": 3,
+                     "message": [{"type": "text", "data": {
+                         "text": "一分钟后提醒我喝水"}}]}
+            self.assertTrue(bridge.accept(event))
+            state = bridge.conversations["bot:88:private:0:42"]
+            await asyncio.wait_for(state.task, timeout=2)
+            task = bridge.scheduled_store.get_by_source(88, 42, "3", "reminder")
+            self.assertIsNotNone(task)
+            self.assertEqual(task.content, "喝水")
+            self.assertEqual(task.creation_context(), [
+                {"role": "user", "content": "今天有点忙"},
+                {"role": "user", "content": "一分钟后提醒我喝水"}])
+            self.assertGreater(task.due_at - qq_bridge.time.time(), 58)
+            self.assertEqual(state.planner_waits, 0)
+            bridge.send_reply.assert_awaited_once()
+            self.assertIn("60 秒后提醒你：喝水", bridge.send_reply.call_args.args[1])
+
+    async def test_reminder_due_sends_task_text_only_after_onebot_ack(self):
+        from zhuangfy.agent_v2.scheduled_tasks import parse_scheduled_intent
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(qq_bridge, "PROJECT_DATA", Path(directory)), \
+             patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       scheduled_tasks_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+            bridge.bot_id = 88
+            task = bridge.scheduled_store.schedule(
+                bot_id=88, user_id=42, source_message_id="m1", source_turn_id="t1",
+                intent=parse_scheduled_intent("一秒后提醒我喝水"), received_at=100,
+                context=[{"role": "user", "content": "今天很忙"}])
+            bridge.action = AsyncMock(return_value={"message_id": 123})
+            state = Conversation(Incoming("private", 42, None, "m1", ""))
+            state.context.history = [{"role": "user", "content": "刚做完实验"}]
+            bridge.conversations["bot:88:private:0:42"] = state
+            with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+                 patch.object(qq_bridge, "load_key", return_value="test-key"), \
+                 patch.object(qq_bridge, "invoke_stage",
+                              return_value="先喝点水吧，实验可以稍等一会儿。") as model:
+                await bridge._deliver_scheduled(task)
+            self.assertEqual(model.call_count, 1)
+            self.assertEqual(model.call_args.args[3], [
+                {"role": "user", "content": "刚做完实验"}])
+            self.assertIn("今天很忙", model.call_args.kwargs["context_notes"])
+            self.assertIn("喝水", model.call_args.args[4])
+            bridge.action.assert_awaited_once_with(
+                "send_private_msg", {"user_id": 42,
+                                     "message": "先喝点水吧，实验可以稍等一会儿。",
+                                     "auto_escape": True})
+            self.assertEqual(bridge.scheduled_store.get_by_source(
+                88, 42, "m1", "reminder").status, "delivered")
+            self.assertEqual(state.context.history[-1], {
+                "role": "assistant", "content": "先喝点水吧，实验可以稍等一会儿。"})
+
+    async def test_scheduled_recent_context_uses_live_private_history_without_disk_opt_in(self):
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+        bridge.bot_id = 88
+        current = Incoming("private", 42, None, "m1", "晚点提醒我")
+        state = Conversation(current)
+        state.context.history = [{"role": "user", "content": "刚做完实验"}]
+        bridge.conversations["bot:88:private:0:42"] = state
+        self.assertEqual(bridge._scheduled_recent_history(42), [
+            {"role": "user", "content": "刚做完实验"}])
+
+    async def test_reminder_ambiguous_ack_is_not_retried(self):
+        from zhuangfy.agent_v2.scheduled_tasks import parse_scheduled_intent
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(qq_bridge, "PROJECT_DATA", Path(directory)), \
+             patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       scheduled_tasks_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+            bridge.bot_id = 88
+            task = bridge.scheduled_store.schedule(
+                bot_id=88, user_id=42, source_message_id="m1", source_turn_id="t1",
+                intent=parse_scheduled_intent("一秒后提醒我喝水"), received_at=100)
+            bridge.action = AsyncMock(side_effect=TimeoutError())
+            with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+                 patch.object(qq_bridge, "load_key", return_value="test-key"), \
+                 patch.object(qq_bridge, "invoke_stage", return_value="该喝水了。"):
+                await bridge._deliver_scheduled(task)
+                await bridge._deliver_scheduled(task)
+            self.assertEqual(bridge.action.await_count, 1)
+            self.assertEqual(bridge.scheduled_store.get_by_source(
+                88, 42, "m1", "reminder").status, "uncertain")
+
+    async def test_reminder_model_failure_does_not_send_template(self):
+        from zhuangfy.agent_v2.scheduled_tasks import parse_scheduled_intent
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(qq_bridge, "PROJECT_DATA", Path(directory)), \
+             patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       scheduled_tasks_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+            bridge.bot_id = 88
+            task = bridge.scheduled_store.schedule(
+                bot_id=88, user_id=42, source_message_id="m1", source_turn_id="t1",
+                intent=parse_scheduled_intent("一秒后提醒我喝水"), received_at=100)
+            bridge.action = AsyncMock(return_value={"message_id": 123})
+            with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+                 patch.object(qq_bridge, "load_key", return_value="test-key"), \
+                 patch.object(qq_bridge, "invoke_stage", side_effect=RuntimeError("model down")):
+                await bridge._deliver_scheduled(task)
+            bridge.action.assert_not_awaited()
+            stored = bridge.scheduled_store.get_by_source(88, 42, "m1", "reminder")
+            self.assertEqual(stored.status, "pending")
+            self.assertEqual(stored.generation_failures, 1)
+
+    async def test_deferred_reply_generates_at_due_time(self):
+        from zhuangfy.agent_v2.scheduled_tasks import parse_scheduled_intent
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(qq_bridge, "PROJECT_DATA", Path(directory)), \
+             patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       scheduled_tasks_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42})))
+            bridge.bot_id = 88
+            task = bridge.scheduled_store.schedule(
+                bot_id=88, user_id=42, source_message_id="m1", source_turn_id="t1",
+                intent=parse_scheduled_intent("一秒后再回复刚才的OSG问题"), received_at=100)
+            bridge.action = AsyncMock(return_value={"message_id": 123})
+            with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+                 patch.object(qq_bridge, "load_key", return_value="test-key"), \
+                 patch.object(qq_bridge, "invoke_stage", return_value="先测加载基线。") as model:
+                await bridge._deliver_scheduled(task)
+            self.assertEqual(model.call_count, 1)
+            bridge.action.assert_awaited_once_with(
+                "send_private_msg", {"user_id": 42, "message": "先测加载基线。",
+                                     "auto_escape": True})
+            self.assertEqual(bridge.scheduled_store.get_by_source(
+                88, 42, "m1", "deferred_reply").status, "delivered")
+
+    async def test_planner_can_choose_thirty_second_continuation_wait(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True,
+                                                       agent_v3_enabled=True,
+                                                       agent_v2_wait_max_seconds=30)):
+            bridge = QqBridge(QqSettings(allowed_private_ids=frozenset({42}),
+                                         quiet_seconds=0, private_cooldown_seconds=0))
+        bridge.bot_id = 88
+        event = {"post_type": "message", "message_type": "private",
+                 "user_id": 42, "message_id": 4,
+                 "message": [{"type": "text", "data": {"text": "等等，我还没说完"}}]}
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v3", return_value=PlanDecision(
+                 action="wait", confidence=.9, wait_seconds=30)), \
+             patch.object(qq_bridge, "invoke_stage") as reply_model:
+            self.assertTrue(bridge.accept(event))
+            state = bridge.conversations["bot:88:private:0:42"]
+            for _ in range(100):
+                if state.planner_waits:
+                    break
+                await asyncio.sleep(.01)
+            self.assertEqual(state.waited_seconds, 30)
+            self.assertGreater(state.resume_after - qq_bridge.time.monotonic(), 29)
+            self.assertEqual(state.planner_waits, 1)
+            reply_model.assert_not_called()
+            state.task.cancel()
+            await asyncio.gather(state.task, return_exceptions=True)
+
+    async def test_group_planner_can_stop_even_when_old_silence_flag_is_off(self):
         from zhuangfy.agent_v2.planner import PlanDecision
         for permitted in (False, True):
             with self.subTest(permitted=permitted):
@@ -958,8 +1205,159 @@ class QqSocketTests(unittest.IsolatedAsyncioTestCase):
                                   return_value=PlanDecision(action="stop", confidence=0.95)), \
                      patch.object(qq_bridge, "invoke_stage", return_value="我也有想法。") as model:
                     await bridge.process(state)
-                self.assertEqual(model.call_count, 0 if permitted else 1)
-                self.assertEqual(bridge.send_reply.await_count, 0 if permitted else 1)
+                model.assert_not_called()
+                bridge.send_reply.assert_not_awaited()
+
+    async def test_group_planner_failure_stays_silent(self):
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_group_ids=frozenset({9}),
+                                         group_cooldown_seconds=0, quiet_seconds=0))
+        current = Incoming("group", 42, 9, "v2-error", "庄方宜在吗")
+        state = Conversation(current, pending=[current.text])
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", side_effect=RuntimeError("offline")), \
+             patch.object(qq_bridge, "invoke_stage") as model:
+            await bridge.process(state)
+        model.assert_not_called()
+        bridge.send_reply.assert_not_awaited()
+
+    async def test_two_group_mentions_keep_separate_senders_and_text(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_group_ids=frozenset({9}),
+                                         group_cooldown_seconds=0, quiet_seconds=0))
+        bridge.bot_id = 88
+        bridge.send_reply = AsyncMock(return_value=True)
+        def event(sender, number, content):
+            return {"post_type": "message", "message_type": "group",
+                    "group_id": 9, "user_id": sender, "message_id": number,
+                    "message": [{"type": "at", "data": {"qq": "88"}},
+                                {"type": "text", "data": {"text": content}}]}
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", return_value=PlanDecision(
+                 action="reply", confidence=.98)) as planner, \
+             patch.object(qq_bridge, "invoke_stage", return_value="收到。"):
+            self.assertTrue(bridge.accept(event(42, 701, "第一个问题")))
+            self.assertTrue(bridge.accept(event(43, 702, "第二个问题")))
+            state = bridge.conversations["bot:88:group:9"]
+            await asyncio.wait_for(state.task, timeout=3)
+        self.assertEqual([call.args[0].user_id for call in
+                          bridge.send_reply.await_args_list], [42, 43])
+        self.assertEqual([call.args[3] for call in
+                          planner.call_args_list], ["群友[42]：第一个问题", "群友[43]：第二个问题"])
+
+    async def test_unmentioned_group_message_is_context_only(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_group_ids=frozenset({9}),
+                                         group_cooldown_seconds=0, quiet_seconds=0))
+        bridge.bot_id = 88
+        bridge.send_reply = AsyncMock(return_value=True)
+        def event(sender, number, content, mentioned=False):
+            segments = ([{"type": "at", "data": {"qq": "88"}}] if mentioned else [])
+            segments.append({"type": "text", "data": {"text": content}})
+            return {"post_type": "message", "message_type": "group",
+                    "group_id": 9, "user_id": sender, "message_id": number,
+                    "sender": {"card": "阿蓝" if sender == 42 else "阿紫"},
+                    "message": segments}
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", return_value=PlanDecision(
+                 action="reply", confidence=.98)) as planner, \
+             patch.object(qq_bridge, "invoke_stage", return_value="收到了。") as model:
+            self.assertTrue(bridge.accept(event(42, 801, "明天讨论电影")))
+            state = bridge.conversations["bot:88:group:9"]
+            self.assertIsNone(state.task)
+            planner.assert_not_called()
+            model.assert_not_called()
+            self.assertTrue(bridge.accept(event(43, 802, "刚才在聊什么？", mentioned=True)))
+            await asyncio.wait_for(state.task, timeout=3)
+        self.assertIn("群友[阿蓝（QQ 42）]：明天讨论电影",
+                      planner.call_args.kwargs["trusted_context_notes"])
+        self.assertIn("群友[阿蓝（QQ 42）]：明天讨论电影",
+                      model.call_args.kwargs["context_notes"])
+        self.assertEqual(planner.call_args.args[3],
+                         "群友[阿紫（QQ 43）]：刚才在聊什么？")
+        bridge.send_reply.assert_awaited_once()
+
+    async def test_group_reply_does_not_mention_sender(self):
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_group_ids=frozenset({9}),
+                                         group_cooldown_seconds=0))
+        bridge.action = AsyncMock(return_value={"message_id": 1})
+        sent = await bridge.send_reply(Incoming("group", 42, 9, "reply-1", "你好"),
+                                       "大家好")
+        self.assertTrue(sent)
+        bridge.action.assert_awaited_once_with("send_group_msg", {
+            "group_id": 9, "message": "大家好", "auto_escape": True})
+
+    async def test_group_voice_uses_record_only_for_allowed_directed_turn(self):
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_group_ids=frozenset({9}),
+                                         voice_group_ids=frozenset({9}),
+                                         group_cooldown_seconds=0))
+        paths = []
+        async def fake_action(name, params, **kwargs):
+            self.assertEqual(name, "send_group_msg")
+            self.assertEqual(params["group_id"], 9)
+            if isinstance(params["message"], str):
+                self.assertEqual(params["message"], "文字回复")
+                return {"message_id": 2}
+            self.assertEqual(params["message"][0]["type"], "record")
+            uri_path = unquote(urlparse(params["message"][0]["data"]["file"]).path)
+            path = Path(uri_path.lstrip("/") if os.name == "nt" else uri_path)
+            self.assertEqual(path.read_bytes(), b"RIFF1234WAVE")
+            paths.append(path)
+            return {"message_id": 1}
+        bridge.action = fake_action
+        with patch.object(qq_bridge, "synthesize_qq_voice", return_value=b"RIFF1234WAVE") as tts:
+            self.assertTrue(await bridge.send_reply(
+                Incoming("group", 42, 9, "g1", "用语音说", directed=True),
+                "大家好", voice=True))
+            self.assertTrue(await bridge.send_reply(
+                Incoming("group", 42, 9, "g2", "普通群消息", directed=False),
+                "文字回复", voice=True))
+        self.assertEqual(tts.call_count, 1)
+        self.assertFalse(paths[0].exists())
+
+    async def test_group_voice_synthesis_failure_does_not_post_text(self):
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_group_ids=frozenset({9}),
+                                         voice_group_ids=frozenset({9}),
+                                         group_cooldown_seconds=0))
+        bridge.action = AsyncMock(return_value={"message_id": 1})
+        with patch.object(qq_bridge, "synthesize_qq_voice", side_effect=RuntimeError("offline")):
+            self.assertFalse(await bridge.send_reply(
+                Incoming("group", 42, 9, "g3", "用语音说", directed=True),
+                "大家好", voice=True))
+        bridge.action.assert_not_awaited()
+
+    async def test_explicit_group_voice_request_reaches_delivery(self):
+        from zhuangfy.agent_v2.planner import PlanDecision
+        with patch.object(qq_bridge.PlannerSettings, "load",
+                          return_value=PlannerSettings(agent_v2_enabled=True)):
+            bridge = QqBridge(QqSettings(allowed_group_ids=frozenset({9}),
+                                         voice_group_ids=frozenset({9}),
+                                         group_cooldown_seconds=0, quiet_seconds=0))
+        current = Incoming("group", 42, 9, "group-voice", "用语音介绍一下自己")
+        state = Conversation(current, pending=[qq_bridge.group_message_line(current)])
+        bridge.send_reply = AsyncMock(return_value=True)
+        with patch.object(qq_bridge, "load_settings", return_value=LlmSettings()), \
+             patch.object(qq_bridge, "load_key", return_value="test-key"), \
+             patch.object(qq_bridge, "plan_turn_v2", return_value=PlanDecision(
+                 action="reply", confidence=.9)), \
+             patch.object(qq_bridge, "invoke_stage", return_value="各位好，我是庄方宜。"):
+            await bridge.process(state)
+        self.assertTrue(bridge.send_reply.await_args.kwargs["voice"])
 
     async def test_agent_v2_replyer_receives_social_intent(self):
         from zhuangfy.agent_v2.planner import PlanDecision

@@ -74,6 +74,38 @@ class LlmTests(unittest.TestCase):
         self.assertEqual(captured["body"]["messages"][0], {"role": "system", "content": DEFAULT_PROMPT})
         self.assertEqual(captured["headers"]["Authorization"], "Bearer test-key")
 
+    def test_each_chat_request_logs_only_its_current_input_for_the_turn(self):
+        with patch.object(llm.urllib.request, "urlopen", return_value=FakeResponse()), \
+                patch.object(llm, "current_turn_context", return_value=("turn-1", "QQ")), \
+                patch.object(llm, "log_event") as record:
+            llm.chat(llm.LlmSettings(), "test-key",
+                     [{"role": "user", "content": "私人历史"}], "这轮原句",
+                     memories=[{"memory": "私人档案"}], stage="回复")
+        inputs = [json.loads(call.args[2]) for call in record.call_args_list
+                  if call.args[1] == "输入原句"]
+        self.assertEqual(len(inputs), 1)
+        self.assertEqual(inputs[0]["text"], "这轮原句")
+        self.assertEqual(inputs[0]["history_count"], 1)
+        self.assertNotIn("私人历史", str(inputs))
+        self.assertNotIn("私人档案", str(inputs))
+        self.assertNotIn("test-key", str(inputs))
+
+    def test_planner_and_replyer_report_injected_role_prompt_without_private_system_text(self):
+        private_rule = "仅供该轮使用的私有关系快照"
+        for stage, system in (("思考", "Planner 规则\n【角色人格参考】\n" + DEFAULT_PROMPT + "\n" + private_rule),
+                              ("回复", DEFAULT_PROMPT + "\n" + private_rule)):
+            with self.subTest(stage=stage), \
+                    patch.object(llm.urllib.request, "urlopen", return_value=FakeResponse()), \
+                    patch.object(llm, "current_turn_context", return_value=("turn-1", "QQ")), \
+                    patch.object(llm, "log_event") as record:
+                llm.chat(llm.LlmSettings(system_prompt=system), "test-key", [], "你好", stage=stage)
+            prompts = [json.loads(call.args[2]) for call in record.call_args_list
+                       if call.args[1] == "系统提示词"]
+            self.assertEqual(len(prompts), 1)
+            self.assertEqual(prompts[0]["role_prompt"], DEFAULT_PROMPT)
+            self.assertEqual(prompts[0]["system_count"], 1)
+            self.assertNotIn(private_rule, str(prompts))
+
     def test_manual_thinking_uses_provider_specific_request_field(self):
         bodies = []
 
@@ -193,9 +225,9 @@ class LlmTests(unittest.TestCase):
         self.assertEqual(DEFAULT_PROMPT, ZHUANG_FANGYI_V1.prompt())
         self.assertEqual(matching_pack(DEFAULT_PROMPT), ZHUANG_FANGYI_V1)
         self.assertIsNone(matching_pack(DEFAULT_PROMPT + "\n我的定制要求"))
-        self.assertIn("她关心的是具体的人", DEFAULT_PROMPT)
+        self.assertIn("你在意具体的人", DEFAULT_PROMPT)
         self.assertNotIn("Shimano", DEFAULT_PROMPT)
-        self.assertNotIn("你是庄方宜", DEFAULT_PROMPT)
+        self.assertIn("你是庄方宜", DEFAULT_PROMPT)
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(llm, "SETTINGS_FILE", Path(directory) / "settings.json"):
                 llm.save_settings(llm.LlmSettings(system_prompt=PREVIOUS_SHIMANO_DEFAULT_PROMPT))

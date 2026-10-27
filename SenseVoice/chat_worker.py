@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import base64
+import json
 
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
@@ -80,6 +81,9 @@ class ChatWorker(QThread):
                     self.memory_warning.emit(f"记忆检索失败，本轮仍可对话：{error}")
                     log_event("记忆", "失败", f"{self.source} · 检索失败：{type(error).__name__}")
             context_notes = self.context_notes
+            relation_tier = "unassigned"
+            relation_hint = ""
+            self_profile_hint = ""
             if self.source in {"语音", "文字"} and not self.memory_command:
                 try:
                     client = MemoryClient.from_environment(enabled_var="ZHUANGFY_MEMORY_DESKTOP")
@@ -91,6 +95,22 @@ class ChatWorker(QThread):
                         self.remote_client = client
                         self.remote_identity = identity
                         self.remote_memory_ref = reference
+                        try:
+                            relation = client.relationship_snapshot(identity)
+                            if relation.get("enabled") and relation.get("tier") in ("L0", "L1", "L2", "L3", "L4"):
+                                relation_tier = relation["tier"]
+                                relation_hint = str(relation.get("hint", ""))[:480]
+                                log_event("关系R1", "读取", f"桌面 · {relation_tier} "
+                                          f"v{relation.get('version', '?')} · 提示 {len(relation_hint)} 字")
+                        except Exception as error:
+                            log_event("关系R1", "读取跳过", f"桌面 · {type(error).__name__}")
+                        try:
+                            profile = client.self_profile_snapshot(identity)
+                            if profile.get("enabled"):
+                                self_profile_hint = str(profile.get("summary", ""))[:1400]
+                                log_event("记忆", "自述读取", "桌面 · 已提供本人确认的个人画像")
+                        except Exception as error:
+                            log_event("记忆", "自述跳过", f"桌面 · {type(error).__name__}")
                         response = client.recall(identity, self.message)
                         entries = response.get("memories", [])
                         if entries:
@@ -99,6 +119,8 @@ class ChatWorker(QThread):
                             context_notes = excerpts[:1300] + "\n" + context_notes
                 except Exception as error:
                     self.memory_warning.emit(f"新记忆服务暂不可用，继续正常回复：{type(error).__name__}")
+            if self_profile_hint:
+                context_notes = "用户本人确认的自述档案（允许更正，不代表永远不变）：\n" + self_profile_hint + "\n" + context_notes
             if command and new_memory_selected("desktop") and command[0] == "remember":
                 if self.remote_memory_ref is None:
                     self.memory_command = True
@@ -136,6 +158,9 @@ class ChatWorker(QThread):
                     trace_id=self.turn_id)
                 visual_context = description
                 log_event(self.source, "识图", f"turn:{self.turn_id} · 完成 · {len(description)} 字")
+                log_event(self.source, "识图内容", json.dumps({
+                    "source": "模型", "description": description[:3000],
+                }, ensure_ascii=False))
                 self.phase_changed.emit("庄方宜正在组织回复……")
             plan = TurnPlan()
             planner_config = PlannerSettings()
@@ -147,7 +172,9 @@ class ChatWorker(QThread):
                         allow_voice=False, visual_context=visual_context, trace_id=self.turn_id,
                         character_core_v2=planner_config.character_core_v2_enabled,
                         character_channel="chat",
-                        relationship_behavior_r1=planner_config.relationship_behavior_r1_enabled)
+                        relationship_behavior_r1=planner_config.relationship_behavior_r1_enabled,
+                        relationship_tier=relation_tier, relationship_hint=relation_hint,
+                        trusted_context_notes=self_profile_hint)
                     # Desktop/voice UI expects a visible reply for every initiated
                     # request. Wait/stop are enabled only in the QQ async scheduler.
                     if isinstance(plan, PlanDecision) and plan.action != "reply":
@@ -177,10 +204,11 @@ class ChatWorker(QThread):
                 log_event(self.source, "角色场景", skill_hint)
             if planner_config.relationship_behavior_r1_enabled:
                 from zhuangfy.persona.relationship_behavior_r1 import behavior_r1
-                guidance = behavior_r1(self.settings.system_prompt, self.message, channel="chat").guidance
+                guidance = behavior_r1(self.settings.system_prompt, self.message,
+                                       channel="chat", tier=relation_tier).guidance
                 if guidance:
                     # Model client caps emotion_context at 2000 chars: put R1 first.
-                    emotion_prompt = guidance + "\n" + emotion_prompt
+                    emotion_prompt = relation_hint + "\n" + guidance + "\n" + emotion_prompt
             if planner_config.character_knowledge_v1_enabled:
                 try:
                     found = retrieve_character_knowledge(

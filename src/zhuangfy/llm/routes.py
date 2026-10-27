@@ -93,7 +93,9 @@ class ModelRoutes:
         for stage in STAGES:
             policy = self.for_stage(stage).validated()
             for item in policy.candidates:
-                if item.id in used and used[item.id] != item:
+                if (item.id in used and
+                        (used[item.id].provider, used[item.id].base_url, used[item.id].model)
+                        != (item.provider, item.base_url, item.model)):
                     raise ValueError("同一 API 编号在各阶段必须指向相同供应商和模型")
                 used[item.id] = item
         return self
@@ -287,6 +289,7 @@ def invoke_stage(
     visual_context: str = "",
     trace_id: str = "",
     on_attempt: Callable[[str, int, str], None] | None = None,
+    on_success: Callable[[str, str], None] | None = None,
     response_validator: Callable[[str], bool] | None = None,
     image_data_url: str | None = None,
     planner_schema: dict | None = None,
@@ -332,6 +335,8 @@ def invoke_stage(
             timeout = min(float(policy.timeout), remaining)
             if on_attempt:
                 on_attempt(item.id, attempt + 1, label)
+            if stage == "planner":
+                log_event("模型", "规划尝试", item.model)
             log_event("模型路由", "尝试",
                       f"{trace_id} · {label} · {item.id} · {item.model} · 第 {attempt+1} 次")
             try:
@@ -369,6 +374,7 @@ def invoke_stage(
                         if remaining >= 1:
                             log_event("模型路由", "格式补救",
                                       f"{trace_id} · {label} · {item.id} · 要求仅返回规划 JSON")
+                            log_event("模型", "规划尝试", item.model)
                             correction_history = history[-10:] + [
                                 {"role": "user", "content": user_text[:1500]},
                                 {"role": "assistant", "content": result[:1200]},
@@ -377,7 +383,9 @@ def invoke_stage(
                                 selected_settings, key, correction_history,
                                 "上一条不是有效的规划 JSON。请依据刚才的用户消息和系统给定字段，"
                                 "重新输出且只输出一个 JSON 对象；必须包含 action、confidence、"
-                                "delivery，不要自然语言回答、解释或 Markdown。",
+                                "delivery，不要自然语言回答、解释或 Markdown。"
+                                "wait 仅用于等待用户续发，不能用于延时回复或提醒；"
+                                "action=reply 时 wait_seconds 必须为 0。",
                                 emotion_context=emotion_context,
                                 context_notes=context_notes,
                                 timeout=min(float(policy.timeout), remaining), stage=label,
@@ -398,10 +406,14 @@ def invoke_stage(
                                 log_event("模型路由", "格式补救成功",
                                           f"{trace_id} · {label} · {item.id}")
                                 log_event("模型路由", "成功", f"{trace_id} · {label} · {item.id}")
+                                if on_success:
+                                    on_success(item.id, item.model)
                                 return repaired
                     raise ModelRequestError(
                         "模型输出格式不符合本阶段要求", kind="protocol", retryable=True)
                 log_event("模型路由", "成功", f"{trace_id} · {label} · {item.id}")
+                if on_success:
+                    on_success(item.id, item.model)
                 return result
             except Exception as error:
                 reason = _reason(error)

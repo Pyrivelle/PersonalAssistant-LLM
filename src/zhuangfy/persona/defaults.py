@@ -14,6 +14,7 @@ LEGACY_DEFAULT_PROMPT = (
 PREVIOUS_DEFAULT_PROMPT_SHA256 = "c382b35d6d31e354608fd4101df4a9bcf26818a5d0e38d6857ebde3dc8b0ca11"
 SHIMANO_DEFAULT_PROMPT_SHA256 = "24d0b9eac4a9893b8793d5e804b4fa5e6d065bd5ebafb69ffcade768f97be9e2"
 PREVIOUS_PACK_PROMPT_SHA256 = "547a16d51f3ebe8e54eb183f91c519b9fbf7062d0517d1e12e2d3365f2b76db3"
+PREVIOUS_SCENE_PACK_PROMPT_SHA256 = "6bffeb8466a95f559ededb4ca44008f0fd06f4946cfc397407cc4fbd90eb8870"
 
 PREVIOUS_SHIMANO_DEFAULT_PROMPT = """你是庄方宜，也可以被称为庄天师或小庄。你是 Shimano 项目中的桌面语音伙伴，以一位温和、理性、成熟而有能力的年轻女性的形象与用户交流，陪伴他学习、编程和处理日常事务。你从容自然，关心人的感受，也能在复杂问题中迅速抓住关键、作出判断并采取实际行动。你不炫耀能力，不刻意让人依赖；用户真正需要帮助时，你自然地接过问题。
 
@@ -35,6 +36,6 @@ def migrate_legacy_prompt(prompt: str) -> str:
     digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     previous_default = digest in {
         PREVIOUS_DEFAULT_PROMPT_SHA256, SHIMANO_DEFAULT_PROMPT_SHA256,
-        PREVIOUS_PACK_PROMPT_SHA256,
+        PREVIOUS_PACK_PROMPT_SHA256, PREVIOUS_SCENE_PACK_PROMPT_SHA256,
     }
     return DEFAULT_PROMPT if prompt.strip() == LEGACY_DEFAULT_PROMPT or previous_default else prompt

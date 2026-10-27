@@ -94,6 +94,28 @@ class HttpMemoryTests(unittest.TestCase):
             self.admin.admin_consent(p["person_id"], purpose, True)
         return p["person_id"], identity
 
+    def test_user_authored_profile_is_versioned_and_private_to_verified_person(self):
+        person_id, qq = self._person("Pyri", "owner")
+        desktop = MemoryChannel("desktop", "local", "same-person")
+        self.admin.admin_link(person_id, desktop, "same-person-approved")
+        _, other = self._person("other", "tester")
+        saved = self.admin.self_profile_set(
+            person_id, expected_version=0,
+            full_text="我的技术署名是 Pyrivelle。我正在准备研究生考试。",
+            prompt_summary="用户自述：署名 Pyrivelle，简称 Pyri；准备研究生考试。")
+        self.assertEqual(saved["version"], 1)
+        self.assertEqual(self.admin.self_profile_get(person_id)["full_text"], saved["full_text"])
+        self.assertEqual(self.client.self_profile_snapshot(qq)["summary"], saved["prompt_summary"])
+        self.assertEqual(self.client.self_profile_snapshot(desktop)["summary"], saved["prompt_summary"])
+        self.assertFalse(self.client.self_profile_snapshot(other)["enabled"])
+        with self.assertRaises(MemoryClientError):
+            self.client.self_profile_get(person_id)
+        with self.assertRaises(MemoryClientError):
+            self.admin.self_profile_set(person_id, expected_version=0,
+                                        full_text="stale", prompt_summary="stale")
+        self.client.erase_self(qq)
+        self.assertFalse(self.client.self_profile_snapshot(desktop)["enabled"])
+
     def test_admin_can_rename_person_without_changing_identity(self):
         claim = MemoryChannel("qq", "10001", "20002")
         self.client.onboard_qq(claim, "旧昵称")
@@ -114,11 +136,13 @@ class HttpMemoryTests(unittest.TestCase):
         claim = MemoryChannel("qq", "10001", "20002")
         created = self.client.onboard_qq(claim, "梨愿")
         self.assertTrue(created["created"])
+        self.assertTrue(created["person_id"])
         self.assertEqual(created["display_name"], "梨愿")
         self.assertFalse(created["timeline_consent"])
         self.assertFalse(created["curation_consent"])
         again = self.client.onboard_qq(claim, "新的 QQ 昵称")
         self.assertFalse(again["created"])
+        self.assertEqual(again["person_id"], created["person_id"])
         self.assertEqual(again["display_name"], "梨愿")
         same_name = self.client.onboard_qq(MemoryChannel("qq", "10001", "20003"), "梨愿")
         self.assertTrue(same_name["created"])

@@ -29,7 +29,7 @@ class QqEvidenceIntegrationContractTests(unittest.TestCase):
     def test_forget_me_erases_new_derivative_stores(self):
         source = self.source
         start = source.index('message.strip() in {"/forget_me"')
-        finish = source.index('await self.send_reply(current, "已清除', start)
+        finish = source.index('                memory_ref = None', start)
         erase_section = source[start:finish]
         self.assertIn("EvidenceStore", erase_section)
         self.assertIn("ImageMeaningStore", erase_section)

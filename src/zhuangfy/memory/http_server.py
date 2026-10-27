@@ -27,7 +27,8 @@ from zhuangfy.paths import Paths
 MAX_REQUEST_BYTES = 18_000
 PUBLIC_ENDPOINTS = frozenset({
     "/v1/onboard-qq", "/v1/receive", "/v1/recall", "/v1/complete-reply", "/v1/erase-self",
-    "/v1/relationship/snapshot", "/v1/relationship/apply", "/v1/task-origin", "/v1/task-recall", "/v1/task-state",
+    "/v1/relationship/snapshot", "/v1/relationship/apply", "/v1/self-profile/snapshot",
+    "/v1/task-origin", "/v1/task-recall", "/v1/task-state",
 })
 ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/create-person", "/v1/admin/rename-person", "/v1/admin/link", "/v1/admin/consent",
@@ -40,6 +41,7 @@ ADMIN_ENDPOINTS = frozenset({
     "/v1/admin/relationship/enroll", "/v1/admin/relationship/correct",
     "/v1/admin/relationship/get", "/v1/admin/relationship/events",
     "/v1/admin/relationship/erase",
+    "/v1/admin/self-profile/get", "/v1/admin/self-profile/set",
 })
 
 
@@ -113,6 +115,8 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.erase_self(**payload)
                 elif path == "/v1/relationship/snapshot":
                     result = core.relationship_snapshot(**payload)
+                elif path == "/v1/self-profile/snapshot":
+                    result = core.self_profile_snapshot(**payload)
                 elif path == "/v1/relationship/apply":
                     result = core.relationship_apply(**payload)
                 elif path == "/v1/admin/relationship/enroll":
@@ -125,6 +129,10 @@ def build_handler(core: MemoryCore, *, client_token: str, admin_token: str):
                     result = core.admin_relationship_events(**payload)
                 elif path == "/v1/admin/relationship/erase":
                     result = core.admin_relationship_erase(**payload)
+                elif path == "/v1/admin/self-profile/get":
+                    result = core.admin_self_profile_get(**payload)
+                elif path == "/v1/admin/self-profile/set":
+                    result = core.admin_self_profile_set(**payload)
                 elif path == "/v1/admin/create-person":
                     result = core.admin_create_person(**payload)
                 elif path == "/v1/admin/rename-person":

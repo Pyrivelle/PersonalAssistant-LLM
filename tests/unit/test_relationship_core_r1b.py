@@ -94,6 +94,40 @@ class RelationshipCoreTests(unittest.TestCase):
         self.assertEqual(self.core.enroll(agent_id="new-agent", identity=self.a,
                                           initial_tier="L4", allow_affection=True).tier, "L4")
 
+    def test_mutual_affection_is_explicit_and_person_scoped(self):
+        owner = self.core.enroll(agent_id=AGENT, identity=self.a,
+                                 initial_tier="L4", allow_affection=True)
+        other = self.core.enroll(agent_id=AGENT, identity=self.b)
+        self.assertEqual(owner.bond_style, "unspecified")
+        with self.assertRaises(ValueError):
+            self.core.correct(agent_id=AGENT, identity=self.a,
+                              expected_version=owner.version, bond_style="unknown")
+        owner = self.core.correct(agent_id=AGENT, identity=self.a,
+                                  expected_version=owner.version,
+                                  bond_style="mutual_affection")
+        desktop = ChannelIdentity("desktop", "local", "owner")
+        self.identities.link_verified(self.alice.person_id, desktop, PROOF)
+        self.assertIn("互有好感、克制暧昧", owner.prompt_hint())
+        self.assertIn("不要用‘朋友’定义", owner.prompt_hint())
+        self.assertIn("不要反问‘这个答案可以吗’", owner.prompt_hint())
+        owner = self.core.correct(agent_id=AGENT, identity=self.a,
+                                  expected_version=owner.version, bond_stage="near_lovers")
+        self.assertIn("只差一次坦白", owner.prompt_hint())
+        self.assertIn("不要称为‘朋友’", owner.prompt_hint())
+        self.assertNotIn("双方选择以互有好感", owner.prompt_hint())
+        owner = self.core.correct(agent_id=AGENT, identity=self.a,
+                                  expected_version=owner.version,
+                                  bond_style="partners")
+        self.assertIn("明确确认恋人关系", owner.prompt_hint())
+        self.assertIn("珍惜稳定、真诚的陪伴", owner.prompt_hint())
+        self.assertNotIn("只差一次坦白", owner.prompt_hint())
+        with self.assertRaises(ValueError):
+            self.core.correct(agent_id=AGENT, identity=self.a,
+                              expected_version=owner.version, bond_stage="unknown")
+        self.assertEqual(self.core.snapshot(agent_id=AGENT, identity=desktop), owner)
+        self.assertEqual(self.core.snapshot(agent_id=AGENT, identity=self.b), other)
+        self.assertNotIn("克制暧昧", other.prompt_hint())
+
     def test_legacy_relationship_table_is_extended_without_erasing_events(self):
         import sqlite3
         with tempfile.TemporaryDirectory() as folder:
@@ -104,8 +138,9 @@ class RelationshipCoreTests(unittest.TestCase):
                 conn.execute("INSERT INTO relationship_profiles VALUES ('agent','person','L3')")
             RelationshipCore(db, IdentityRepository(db))
             with db.connection() as conn:
-                row = conn.execute("SELECT tier_ceiling,l4_opt_in FROM relationship_profiles").fetchone()
-            self.assertEqual(tuple(row), ("L3", 0))
+                row = conn.execute("SELECT tier_ceiling,l4_opt_in,bond_style,bond_stage "
+                                   "FROM relationship_profiles").fetchone()
+            self.assertEqual(tuple(row), ("L3", 0, "unspecified", "unset"))
 
     def test_only_real_timeline_evidence_can_drive_autonomous_growth(self):
         p = self.core.enroll(agent_id=AGENT, identity=self.a)

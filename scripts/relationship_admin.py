@@ -12,7 +12,7 @@ from zhuangfy.memory.client import MemoryChannel, MemoryClient
 
 FIELDS = {
     "familiarity": int, "trust": int, "closeness": int,
-    "tier_ceiling": str, "tone": str,
+    "tier_ceiling": str, "tone": str, "bond_style": str, "bond_stage": str,
     "allow_affection": bool, "avoid_nicknames": bool,
     "auto_growth": bool, "frozen": bool, "enabled": bool,
     "lock_familiarity": bool, "lock_trust": bool, "lock_closeness": bool,

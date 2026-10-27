@@ -7,6 +7,7 @@ re-admit new events through the channel authorization gate.
 from __future__ import annotations
 
 import hashlib
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 
@@ -19,7 +20,7 @@ class FocusCheckpointStore:
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("""CREATE TABLE IF NOT EXISTS focus_checkpoints (
                 instance_id TEXT NOT NULL,
                 group_id TEXT NOT NULL,
@@ -33,7 +34,7 @@ class FocusCheckpointStore:
              members: frozenset[str]) -> tuple[str, int] | None:
         if not instance_id or not group_id:
             raise ValueError("invalid checkpoint scope")
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db:
             row = db.execute(
                 """SELECT last_session, streak FROM focus_checkpoints
                    WHERE instance_id=? AND group_id=? AND member_signature=?""",
@@ -47,7 +48,7 @@ class FocusCheckpointStore:
               last_session: str, streak: int) -> None:
         if not instance_id or not group_id or last_session not in members or not 1 <= streak <= 8:
             raise ValueError("invalid Focus completion")
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 """INSERT INTO focus_checkpoints
                   (instance_id, group_id, member_signature, last_session, streak)

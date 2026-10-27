@@ -122,6 +122,10 @@ class PlannerV3Tests(unittest.TestCase):
         self.assertFalse(valid_plan_v3(self.decision(tool_arguments_json="not json")))
         self.assertFalse(valid_plan_v3(self.decision(tool_arguments_json="[]")))
         self.assertFalse(valid_plan_v3(self.decision(wait_seconds=5)))
+        self.assertFalse(valid_plan_v3(self.decision(action="wait", wait_seconds=60)))
+        self.assertTrue(valid_plan_v3(self.decision(action="wait", wait_seconds=30)))
+        self.assertEqual(parse_plan_v3(self.decision(action="wait", wait_seconds=30)).wait_seconds, 30)
+        self.assertFalse(valid_plan_v3(self.decision(action="wait", wait_seconds=601)))
         self.assertFalse(valid_plan_v3(self.decision(unexpected="injection")))
         self.assertEqual(parse_plan_v3("garbage"), PlanDecision())
 
@@ -141,15 +145,17 @@ class PlannerV3Tests(unittest.TestCase):
     def test_v3_router_receives_first_turn_schema(self):
         from zhuangfy.agent_v2.planner import plan_turn_v3
         from zhuangfy.agent_v2.planner_v3 import DECISION_SCHEMA
+        from zhuangfy.persona.packs import ZHUANG_FANGYI_V1
         captured = {}
         def invoke(*args, **kwargs):
             captured.update(kwargs)
             return self.decision()
         with patch.dict(sys.modules, {"model_routes": SimpleNamespace(invoke_stage=invoke)}):
-            plan = plan_turn_v3(SimpleNamespace(system_prompt="庄方宜"), "key",
+            plan = plan_turn_v3(SimpleNamespace(system_prompt=ZHUANG_FANGYI_V1.prompt()), "key",
                                 [], "今天怎么样？")
         self.assertEqual(plan.action, "reply")
         self.assertEqual(captured["planner_schema"], DECISION_SCHEMA)
+        self.assertIn(ZHUANG_FANGYI_V1.prompt(), captured["system_prompt"])
         self.assertTrue(captured["response_validator"](self.decision()))
         self.assertFalse(captured["response_validator"]('{"action":"reply"}'))
 

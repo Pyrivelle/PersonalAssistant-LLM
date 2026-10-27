@@ -12,13 +12,21 @@ from .curator_store import CuratedMemory, CuratorOperation, CuratorStore, Eviden
 from .admin_store import MemoryAdminStore
 from .evaluation import MemoryEvalCase, MemoryEvalReport, evaluate_memory_retrieval
 from .client import MemoryChannel, MemoryClient, MemoryClientError
-from .coordinator import MemoryCore
 from .projector import CuratedIndexProjector, SyncResult
 from .retrieval import HybridMemoryRetriever, MemoryHit
 from .context import assemble_memory_context
 from .repository import MemoryEntry, SQLiteMemoryRepository
 from .service import MemoryVectorService, RecallResult, RepairResult, StoreResult
 from .vector import EmbeddingProvider, FastEmbedProvider, QdrantLocalIndex, VectorHit, VectorIndex
+
+
+def __getattr__(name: str):
+    # RelationshipCore imports memory.database while the relationship package
+    # initializes. Load the coordinator only when callers request it.
+    if name == "MemoryCore":
+        from .coordinator import MemoryCore
+        return MemoryCore
+    raise AttributeError(name)
 
 __all__ = [
     "MemoryAdminStore", "MemoryEvalCase", "MemoryEvalReport",

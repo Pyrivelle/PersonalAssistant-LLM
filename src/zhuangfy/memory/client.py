@@ -170,6 +170,18 @@ class MemoryClient:
         return self.request("/v1/admin/relationship/get", {
             "identity": identity.as_payload()})
 
+    def self_profile_snapshot(self, identity: MemoryChannel) -> dict:
+        return self.request("/v1/self-profile/snapshot", {"identity": identity.as_payload()})
+
+    def self_profile_get(self, person_id: str) -> dict:
+        return self.request("/v1/admin/self-profile/get", {"person_id": person_id})
+
+    def self_profile_set(self, person_id: str, *, expected_version: int,
+                         full_text: str, prompt_summary: str) -> dict:
+        return self.request("/v1/admin/self-profile/set", {
+            "person_id": person_id, "expected_version": expected_version,
+            "full_text": full_text, "prompt_summary": prompt_summary})
+
     def relationship_events(self, identity: MemoryChannel, limit: int = 30) -> dict:
         return self.request("/v1/admin/relationship/events", {
             "identity": identity.as_payload(), "limit": limit})

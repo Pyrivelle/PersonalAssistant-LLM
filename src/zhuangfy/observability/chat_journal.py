@@ -13,7 +13,12 @@ from zhuangfy.paths import Paths
 DEFAULT_PATH = Paths.current().project_data_root / "chat_stream.sqlite3"
 MAX_EVENTS = 5000
 _VISIBLE = {"消息", "思考V2", "思考", "搜索结果", "等待V2", "静默V2",
-            "回复", "语音回复", "失败", "模型全部失败", "识图"}
+            "定时已创建", "定时创建失败", "提醒已送达", "定时回复已送达",
+            "定时投递状态不明",
+            "定时生成开始", "定时已生成", "定时生成失败", "定时任务失败",
+            "回复", "语音回复", "失败", "模型全部失败", "识图", "识图内容",
+            "投递开始", "已投递", "未完全投递", "投递状态不明", "投递受限",
+            "补发未完成", "取消补发", "控制完成"}
 
 
 def is_chat_event(event: dict) -> bool:
@@ -21,7 +26,8 @@ def is_chat_event(event: dict) -> bool:
         return False
     source, phase = event.get("source"), event.get("phase")
     return ((source == event["channel"] and phase in _VISIBLE)
-            or (source == "模型" and phase in {"推理内容", "规划结果"}))
+            or (source == "模型" and phase in {"推理内容", "规划结果", "规划尝试", "规划确认", "输入原句", "系统提示词"})
+            or (source == "Agent" and phase in {"工具开始", "工具结束"}))
 
 
 class ChatJournal:

@@ -32,7 +32,7 @@ class PlannerSettings:
     agent_v2_enabled: bool = False
     agent_v2_allow_silence_private: bool = False
     agent_v2_allow_silence_group: bool = False
-    agent_v2_wait_max_seconds: int = 8
+    agent_v2_wait_max_seconds: int = 30
     agent_v2_tools_enabled: bool = False
     agent_v2_max_rounds: int = 4
     agent_v2_max_tools: int = 2
@@ -41,6 +41,7 @@ class PlannerSettings:
     relationship_behavior_r1_enabled: bool = False  # opt-in, no user tier inferred
     relationship_evolution_r1_enabled: bool = False  # separate opt-in for LLM event proposals
     agent_v3_enabled: bool = False  # opt-in structured decisions and deferred discovery
+    scheduled_tasks_enabled: bool = False  # explicit QQ private timers, separate from wait
 
     @classmethod
     def load(cls, path: Path) -> "PlannerSettings":
@@ -68,7 +69,7 @@ class PlannerSettings:
         v2_enabled = raw.get("agent_v2_enabled", False)
         silent_private = raw.get("agent_v2_allow_silence_private", False)
         silent_group = raw.get("agent_v2_allow_silence_group", False)
-        wait_max = raw.get("agent_v2_wait_max_seconds", 8)
+        wait_max = raw.get("agent_v2_wait_max_seconds", 30)
         tools_enabled = raw.get("agent_v2_tools_enabled", False)
         max_rounds = raw.get("agent_v2_max_rounds", 4)
         max_tools = raw.get("agent_v2_max_tools", 2)
@@ -77,8 +78,11 @@ class PlannerSettings:
         r1 = raw.get("relationship_behavior_r1_enabled", False)
         r1_evolution = raw.get("relationship_evolution_r1_enabled", False)
         v3_enabled = raw.get("agent_v3_enabled", False)
+        scheduled_tasks = raw.get("scheduled_tasks_enabled", False)
         if type(v3_enabled) is not bool or (v3_enabled and not v2_enabled):
             raise ValueError("Planner V3 requires enabled Agent V2")
+        if type(scheduled_tasks) is not bool or (scheduled_tasks and not v2_enabled):
+            raise ValueError("Scheduled tasks require enabled Agent V2")
         if type(core_v2) is not bool:
             raise ValueError("CCV2 开关必须是布尔值")
         if type(lore_v1) is not bool:
@@ -89,8 +93,8 @@ class PlannerSettings:
             raise ValueError("R1 关系演化开关必须是布尔值")
         if any(type(item) is not bool for item in (v2_enabled, silent_private, silent_group, tools_enabled)):
             raise ValueError("Agent V2 开关必须是布尔值")
-        if type(wait_max) is not int or not 1 <= wait_max <= 12:
-            raise ValueError("Agent V2 等待上限必须是 1–12 秒")
+        if type(wait_max) is not int or not 1 <= wait_max <= 30:
+            raise ValueError("Agent V2 等待上限必须是 1–30 秒")
         if type(max_rounds) is not int or not 1 <= max_rounds <= 8:
             raise ValueError("agent_v2_max_rounds 必须在 1–8")
         if type(max_tools) is not int or not 0 <= max_tools <= 6:
@@ -98,7 +102,7 @@ class PlannerSettings:
         return cls(raw.get("enabled", False), model.strip(), frozenset(ids), desktop,
                    frozenset(memory_ids), skill, v2_enabled, silent_private,
                    silent_group, wait_max, tools_enabled, max_rounds, max_tools,
-                   core_v2, lore_v1, r1, r1_evolution, v3_enabled)
+                   core_v2, lore_v1, r1, r1_evolution, v3_enabled, scheduled_tasks)
 
 
 @dataclass(frozen=True)

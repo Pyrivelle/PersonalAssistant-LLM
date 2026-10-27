@@ -22,6 +22,7 @@ from .timeline import TimelineRepository
 from .task_links import TaskMemoryLinks
 from .task_continuity import TaskContinuity
 from .task_events import TaskEventStore
+from .self_profile import SelfProfileStore
 from zhuangfy.relationship import RelationshipCore, RelationshipEvolution, RelationshipCandidate
 from .vector import EmbeddingProvider, QdrantLocalIndex, VectorIndex
 
@@ -39,6 +40,7 @@ class MemoryCore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.database = MemoryDatabase(self.root / "memory.sqlite3")
         self.identities = IdentityRepository(self.database)
+        self.self_profiles = SelfProfileStore(self.database)
         self.timeline = TimelineRepository(self.database, self.identities)
         self.task_links = TaskMemoryLinks(self.database, self.identities, self.timeline)
         self.relationship = RelationshipCore(self.database, self.identities)
@@ -85,6 +87,7 @@ class MemoryCore:
             initial_timeline=self.auto_qq_timeline)
         return {
             "created": created,
+            "person_id": person.person_id,
             "display_name": person.display_name,
             "timeline_consent": self.identities.has_consent(person.person_id, "timeline"),
             "curation_consent": self.identities.has_consent(person.person_id, "curation"),
@@ -166,6 +169,24 @@ class MemoryCore:
                 "auto_growth": snap.auto_growth, "frozen": snap.frozen,
                 "hint": snap.prompt_hint()}
 
+    def self_profile_snapshot(self, *, identity: dict) -> dict:
+        """Only a verified identity can read its own user-authored summary."""
+        person_id = self._person(identity)
+        profile = self.self_profiles.get(person_id)
+        return ({"enabled": True, "version": profile["version"],
+                 "summary": profile["prompt_summary"]} if profile else
+                {"enabled": False, "summary": ""})
+
+    def admin_self_profile_get(self, *, person_id: str) -> dict:
+        if self.identities.get_person(person_id) is None:
+            raise ValueError("Unknown person")
+        return self.self_profiles.get(person_id) or {"version": 0, "full_text": "", "prompt_summary": ""}
+
+    def admin_self_profile_set(self, *, person_id: str, expected_version: int,
+                               full_text: str, prompt_summary: str) -> dict:
+        return self.self_profiles.set(person_id, expected_version=expected_version,
+                                      full_text=full_text, prompt_summary=prompt_summary)
+
     def relationship_apply(self, *, identity: dict, source_entry_id: str,
                            event_kind: str, confidence: float, evidence_quote: str,
                            expected_version: int) -> dict:
@@ -228,7 +249,7 @@ class MemoryCore:
         if not isinstance(changes, dict):
             raise ValueError("Invalid relationship changes")
         allowed = {"familiarity","trust","closeness","tier_ceiling","allow_affection",
-                   "avoid_nicknames","tone","auto_growth","frozen","enabled",
+                   "avoid_nicknames","tone","bond_style","bond_stage","auto_growth","frozen","enabled",
                    "lock_familiarity","lock_trust","lock_closeness"}
         if not changes or set(changes) - allowed:
             raise ValueError("Unknown relationship correction")
@@ -307,6 +328,7 @@ class MemoryCore:
                 db.execute("DELETE FROM private_conversations WHERE person_id=?", (person_id,))
                 # Erase R1 relationship profile and audit events in the same transaction.
                 db.execute("DELETE FROM relationship_profiles WHERE person_id=?", (person_id,))
+                db.execute("DELETE FROM self_profiles WHERE person_id=?", (person_id,))
                 # Also cover any old/orphan curated rows without conversations.
                 db.execute("DELETE FROM curated_memories WHERE person_id=?", (person_id,))
                 db.execute("DELETE FROM reflection_jobs WHERE person_id=?", (person_id,))
